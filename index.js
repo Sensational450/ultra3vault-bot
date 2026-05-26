@@ -3,6 +3,14 @@ const { Client, GatewayIntentBits } = require("discord.js");
 
 const app = express();
 
+app.use(express.json());
+
+app.post("/webhook", async (req, res) => {
+    console.log("Payment received:", req.body);
+
+    res.sendStatus(200);
+});
+
 // Express server for Render
 app.get("/", (req, res) => {
     res.send("Ultra3Vault is running");
