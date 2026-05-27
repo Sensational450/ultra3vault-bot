@@ -73,15 +73,20 @@ client.on("messageCreate", async (message) => {
 
     const role = message.guild.roles.cache.find(r => r.name === "Premium");
 
+    if (message.content === "!testpay") {
+
+    const member = message.member;
+
+    const role = message.guild.roles.cache.find(r => r.name === "Ultra3Vault");
+
     if (!role) {
-        return message.reply("❌ Premium role not found");
+        return message.reply("❌ Role 'Ultra3Vault' not found");
     }
 
     await member.roles.add(role);
 
-    message.reply("✅ Premium role granted (TEST MODE)");
+    message.reply("✅ Ultra3Vault role granted (TEST MODE)");
 }
-
     if (message.author.bot) return;
 
     // ---------------- !PING ----------------
