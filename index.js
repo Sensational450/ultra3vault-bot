@@ -12,7 +12,7 @@ const axios = require("axios");
 
 // ---------------- CONFIG ----------------
 
-const ROLE_ID = "1507933039844659273";
+const ROLE_ID = "1509191517909024950";
 
 // ---------------- EXPRESS SERVER ----------------
 
