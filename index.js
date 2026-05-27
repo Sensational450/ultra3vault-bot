@@ -50,6 +50,9 @@ const client = new Client({
     ]
 });
 
+// 🔥 FIX 1: prevent duplicate message execution
+const processedMessages = new Set();
+
 const activeRequests = new Set();
 let cachedGuild = null;
 
@@ -62,55 +65,52 @@ client.once("ready", () => {
 
 // ---------------- PREMIUM SYSTEM ----------------
 
-function grantPremium(discordUserId) {
+async function grantPremium(discordUserId) {
     if (!cachedGuild) {
         cachedGuild = client.guilds.cache.first();
     }
 
-    if (!cachedGuild) {
-        console.log("No guild found");
-        return;
-    }
+    if (!cachedGuild) return;
 
-    const memberPromise = cachedGuild.members.fetch(discordUserId).catch(() => null);
     const role = cachedGuild.roles.cache.get(ROLE_ID);
-
     if (!role) return;
 
-    memberPromise.then((member) => {
-        if (!member) return;
+    const member = await cachedGuild.members.fetch(discordUserId).catch(() => null);
+    if (!member) return;
 
-        const now = Date.now();
-        const sevenDays = 7 * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const sevenDays = 7 * 24 * 60 * 60 * 1000;
 
-        db.get(
-            `SELECT expires_at FROM users WHERE id = ?`,
-            [discordUserId],
-            async (err, row) => {
+    db.get(
+        `SELECT expires_at FROM users WHERE id = ?`,
+        [discordUserId],
+        async (err, row) => {
 
-                if (err) {
-                    console.log("DB ERROR:", err.message);
-                    return;
-                }
-
-                let newExpiry;
-
-                if (!row) {
-                    newExpiry = now + sevenDays;
-                    await member.roles.add(role).catch(() => null);
-                    console.log("✅ NEW PREMIUM:", discordUserId);
-                } else {
-                    newExpiry = Math.max(row.expires_at, now) + sevenDays;
-                    console.log("🔄 EXTENDED PREMIUM:", discordUserId);
-                }
-
-                db.run(
-                    `INSERT OR REPLACE INTO users (id, expires_at) VALUES (?, ?)`,
-                    [discordUserId, newExpiry]
-                );
+            if (err) {
+                console.log("DB ERROR:", err.message);
+                return;
             }
-        );
-    });
+
+            let newExpiry;
+
+            if (!row) {
+                newExpiry = now + sevenDays;
+
+                await member.roles.add(role).catch(() => null);
+
+                console.log("✅ NEW PREMIUM:", discordUserId);
+            } else {
+                newExpiry = Math.max(row.expires_at, now) + sevenDays;
+
+                console.log("🔄 EXTENDED PREMIUM:", discordUserId);
+            }
+
+            db.run(
+                `INSERT OR REPLACE INTO users (id, expires_at) VALUES (?, ?)`,
+                [discordUserId, newExpiry]
+            );
+        }
+    );
 }
 
 // ---------------- WEBHOOK ----------------
@@ -130,7 +130,7 @@ app.post("/webhook", async (req, res) => {
 
         const discordUserId = orderId.split("_")[0];
 
-        grantPremium(discordUserId);
+        await grantPremium(discordUserId);
 
     } catch (err) {
         console.log("WEBHOOK ERROR:", err.message);
@@ -144,30 +144,32 @@ app.post("/webhook", async (req, res) => {
 client.on("messageCreate", async (message) => {
     if (message.author.bot) return;
 
-    const content = message.content.toLowerCase();
+    // 🔥 FIX 2: prevent duplicate command execution
+    if (processedMessages.has(message.id)) return;
+    processedMessages.add(message.id);
 
-    // ping
+    setTimeout(() => processedMessages.delete(message.id), 60000);
+
+    const content = message.content.trim().toLowerCase();
+
     if (content === "!ping") {
         return message.reply("Ultra3Vault is active ✅");
     }
 
-    // fake payment (NO MONEY TEST)
     if (content === "!fakepay") {
         await message.reply("🧪 Simulating payment...");
-        grantPremium(message.author.id);
+        await grantPremium(message.author.id);
         return message.reply("✅ Fake payment successful (premium granted)");
     }
 
-    // testpay (owner only)
     if (content === "!testpay") {
         if (message.author.id !== OWNER_ID)
             return message.reply("❌ Not allowed");
 
-        grantPremium(message.author.id);
+        await grantPremium(message.author.id);
         return message.reply("✅ Test premium granted");
     }
 
-    // premium check
     if (content === "!premium") {
         db.get(
             `SELECT expires_at FROM users WHERE id = ?`,
@@ -185,7 +187,6 @@ client.on("messageCreate", async (message) => {
         );
     }
 
-    // buy command
     if (content === "!buy") {
         const userId = message.author.id;
 
