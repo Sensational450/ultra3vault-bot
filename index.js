@@ -220,6 +220,10 @@ client.on("messageCreate", async (message) => {
                         order_description:
                             "Ultra3Vault Premium Access",
 
+                        // WEBHOOK URL
+                        ipn_callback_url:
+                            "https://ultra3vault-bot.onrender.com/webhook",
+
                         success_url:
                             "https://google.com",
 
