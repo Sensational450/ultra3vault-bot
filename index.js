@@ -52,7 +52,7 @@ const client = new Client({
 
 const activeRequests = new Set();
 let cachedGuild = null;
-const processedPayments = new Set(); // 🔥 prevents duplicate webhook processing
+const processedPayments = new Set();
 
 // ---------------- READY ----------------
 
@@ -82,7 +82,31 @@ function getUserPremium(userId) {
     });
 }
 
-// ---------------- WEBHOOK (FULLY FIXED) ----------------
+// ---------------- FAKE PAYMENT (NEW) ----------------
+
+async function triggerFakePayment(userId, message) {
+    try {
+        await message.reply("🧪 Simulating payment...");
+
+        const fakeWebhook = {
+            payment_status: "finished",
+            order_id: `${userId}_test_${Date.now()}`
+        };
+
+        await axios.post(
+            "https://ultra3vault-bot.onrender.com/webhook",
+            fakeWebhook,
+            { headers: { "Content-Type": "application/json" } }
+        );
+
+        return message.reply("✅ Fake payment processed!");
+    } catch (err) {
+        console.log("FAKEPAY ERROR:", err.message);
+        return message.reply("❌ Fake payment failed");
+    }
+}
+
+// ---------------- WEBHOOK ----------------
 
 app.post("/webhook", async (req, res) => {
     const data = req.body;
@@ -97,22 +121,18 @@ app.post("/webhook", async (req, res) => {
             return res.sendStatus(200);
         }
 
-        // 🔥 prevent duplicate processing
         if (processedPayments.has(orderId)) {
             return res.sendStatus(200);
         }
         processedPayments.add(orderId);
 
-        // 🔥 REAL PAYMENT VERIFY (important fix)
         const paymentId = data.payment_id;
 
         if (paymentId) {
             const verify = await axios.get(
                 `https://api.nowpayments.io/v1/payment/${paymentId}`,
                 {
-                    headers: {
-                        "x-api-key": NOWPAYMENTS_KEY
-                    }
+                    headers: { "x-api-key": NOWPAYMENTS_KEY }
                 }
             );
 
@@ -143,22 +163,16 @@ app.post("/webhook", async (req, res) => {
             [discordUserId],
             async (err, row) => {
 
-                if (err) {
-                    console.log("DB ERROR:", err.message);
-                    return;
-                }
+                if (err) return console.log("DB ERROR:", err.message);
 
                 let newExpiry;
 
                 if (!row) {
                     newExpiry = now + sevenDays;
-
                     await member.roles.add(role).catch(() => null);
-
                     console.log("✅ NEW PREMIUM:", discordUserId);
                 } else {
                     newExpiry = Math.max(row.expires_at, now) + sevenDays;
-
                     console.log("🔄 EXTENDED PREMIUM:", discordUserId);
                 }
 
@@ -187,6 +201,11 @@ client.on("messageCreate", async (message) => {
         return message.reply("Ultra3Vault is active ✅");
     }
 
+    // ---------------- FAKEPAY ----------------
+    if (content === "!fakepay") {
+        return triggerFakePayment(message.author.id, message);
+    }
+
     if (content === "!testpay") {
         if (message.author.id !== OWNER_ID)
             return message.reply("❌ Not allowed");
@@ -209,7 +228,6 @@ client.on("messageCreate", async (message) => {
 
     if (content === "!premium") {
         const result = await getUserPremium(message.author.id);
-
         if (!result) return message.reply("❌ Not premium");
         return message.reply("✅ Premium active");
     }
