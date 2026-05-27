@@ -1,5 +1,4 @@
-
-    client.on("messageCreate", async (message) => {
+client.on("messageCreate", async (message) => {
 
     if (message.author.bot) return;
 
