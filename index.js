@@ -147,14 +147,11 @@ client.on("messageCreate", async (message) => {
 
         } catch (err) {
 
-            console.log(
-                "TESTPAY ERROR:",
-                err.message
-            );
-
-            return message.reply(
-                "❌ Failed to assign role"
-            );
+             catch (err) {
+    console.log("FULL ERROR:", err);
+    console.log("MESSAGE:", err.message);
+    return message.reply("❌ Failed to assign role (check logs)");
+}
         }
     }
 
