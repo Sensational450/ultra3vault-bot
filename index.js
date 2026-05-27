@@ -37,10 +37,19 @@ const client = new Client({
 
 const activeRequests = new Set();
 
+let cachedGuild = null;
+
 // ---------------- READY ----------------
 
-client.once("ready", () => {
+client.once("ready", async () => {
     console.log(`Ultra3Vault is online as ${client.user.tag}`);
+
+    // cache guild safely once bot is ready
+    cachedGuild = client.guilds.cache.first();
+
+    if (!cachedGuild) {
+        console.log("WARNING: No guild cached");
+    }
 });
 
 // ---------------- WEBHOOK ----------------
@@ -57,22 +66,23 @@ app.post("/webhook", async (req, res) => {
     try {
         const discordUserId = data.order_id.split("_")[0];
 
-        // safer guild fetch
-        const guild = await client.guilds.fetch().then(g => g.first()).catch(() => null);
+        if (!cachedGuild) {
+            cachedGuild = client.guilds.cache.first();
+        }
 
-        if (!guild) {
-            console.log("No guild found");
+        if (!cachedGuild) {
+            console.log("No guild available");
             return res.sendStatus(200);
         }
 
-        const member = await guild.members.fetch(discordUserId).catch(() => null);
+        const member = await cachedGuild.members.fetch(discordUserId).catch(() => null);
 
         if (!member) {
             console.log("Member not found");
             return res.sendStatus(200);
         }
 
-        const role = guild.roles.cache.get(ROLE_ID);
+        const role = cachedGuild.roles.cache.get(ROLE_ID);
 
         if (!role) {
             console.log("Role not found");
@@ -105,12 +115,12 @@ client.on("messageCreate", async (message) => {
 
     const content = message.content.toLowerCase();
 
-    // ---------------- PING ----------------
+    // PING
     if (content === "!ping") {
         return message.reply("Ultra3Vault is active ✅");
     }
 
-    // ---------------- TESTPAY ----------------
+    // TESTPAY
     if (content === "!testpay") {
 
         if (message.author.id !== OWNER_ID) {
@@ -132,7 +142,7 @@ client.on("messageCreate", async (message) => {
         }
     }
 
-    // ---------------- BUY ----------------
+    // BUY
     if (content === "!buy") {
 
         const userId = message.author.id;
@@ -182,10 +192,8 @@ client.on("messageCreate", async (message) => {
     }
 });
 
-// ---------------- LOGIN (FIXED) ----------------
+// ---------------- LOGIN ----------------
 
 client.login(process.env.TOKEN)
     .then(() => console.log("Bot login successful"))
-    .catch(err => {
-        console.log("LOGIN ERROR:", err);
-    });
+    .catch(err => console.log("LOGIN ERROR:", err));
