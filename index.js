@@ -97,7 +97,7 @@ client.on("messageCreate", async (message) => {
         const member = message.member;
 
         const role = message.guild.roles.cache.find(
-            r => r.name === "Ultra3Vault"
+            r => r.name === "1507933039844659273"
         );
 
         if (!role) {
