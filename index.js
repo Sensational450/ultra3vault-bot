@@ -32,10 +32,10 @@ app.post("/webhook", async (req, res) => {
 
         const member = await guild.members.fetch(discordUserId);
 
-        // USING YOUR REAL ROLE NAME
-        const role = guild.roles.cache.find(
-            r => r.name === "Ultra3Vault"
-        );
+        // USING YOUR REAL ROLE ID
+        const role = guild.roles.cache.get(
+    "1507933039844659273"
+);
 
         if (!role) {
             console.log("Ultra3Vault role not found");
@@ -96,9 +96,9 @@ client.on("messageCreate", async (message) => {
 
         const member = message.member;
 
-        const role = message.guild.roles.cache.find(
-            r => r.name === "1507933039844659273"
-        );
+        const role = message.guild.roles.cache.get(
+    "1507933039844659273"
+);
 
         if (!role) {
             return message.reply("❌ Role 'Ultra3Vault' not found");
