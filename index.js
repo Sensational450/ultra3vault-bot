@@ -47,6 +47,8 @@ client.on("messageCreate", async (message) => {
 
     // ---------------- !BUY ----------------
     if (message.content === "!buy") {
+        
+        console.log("KEY TEST:", process.env.NOWPAYMENTS_API_KEY);
 
         console.log("BUY COMMAND TRIGGERED");
         message.reply("🧪 Creating payment link...");
