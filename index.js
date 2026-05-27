@@ -12,16 +12,12 @@ const axios = require("axios");
 
 // ---------------- CONFIG ----------------
 
-// PREMIUM ROLE ID
 const ROLE_ID = "1509191517909024950";
-
-// YOUR DISCORD USER ID
 const OWNER_ID = "1260307493213704225";
 
-// ---------------- EXPRESS SERVER ----------------
+// ---------------- EXPRESS ----------------
 
 const app = express();
-
 app.use(express.json());
 
 app.get("/", (req, res) => {
@@ -33,237 +29,152 @@ app.get("/", (req, res) => {
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMembers,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent
     ]
 });
 
-// prevent duplicate !buy execution
 const activeRequests = new Set();
 
 // ---------------- WEBHOOK ----------------
 
 app.post("/webhook", async (req, res) => {
-
     const data = req.body;
 
     console.log("Payment received:", data);
 
-    // only continue if payment completed
     if (data.payment_status !== "finished") {
         return res.sendStatus(200);
     }
 
     try {
+        const discordUserId = data.order_id.split("_")[0];
 
-        // extract Discord user ID from order_id
-        const discordUserId =
-            data.order_id.split("_")[0];
-
-        const guild =
-            client.guilds.cache.first();
-
-        const member =
-            await guild.members.fetch(discordUserId);
-
-        const role =
-            guild.roles.cache.get(ROLE_ID);
-
-        if (!role) {
-
-            console.log("Role ID not found");
-
+        const guild = client.guilds.cache.first();
+        if (!guild) {
+            console.log("No guild found");
             return res.sendStatus(200);
         }
 
-        // assign premium role
+        const member = await guild.members.fetch(discordUserId).catch(() => null);
+        if (!member) {
+            console.log("Member not found");
+            return res.sendStatus(200);
+        }
+
+        const role = guild.roles.cache.get(ROLE_ID);
+        if (!role) {
+            console.log("Role not found");
+            return res.sendStatus(200);
+        }
+
         await member.roles.add(role);
 
-        console.log(
-            "Role assigned to:",
-            discordUserId
-        );
+        console.log("Role assigned to:", discordUserId);
 
     } catch (err) {
-
-        console.log(
-            "Webhook error:",
-            err
-        );
+        console.log("Webhook error:", err);
     }
 
     res.sendStatus(200);
 });
 
-// ---------------- SERVER START ----------------
+// ---------------- SERVER ----------------
 
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-
-    console.log(
-        "Web server running on port " + PORT
-    );
+    console.log("Web server running on port " + PORT);
 });
 
 // ---------------- READY ----------------
 
 client.once("ready", () => {
-
-    console.log(
-        `Ultra3Vault is online as ${client.user.tag}`
-    );
+    console.log(`Ultra3Vault is online as ${client.user.tag}`);
 });
 
 // ---------------- COMMANDS ----------------
 
 client.on("messageCreate", async (message) => {
-
-    // ignore bots
     if (message.author.bot) return;
 
-    // lowercase command support
-    const content =
-        message.content.toLowerCase();
+    const content = message.content.toLowerCase();
 
-    // ---------------- !PING ----------------
-
+    // PING
     if (content === "!ping") {
-
-        return message.reply(
-            "Ultra3Vault is active ✅"
-        );
+        return message.reply("Ultra3Vault is active ✅");
     }
 
-    // ---------------- !TESTPAY ----------------
-
+    // TESTPAY
     if (content === "!testpay") {
 
-        // only owner can use
         if (message.author.id !== OWNER_ID) {
-
-            return message.reply(
-                "❌ Not allowed"
-            );
+            return message.reply("❌ Not allowed");
         }
 
-        const member = message.member;
-
-        const role =
-            message.guild.roles.cache.get(
-                ROLE_ID
-            );
+        const role = message.guild.roles.cache.get(ROLE_ID);
 
         if (!role) {
-
-            return message.reply(
-                "❌ Role ID not found"
-            );
+            return message.reply("❌ Role not found");
         }
 
         try {
-
-            await member.roles.add(role);
-
-            return message.reply(
-                "✅ Ultra3Vault role granted (TEST MODE)"
-            );
-
+            await message.member.roles.add(role);
+            return message.reply("✅ Test role granted");
         } catch (err) {
-
-            console.log(
-                "TESTPAY ERROR:",
-                err
-            );
-
-            return message.reply(
-                "❌ Failed to assign role"
-            );
+            console.log("TESTPAY ERROR:", err);
+            return message.reply("❌ Failed to assign role");
         }
     }
 
-    // ---------------- !BUY ----------------
-
+    // BUY
     if (content === "!buy") {
 
-        const userId =
-            message.author.id;
+        const userId = message.author.id;
 
-        // prevent duplicate requests
-        if (activeRequests.has(userId)) {
-            return;
-        }
-
+        if (activeRequests.has(userId)) return;
         activeRequests.add(userId);
 
-        console.log(
-            "BUY COMMAND TRIGGERED"
-        );
-
-        await message.reply(
-            "🧪 Creating payment link..."
-        );
-
         try {
+            await message.reply("🧪 Creating payment link...");
 
-            const response =
-                await axios.post(
-                    "https://api.nowpayments.io/v1/invoice",
-                    {
-                        price_amount: 5,
-                        price_currency: "usd",
+            const response = await axios.post(
+                "https://api.nowpayments.io/v1/invoice",
+                {
+                    price_amount: 5,
+                    price_currency: "usd",
+                    order_id: `${userId}_${Date.now()}`,
+                    order_description: "Ultra3Vault Premium Access",
 
-                        // unique order ID
-                        order_id:
-                            `${userId}_${Date.now()}`,
+                    ipn_callback_url:
+                        "https://ultra3vault-bot.onrender.com/webhook",
 
-                        order_description:
-                            "Ultra3Vault Premium Access",
-
-                        // WEBHOOK URL
-                        ipn_callback_url:
-                            "https://ultra3vault-bot.onrender.com/webhook",
-
-                        success_url:
-                            "https://google.com",
-
-                        cancel_url:
-                            "https://google.com"
-                    },
-                    {
-                        headers: {
-                            "x-api-key":
-                                process.env.NOWPAYMENTS_API_KEY,
-
-                            "Content-Type":
-                                "application/json"
-                        }
+                    success_url: "https://google.com",
+                    cancel_url: "https://google.com"
+                },
+                {
+                    headers: {
+                        "x-api-key": process.env.NOWPAYMENTS_API_KEY,
+                        "Content-Type": "application/json"
                     }
-                );
+                }
+            );
 
             const paymentUrl =
                 response.data.invoice_url ||
                 response.data.data?.invoice_url;
 
-            await message.reply(
+            return message.reply(
                 `💰 **Ultra3Vault Premium**\n\nPay here:\n${paymentUrl}`
             );
 
         } catch (error) {
-
-            console.log(
-                "BUY ERROR:",
-                error.response?.data ||
-                error.message
-            );
-
-            await message.reply(
-                "❌ Failed to create payment link."
-            );
+            console.log("BUY ERROR:", error.response?.data || error.message);
+            return message.reply("❌ Failed to create payment link.");
+        } finally {
+            activeRequests.delete(userId);
         }
-
-        // remove request lock
-        activeRequests.delete(userId);
     }
 });
 
