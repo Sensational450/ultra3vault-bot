@@ -52,6 +52,7 @@ const client = new Client({
 
 const activeRequests = new Set();
 let cachedGuild = null;
+const processedPayments = new Set(); // 🔥 prevents duplicate webhook processing
 
 // ---------------- READY ----------------
 
@@ -81,7 +82,7 @@ function getUserPremium(userId) {
     });
 }
 
-// ---------------- WEBHOOK (FIXED CORE) ----------------
+// ---------------- WEBHOOK (FULLY FIXED) ----------------
 
 app.post("/webhook", async (req, res) => {
     const data = req.body;
@@ -94,6 +95,30 @@ app.post("/webhook", async (req, res) => {
 
         if (!orderId || status !== "finished") {
             return res.sendStatus(200);
+        }
+
+        // 🔥 prevent duplicate processing
+        if (processedPayments.has(orderId)) {
+            return res.sendStatus(200);
+        }
+        processedPayments.add(orderId);
+
+        // 🔥 REAL PAYMENT VERIFY (important fix)
+        const paymentId = data.payment_id;
+
+        if (paymentId) {
+            const verify = await axios.get(
+                `https://api.nowpayments.io/v1/payment/${paymentId}`,
+                {
+                    headers: {
+                        "x-api-key": NOWPAYMENTS_KEY
+                    }
+                }
+            );
+
+            if (verify.data.payment_status !== "finished") {
+                return res.sendStatus(200);
+            }
         }
 
         const discordUserId = orderId.split("_")[0];
