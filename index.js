@@ -12,7 +12,33 @@ app.get("/", (req, res) => {
 });
 
 app.post("/webhook", async (req, res) => {
-    console.log("Payment received:", req.body);
+
+    const data = req.body;
+
+    console.log("Payment received:", data);
+
+    // only process successful payments
+    if (data.payment_status !== "finished") {
+        return res.sendStatus(200);
+    }
+
+    const discordUserId = data.order_id.split("_")[0];
+
+    try {
+        const guild = client.guilds.cache.first();
+        const member = await guild.members.fetch(discordUserId);
+
+        const role = guild.roles.cache.find(r => r.name === "Premium");
+
+        if (role) {
+            await member.roles.add(role);
+            console.log("Premium role assigned to:", discordUserId);
+        }
+
+    } catch (err) {
+        console.log("Webhook error:", err.message);
+    }
+
     res.sendStatus(200);
 });
 
