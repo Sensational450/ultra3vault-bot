@@ -9,6 +9,10 @@ client.on("messageCreate", async (message) => {
 
     // !buy command
     if (message.content === "!buy") {
+        
+        console.log("BUY COMMAND TRIGGERED");
+message.reply("🧪 Buy command received");
+
         const userId = message.author.id;
 
         try {
