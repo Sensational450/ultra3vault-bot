@@ -52,7 +52,6 @@ const client = new Client({
 
 const activeRequests = new Set();
 let cachedGuild = null;
-const processedPayments = new Set();
 
 // ---------------- READY ----------------
 
@@ -61,99 +60,25 @@ client.once("ready", () => {
     cachedGuild = client.guilds.cache.first();
 });
 
-// ---------------- HELPERS ----------------
+// ---------------- PREMIUM SYSTEM ----------------
 
-function getUserPremium(userId) {
-    return new Promise((resolve) => {
-        db.get(
-            `SELECT expires_at FROM users WHERE id = ?`,
-            [userId],
-            (err, row) => {
-                if (err || !row) return resolve(false);
-
-                if (Date.now() > row.expires_at) {
-                    db.run(`DELETE FROM users WHERE id = ?`, [userId]);
-                    return resolve(false);
-                }
-
-                resolve(true);
-            }
-        );
-    });
-}
-
-// ---------------- FAKE PAYMENT (NEW) ----------------
-
-async function triggerFakePayment(userId, message) {
-    try {
-        await message.reply("🧪 Simulating payment...");
-
-        const fakeWebhook = {
-            payment_status: "finished",
-            order_id: `${userId}_test_${Date.now()}`
-        };
-
-        await axios.post(
-            "https://ultra3vault-bot.onrender.com/webhook",
-            fakeWebhook,
-            { headers: { "Content-Type": "application/json" } }
-        );
-
-        return message.reply("✅ Fake payment processed!");
-    } catch (err) {
-        console.log("FAKEPAY ERROR:", err.message);
-        return message.reply("❌ Fake payment failed");
+function grantPremium(discordUserId) {
+    if (!cachedGuild) {
+        cachedGuild = client.guilds.cache.first();
     }
-}
 
-// ---------------- WEBHOOK ----------------
+    if (!cachedGuild) {
+        console.log("No guild found");
+        return;
+    }
 
-app.post("/webhook", async (req, res) => {
-    const data = req.body;
+    const memberPromise = cachedGuild.members.fetch(discordUserId).catch(() => null);
+    const role = cachedGuild.roles.cache.get(ROLE_ID);
 
-    console.log("📩 Webhook received:", data);
+    if (!role) return;
 
-    try {
-        const orderId = data.order_id;
-        const status = data.payment_status;
-
-        if (!orderId || status !== "finished") {
-            return res.sendStatus(200);
-        }
-
-        if (processedPayments.has(orderId)) {
-            return res.sendStatus(200);
-        }
-        processedPayments.add(orderId);
-
-        const paymentId = data.payment_id;
-
-        if (paymentId) {
-            const verify = await axios.get(
-                `https://api.nowpayments.io/v1/payment/${paymentId}`,
-                {
-                    headers: { "x-api-key": NOWPAYMENTS_KEY }
-                }
-            );
-
-            if (verify.data.payment_status !== "finished") {
-                return res.sendStatus(200);
-            }
-        }
-
-        const discordUserId = orderId.split("_")[0];
-
-        if (!cachedGuild) {
-            cachedGuild = client.guilds.cache.first();
-        }
-
-        if (!cachedGuild) return res.sendStatus(200);
-
-        const member = await cachedGuild.members.fetch(discordUserId).catch(() => null);
-        if (!member) return res.sendStatus(200);
-
-        const role = cachedGuild.roles.cache.get(ROLE_ID);
-        if (!role) return res.sendStatus(200);
+    memberPromise.then((member) => {
+        if (!member) return;
 
         const now = Date.now();
         const sevenDays = 7 * 24 * 60 * 60 * 1000;
@@ -163,7 +88,10 @@ app.post("/webhook", async (req, res) => {
             [discordUserId],
             async (err, row) => {
 
-                if (err) return console.log("DB ERROR:", err.message);
+                if (err) {
+                    console.log("DB ERROR:", err.message);
+                    return;
+                }
 
                 let newExpiry;
 
@@ -182,6 +110,27 @@ app.post("/webhook", async (req, res) => {
                 );
             }
         );
+    });
+}
+
+// ---------------- WEBHOOK ----------------
+
+app.post("/webhook", async (req, res) => {
+    const data = req.body;
+
+    console.log("📩 Webhook received:", data);
+
+    try {
+        const orderId = data.order_id;
+        const status = data.payment_status;
+
+        if (!orderId || status !== "finished") {
+            return res.sendStatus(200);
+        }
+
+        const discordUserId = orderId.split("_")[0];
+
+        grantPremium(discordUserId);
 
     } catch (err) {
         console.log("WEBHOOK ERROR:", err.message);
@@ -197,41 +146,46 @@ client.on("messageCreate", async (message) => {
 
     const content = message.content.toLowerCase();
 
+    // ping
     if (content === "!ping") {
         return message.reply("Ultra3Vault is active ✅");
     }
 
-    // ---------------- FAKEPAY ----------------
+    // fake payment (NO MONEY TEST)
     if (content === "!fakepay") {
-        return triggerFakePayment(message.author.id, message);
+        await message.reply("🧪 Simulating payment...");
+        grantPremium(message.author.id);
+        return message.reply("✅ Fake payment successful (premium granted)");
     }
 
+    // testpay (owner only)
     if (content === "!testpay") {
         if (message.author.id !== OWNER_ID)
             return message.reply("❌ Not allowed");
 
-        const role = message.guild.roles.cache.get(ROLE_ID);
-        if (!role) return message.reply("❌ Role not found");
-
-        await message.member.roles.add(role);
-
-        const now = Date.now();
-        const sevenDays = 7 * 24 * 60 * 60 * 1000;
-
-        db.run(
-            `INSERT OR REPLACE INTO users (id, expires_at) VALUES (?, ?)`,
-            [message.author.id, now + sevenDays]
-        );
-
+        grantPremium(message.author.id);
         return message.reply("✅ Test premium granted");
     }
 
+    // premium check
     if (content === "!premium") {
-        const result = await getUserPremium(message.author.id);
-        if (!result) return message.reply("❌ Not premium");
-        return message.reply("✅ Premium active");
+        db.get(
+            `SELECT expires_at FROM users WHERE id = ?`,
+            [message.author.id],
+            (err, row) => {
+                if (err || !row) return message.reply("❌ Not premium");
+
+                if (Date.now() > row.expires_at) {
+                    db.run(`DELETE FROM users WHERE id = ?`, [message.author.id]);
+                    return message.reply("❌ Not premium");
+                }
+
+                return message.reply("✅ Premium active");
+            }
+        );
     }
 
+    // buy command
     if (content === "!buy") {
         const userId = message.author.id;
 
@@ -273,6 +227,14 @@ client.on("messageCreate", async (message) => {
             activeRequests.delete(userId);
         }
     }
+});
+
+// ---------------- SERVER ----------------
+
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, "0.0.0.0", () => {
+    console.log("Web server running on port " + PORT);
 });
 
 // ---------------- LOGIN ----------------
