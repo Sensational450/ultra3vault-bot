@@ -22,8 +22,6 @@ db.serialize(() => {
             expires_at INTEGER
         )
     `);
-
-    console.log("Database ready");
 });
 
 // ---------------- CONFIG ----------------
@@ -62,26 +60,28 @@ client.once("ready", () => {
     cachedGuild = client.guilds.cache.first();
 });
 
-// ---------------- PREMIUM CHECK ----------------
+// ---------------- HELPERS ----------------
 
-function isPremium(userId, callback) {
-    db.get(
-        `SELECT expires_at FROM users WHERE id = ?`,
-        [userId],
-        (err, row) => {
-            if (err || !row) return callback(false);
+function getUserPremium(userId) {
+    return new Promise((resolve) => {
+        db.get(
+            `SELECT expires_at FROM users WHERE id = ?`,
+            [userId],
+            (err, row) => {
+                if (err || !row) return resolve(false);
 
-            if (Date.now() > row.expires_at) {
-                db.run(`DELETE FROM users WHERE id = ?`, [userId]);
-                return callback(false);
+                if (Date.now() > row.expires_at) {
+                    db.run(`DELETE FROM users WHERE id = ?`, [userId]);
+                    return resolve(false);
+                }
+
+                resolve(true);
             }
-
-            return callback(true);
-        }
-    );
+        );
+    });
 }
 
-// ---------------- WEBHOOK (FIXED CORE LOGIC) ----------------
+// ---------------- WEBHOOK (FIXED CORE) ----------------
 
 app.post("/webhook", async (req, res) => {
     const data = req.body;
@@ -89,11 +89,10 @@ app.post("/webhook", async (req, res) => {
     console.log("📩 Webhook received:", data);
 
     try {
-        // SUPPORT BOTH FORMATS
         const orderId = data.order_id;
-        const paymentStatus = data.payment_status;
+        const status = data.payment_status;
 
-        if (!orderId || paymentStatus !== "finished") {
+        if (!orderId || status !== "finished") {
             return res.sendStatus(200);
         }
 
@@ -103,51 +102,45 @@ app.post("/webhook", async (req, res) => {
             cachedGuild = client.guilds.cache.first();
         }
 
-        if (!cachedGuild) {
-            console.log("No guild found");
-            return res.sendStatus(200);
-        }
+        if (!cachedGuild) return res.sendStatus(200);
 
         const member = await cachedGuild.members.fetch(discordUserId).catch(() => null);
-        if (!member) {
-            console.log("Member not found");
-            return res.sendStatus(200);
-        }
+        if (!member) return res.sendStatus(200);
 
         const role = cachedGuild.roles.cache.get(ROLE_ID);
-        if (!role) {
-            console.log("Role not found");
-            return res.sendStatus(200);
-        }
+        if (!role) return res.sendStatus(200);
 
-        // 🔥 IMPORTANT FIX: check DB BEFORE assigning
+        const now = Date.now();
+        const sevenDays = 7 * 24 * 60 * 60 * 1000;
+
         db.get(
             `SELECT expires_at FROM users WHERE id = ?`,
             [discordUserId],
             async (err, row) => {
 
-                const now = Date.now();
-                const sevenDays = 7 * 24 * 60 * 60 * 1000;
+                if (err) {
+                    console.log("DB ERROR:", err.message);
+                    return;
+                }
+
+                let newExpiry;
 
                 if (!row) {
-                    // first time payment → assign role
-                    await member.roles.add(role);
+                    newExpiry = now + sevenDays;
 
-                    db.run(
-                        `INSERT INTO users (id, expires_at) VALUES (?, ?)`,
-                        [discordUserId, now + sevenDays]
-                    );
+                    await member.roles.add(role).catch(() => null);
 
                     console.log("✅ NEW PREMIUM:", discordUserId);
                 } else {
-                    // already exists → extend time
-                    db.run(
-                        `UPDATE users SET expires_at = ? WHERE id = ?`,
-                        [row.expires_at + sevenDays, discordUserId]
-                    );
+                    newExpiry = Math.max(row.expires_at, now) + sevenDays;
 
                     console.log("🔄 EXTENDED PREMIUM:", discordUserId);
                 }
+
+                db.run(
+                    `INSERT OR REPLACE INTO users (id, expires_at) VALUES (?, ?)`,
+                    [discordUserId, newExpiry]
+                );
             }
         );
 
@@ -156,14 +149,6 @@ app.post("/webhook", async (req, res) => {
     }
 
     res.sendStatus(200);
-});
-
-// ---------------- SERVER ----------------
-
-const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, () => {
-    console.log("Web server running on port " + PORT);
 });
 
 // ---------------- COMMANDS ----------------
@@ -198,10 +183,10 @@ client.on("messageCreate", async (message) => {
     }
 
     if (content === "!premium") {
-        isPremium(message.author.id, (r) => {
-            if (!r) return message.reply("❌ Not premium");
-            return message.reply("✅ Premium active");
-        });
+        const result = await getUserPremium(message.author.id);
+
+        if (!result) return message.reply("❌ Not premium");
+        return message.reply("✅ Premium active");
     }
 
     if (content === "!buy") {
