@@ -1,3 +1,11 @@
+process.on("uncaughtException", (err) => {
+    console.log("CRASH:", err);
+});
+
+process.on("unhandledRejection", (err) => {
+    console.log("PROMISE ERROR:", err);
+});
+
 const express = require("express");
 const { Client, GatewayIntentBits } = require("discord.js");
 const axios = require("axios");
