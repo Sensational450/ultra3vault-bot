@@ -67,6 +67,21 @@ client.once("ready", () => {
 
 client.on("messageCreate", async (message) => {
 
+    if (message.content === "!testpay") {
+
+    const member = message.member;
+
+    const role = message.guild.roles.cache.find(r => r.name === "Premium");
+
+    if (!role) {
+        return message.reply("❌ Premium role not found");
+    }
+
+    await member.roles.add(role);
+
+    message.reply("✅ Premium role granted (TEST MODE)");
+}
+
     if (message.author.bot) return;
 
     // ---------------- !PING ----------------
