@@ -14,6 +14,7 @@ const axios = require("axios");
 
 const ROLE_ID = "1509191517909024950";
 const OWNER_ID = "1260307493213704225";
+const NOWPAYMENTS_KEY = process.env.NOWPAYMENTS_API_KEY;
 
 // ---------------- EXPRESS ----------------
 
@@ -36,42 +37,51 @@ const client = new Client({
 });
 
 const activeRequests = new Set();
-
 let cachedGuild = null;
 
 // ---------------- READY ----------------
 
-client.once("ready", async () => {
+client.once("ready", () => {
     console.log(`Ultra3Vault is online as ${client.user.tag}`);
-
-    // cache guild safely once bot is ready
     cachedGuild = client.guilds.cache.first();
-
-    if (!cachedGuild) {
-        console.log("WARNING: No guild cached");
-    }
 });
 
-// ---------------- WEBHOOK ----------------
+// ---------------- WEBHOOK (SECURE) ----------------
 
 app.post("/webhook", async (req, res) => {
     const data = req.body;
 
     console.log("Payment received:", data);
 
-    if (data.payment_status !== "finished") {
-        return res.sendStatus(200);
-    }
+    if (!data.order_id) return res.sendStatus(200);
 
     try {
-        const discordUserId = data.order_id.split("_")[0];
+        const orderId = data.order_id;
+
+        // 🔐 verify payment from NowPayments
+        const verify = await axios.get(
+            `https://api.nowpayments.io/v1/payment/${orderId}`,
+            {
+                headers: {
+                    "x-api-key": NOWPAYMENTS_KEY
+                }
+            }
+        );
+
+        const payment = verify.data;
+
+        if (payment.payment_status !== "finished") {
+            return res.sendStatus(200);
+        }
+
+        const discordUserId = orderId.split("_")[0];
 
         if (!cachedGuild) {
             cachedGuild = client.guilds.cache.first();
         }
 
         if (!cachedGuild) {
-            console.log("No guild available");
+            console.log("No guild found");
             return res.sendStatus(200);
         }
 
@@ -91,10 +101,10 @@ app.post("/webhook", async (req, res) => {
 
         await member.roles.add(role);
 
-        console.log("Role assigned to:", discordUserId);
+        console.log("ROLE ASSIGNED:", discordUserId);
 
     } catch (err) {
-        console.log("Webhook error:", err);
+        console.log("WEBHOOK ERROR:", err.message);
     }
 
     res.sendStatus(200);
@@ -115,12 +125,12 @@ client.on("messageCreate", async (message) => {
 
     const content = message.content.toLowerCase();
 
-    // PING
+    // ---------------- PING ----------------
     if (content === "!ping") {
         return message.reply("Ultra3Vault is active ✅");
     }
 
-    // TESTPAY
+    // ---------------- TESTPAY ----------------
     if (content === "!testpay") {
 
         if (message.author.id !== OWNER_ID) {
@@ -142,7 +152,7 @@ client.on("messageCreate", async (message) => {
         }
     }
 
-    // BUY
+    // ---------------- BUY ----------------
     if (content === "!buy") {
 
         const userId = message.author.id;
@@ -169,7 +179,7 @@ client.on("messageCreate", async (message) => {
                 },
                 {
                     headers: {
-                        "x-api-key": process.env.NOWPAYMENTS_API_KEY,
+                        "x-api-key": NOWPAYMENTS_KEY,
                         "Content-Type": "application/json"
                     }
                 }
