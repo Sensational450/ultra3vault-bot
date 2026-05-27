@@ -22,6 +22,7 @@ db.serialize(() => {
             expires_at INTEGER
         )
     `);
+
     console.log("Database ready");
 });
 
@@ -58,12 +59,7 @@ let cachedGuild = null;
 
 client.once("ready", () => {
     console.log(`Ultra3Vault is online as ${client.user.tag}`);
-
     cachedGuild = client.guilds.cache.first();
-
-    if (!cachedGuild) {
-        console.log("WARNING: No guild found");
-    }
 });
 
 // ---------------- PREMIUM CHECK ----------------
@@ -85,23 +81,23 @@ function isPremium(userId, callback) {
     );
 }
 
-// ---------------- WEBHOOK ----------------
+// ---------------- WEBHOOK (FIXED CORE LOGIC) ----------------
 
 app.post("/webhook", async (req, res) => {
     const data = req.body;
 
-    console.log("Payment received:", data);
-
-    if (!data.payment_status || !data.order_id) {
-        return res.sendStatus(200);
-    }
+    console.log("📩 Webhook received:", data);
 
     try {
-        if (data.payment_status !== "finished") {
+        // SUPPORT BOTH FORMATS
+        const orderId = data.order_id;
+        const paymentStatus = data.payment_status;
+
+        if (!orderId || paymentStatus !== "finished") {
             return res.sendStatus(200);
         }
 
-        const discordUserId = data.order_id.split("_")[0];
+        const discordUserId = orderId.split("_")[0];
 
         if (!cachedGuild) {
             cachedGuild = client.guilds.cache.first();
@@ -113,29 +109,47 @@ app.post("/webhook", async (req, res) => {
         }
 
         const member = await cachedGuild.members.fetch(discordUserId).catch(() => null);
-        if (!member) return res.sendStatus(200);
-
-        const role = cachedGuild.roles.cache.get(ROLE_ID);
-        if (!role) return res.sendStatus(200);
-
-        // prevent duplicate role add
-        if (member.roles.cache.has(ROLE_ID)) {
+        if (!member) {
+            console.log("Member not found");
             return res.sendStatus(200);
         }
 
-        await member.roles.add(role);
+        const role = cachedGuild.roles.cache.get(ROLE_ID);
+        if (!role) {
+            console.log("Role not found");
+            return res.sendStatus(200);
+        }
 
-        const now = Date.now();
-        const sevenDays = 7 * 24 * 60 * 60 * 1000;
+        // 🔥 IMPORTANT FIX: check DB BEFORE assigning
+        db.get(
+            `SELECT expires_at FROM users WHERE id = ?`,
+            [discordUserId],
+            async (err, row) => {
 
-        db.run(
-            `INSERT OR REPLACE INTO users (id, expires_at) VALUES (?, ?)`,
-            [discordUserId, now + sevenDays]
+                const now = Date.now();
+                const sevenDays = 7 * 24 * 60 * 60 * 1000;
+
+                if (!row) {
+                    // first time payment → assign role
+                    await member.roles.add(role);
+
+                    db.run(
+                        `INSERT INTO users (id, expires_at) VALUES (?, ?)`,
+                        [discordUserId, now + sevenDays]
+                    );
+
+                    console.log("✅ NEW PREMIUM:", discordUserId);
+                } else {
+                    // already exists → extend time
+                    db.run(
+                        `UPDATE users SET expires_at = ? WHERE id = ?`,
+                        [row.expires_at + sevenDays, discordUserId]
+                    );
+
+                    console.log("🔄 EXTENDED PREMIUM:", discordUserId);
+                }
+            }
         );
-
-        await member.send("🔥 Premium activated for 7 days").catch(() => {});
-
-        console.log("ROLE ASSIGNED:", discordUserId);
 
     } catch (err) {
         console.log("WEBHOOK ERROR:", err.message);
@@ -170,34 +184,23 @@ client.on("messageCreate", async (message) => {
         const role = message.guild.roles.cache.get(ROLE_ID);
         if (!role) return message.reply("❌ Role not found");
 
-        try {
-            await message.member.roles.add(role);
+        await message.member.roles.add(role);
 
-            const now = Date.now();
-            const sevenDays = 7 * 24 * 60 * 60 * 1000;
+        const now = Date.now();
+        const sevenDays = 7 * 24 * 60 * 60 * 1000;
 
-            db.run(
-                `INSERT OR REPLACE INTO users (id, expires_at) VALUES (?, ?)`,
-                [message.author.id, now + sevenDays]
-            );
+        db.run(
+            `INSERT OR REPLACE INTO users (id, expires_at) VALUES (?, ?)`,
+            [message.author.id, now + sevenDays]
+        );
 
-            return message.reply("✅ Test premium granted");
-        } catch (err) {
-            return message.reply("❌ Failed");
-        }
+        return message.reply("✅ Test premium granted");
     }
 
     if (content === "!premium") {
         isPremium(message.author.id, (r) => {
             if (!r) return message.reply("❌ Not premium");
             return message.reply("✅ Premium active");
-        });
-    }
-
-    if (content === "!vip") {
-        isPremium(message.author.id, (r) => {
-            if (!r) return message.reply("❌ Premium required");
-            return message.reply("🔥 VIP access granted");
         });
     }
 
