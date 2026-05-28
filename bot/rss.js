@@ -1,13 +1,19 @@
 const Parser = require("rss-parser");
 const parser = new Parser();
 
-// ================= CRYPTO FEEDS =================
 const FEEDS = [
     "https://cointelegraph.com/rss",
     "https://www.coindesk.com/arc/outboundfeeds/rss/"
 ];
 
-// ================= FETCH FUNCTION =================
+function detectType(title) {
+    const text = title.toLowerCase();
+
+    if (text.includes("airdrop")) return "airdrop";
+    if (text.includes("signal")) return "signals";
+    return "news";
+}
+
 async function fetchRSS() {
 
     let results = [];
@@ -15,29 +21,23 @@ async function fetchRSS() {
     for (const url of FEEDS) {
 
         try {
-
             const feed = await parser.parseURL(url);
 
-            const items = feed.items.slice(0, 3);
-
-            for (const item of items) {
+            for (const item of feed.items.slice(0, 5)) {
 
                 results.push({
-                    type: "news",
                     title: item.title,
-                    content: item.contentSnippet || item.title,
                     link: item.link,
-                    created_at: Date.now()
+                    type: detectType(item.title)
                 });
             }
 
         } catch (err) {
-            console.log("RSS ERROR:", url, err.message);
+            console.log("RSS ERROR:", err.message);
         }
     }
 
     return results;
 }
 
-// ================= EXPORT =================
 module.exports = { fetchRSS };
