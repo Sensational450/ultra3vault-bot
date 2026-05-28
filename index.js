@@ -1,7 +1,6 @@
 // ================= MAIN STARTER =================
 
 // handle crashes
-require("./database/migrate");
 
 process.on("uncaughtException", (err) => console.log("CRASH:", err));
 process.on("unhandledRejection", (err) => console.log("PROMISE ERROR:", err));
