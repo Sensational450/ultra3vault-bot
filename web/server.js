@@ -1,33 +1,51 @@
-const express = require("express");
-const fs = require("fs");
-const path = require("path");
+const axios = require("axios");
 
-const app = express();
-app.use(express.json());
+app.post("/webhook", async (req, res) => {
+    try {
+        const { order_id, payment_id } = req.body;
 
-// ---------------- SAFE ROUTE LOADER ----------------
-const routesPath = path.join(__dirname, "routes");
+        if (!order_id) return res.sendStatus(200);
 
-if (fs.existsSync(routesPath)) {
-    fs.readdirSync(routesPath).forEach((file) => {
-        const route = require(`./routes/${file}`);
+        const userId = order_id.split("_")[0];
 
-        if (typeof route === "function") {
-            route(app);
+        console.log("WEBHOOK RECEIVED:", order_id);
+
+        // verify payment with NOWPayments
+        if (payment_id && process.env.NOWPAYMENTS_API_KEY) {
+            const verify = await axios.get(
+                `https://api.nowpayments.io/v1/payment/${payment_id}`,
+                {
+                    headers: {
+                        "x-api-key": process.env.NOWPAYMENTS_API_KEY
+                    }
+                }
+            );
+
+            if (verify.data.payment_status !== "finished") {
+                console.log("PAYMENT NOT FINISHED");
+                return res.sendStatus(200);
+            }
         }
-    });
-} else {
-    console.log("⚠️ routes folder missing - skipping route loader");
-}
 
-// ---------------- BASE ROUTE ----------------
-app.get("/", (req, res) => {
-    res.send("Ultra3Vault API is running 🚀");
-});
+        console.log("PAYMENT VERIFIED FOR:", userId);
 
-// ---------------- START SERVER ----------------
-const PORT = process.env.PORT || 3000;
+        // give premium (call bot function)
+        const guild = client.guilds.cache.first();
+        const member = await guild.members.fetch(userId).catch(() => null);
 
-app.listen(PORT, () => {
-    console.log(`Web server running on port ${PORT}`);
+        if (member) {
+            const role = guild.roles.cache.get(process.env.ROLE_ID);
+
+            if (role) {
+                await member.roles.add(role);
+                console.log("ROLE GIVEN TO:", userId);
+            }
+        }
+
+        res.sendStatus(200);
+
+    } catch (err) {
+        console.log("WEBHOOK ERROR:", err.message);
+        res.sendStatus(200);
+    }
 });
