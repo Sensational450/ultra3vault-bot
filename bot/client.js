@@ -24,89 +24,11 @@ const PLANS = {
 // ================= READY =================
 client.once("ready", () => {
     console.log(`✅ BOT IS ONLINE: ${client.user.tag}`);
-
-    // STARTUP CLEANUP
-    setTimeout(() => {
-
-        try {
-
-            const guild = client.guilds.cache.first();
-            if (!guild) return;
-
-            db.all(`SELECT * FROM premium_users`, async (err, rows) => {
-
-                if (err) return console.log(err.message);
-                if (!rows) return;
-
-                for (const user of rows) {
-
-                    if (user.expires_at < Date.now()) {
-
-                        const member = await guild.members
-                            .fetch(user.user_id)
-                            .catch(() => null);
-
-                        if (!member) continue;
-
-                        const role = guild.roles.cache.get("1509191517909024950");
-                        if (!role) continue;
-
-                        await member.roles.remove(role).catch(() => null);
-
-                        console.log("🧹 CLEANUP REMOVED:", user.user_id);
-                    }
-                }
-            });
-
-        } catch (err) {
-            console.log("CLEANUP ERROR:", err.message);
-        }
-
-    }, 5000);
 });
 
 // ================= ERRORS =================
 client.on("error", console.error);
 client.on("warn", console.warn);
-
-// ================= AUTO EXPIRE =================
-setInterval(async () => {
-
-    try {
-
-        const guild = client.guilds.cache.first();
-        if (!guild) return;
-
-        db.all(`SELECT * FROM premium_users`, async (err, rows) => {
-
-            if (err) return console.log(err.message);
-            if (!rows) return;
-
-            for (const user of rows) {
-
-                if (user.expires_at < Date.now()) {
-
-                    const member = await guild.members
-                        .fetch(user.user_id)
-                        .catch(() => null);
-
-                    if (!member) continue;
-
-                    const role = guild.roles.cache.get("1509191517909024950");
-                    if (!role) continue;
-
-                    await member.roles.remove(role).catch(() => null);
-
-                    console.log("⛔ EXPIRED REMOVED:", user.user_id);
-                }
-            }
-        });
-
-    } catch (err) {
-        console.log("AUTO EXPIRE ERROR:", err.message);
-    }
-
-}, 10 * 60 * 1000);
 
 // ================= COMMANDS =================
 client.on("messageCreate", async (message) => {
@@ -117,18 +39,30 @@ client.on("messageCreate", async (message) => {
 
     console.log("MESSAGE:", message.content);
 
+    // ---------------- HELP ----------------
+    if (content === "!help") {
+        return message.reply(
+            "🤖 **Ultra3Vault Bot Commands**\n\n" +
+            "💰 !plans → View pricing\n" +
+            "🛒 !buy 7d | 14d | 30d → Buy premium\n" +
+            "💎 !premium → Check status\n" +
+            "🧪 !fakepay → Test system"
+        );
+    }
+
     // ---------------- PING ----------------
     if (content === "!ping") {
         return message.reply("Ultra3Vault is alive ✅");
     }
 
-    // ---------------- PLANS INFO ----------------
+    // ---------------- PLANS ----------------
     if (content === "!plans") {
         return message.reply(
-            "**💰 Premium Plans:**\n" +
-            "• !buy 7d → $5 (7 days)\n" +
-            "• !buy 14d → $7 (14 days)\n" +
-            "• !buy 30d → $20 (30 days)"
+            "💰 **Ultra3Vault Premium Plans**\n\n" +
+            "🟢 7 Days → $5\n" +
+            "🟡 14 Days → $7\n" +
+            "🔴 30 Days → $20\n\n" +
+            "👉 Use: !buy 7d | !buy 14d | !buy 30d"
         );
     }
 
@@ -195,8 +129,8 @@ client.on("messageCreate", async (message) => {
         }
     }
 
-    // ---------------- STATUS ----------------
-    if (content === "!status") {
+    // ---------------- PREMIUM STATUS ----------------
+    if (content === "!premium") {
 
         db.get(
             `SELECT * FROM premium_users WHERE user_id = ?`,
@@ -214,13 +148,16 @@ client.on("messageCreate", async (message) => {
                 }
 
                 if (row.expires_at < Date.now()) {
-                    return message.reply("⌛ Your premium expired");
+                    return message.reply("⌛ Your premium has expired");
                 }
 
                 const expiry = Math.floor(row.expires_at / 1000);
+                const daysLeft = Math.ceil((row.expires_at - Date.now()) / (1000 * 60 * 60 * 24));
 
                 return message.reply(
-                    `✅ Premium Active\n⏳ Expires: <t:${expiry}:F>`
+                    "💎 **Premium Status**\n\n" +
+                    `📅 Expires: <t:${expiry}:F>\n` +
+                    `⏳ Days Left: ${daysLeft} days`
                 );
             }
         );
