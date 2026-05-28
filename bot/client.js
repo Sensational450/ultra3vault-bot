@@ -2,6 +2,9 @@ const { Client, GatewayIntentBits } = require("discord.js");
 const axios = require("axios");
 const db = require("../database/premium");
 
+// ================= RSS IMPORT =================
+const { fetchRSS } = require("./rss");
+
 console.log("BOT FILE LOADED");
 console.log("TOKEN:", process.env.TOKEN ? "OK" : "MISSING");
 
@@ -55,9 +58,47 @@ function format(title, rows) {
     return msg;
 }
 
+// ================= RSS CACHE =================
+const RSS_CACHE = new Set();
+
 // ================= READY =================
 client.once("ready", () => {
     console.log(`✅ BOT IS ONLINE: ${client.user.tag}`);
+
+    // ================= 🚀 AUTO RSS SYSTEM =================
+    setInterval(async () => {
+
+        try {
+
+            const items = await fetchRSS();
+
+            for (const item of items) {
+
+                const key = item.title;
+
+                if (RSS_CACHE.has(key)) continue;
+                RSS_CACHE.add(key);
+
+                db.run(
+                    `INSERT INTO premium_content (type, title, content, link, created_at)
+                     VALUES (?, ?, ?, ?, ?)`,
+                    [
+                        item.type,
+                        item.title,
+                        item.title,
+                        item.link,
+                        Date.now()
+                    ]
+                );
+
+                console.log("📰 RSS ADDED:", item.title);
+            }
+
+        } catch (err) {
+            console.log("RSS ERROR:", err.message);
+        }
+
+    }, 10 * 60 * 1000);
 });
 
 // ================= COMMANDS =================
