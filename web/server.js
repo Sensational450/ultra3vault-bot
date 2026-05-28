@@ -18,6 +18,8 @@ function verifySignature(body, signature) {
 
     const secret = process.env.WEBHOOK_SECRET;
 
+    if (!secret) return false;
+
     const hash = crypto
         .createHmac("sha256", secret)
         .update(JSON.stringify(body))
@@ -25,6 +27,13 @@ function verifySignature(body, signature) {
 
     return hash === signature;
 }
+
+// 📦 PLAN CONFIG
+const PLANS = {
+    "7d": 7,
+    "14d": 14,
+    "30d": 30
+};
 
 // WEBHOOK
 app.post("/webhook", async (req, res) => {
@@ -45,7 +54,13 @@ app.post("/webhook", async (req, res) => {
 
         if (!order_id) return res.sendStatus(400);
 
-        const userId = order_id.split("_")[0];
+        // extract user + plan
+        const parts = order_id.split("_");
+
+        const userId = parts[0];
+        const plan = parts[1] || "7d";
+
+        const days = PLANS[plan] || 7;
 
         // 🔐 VERIFY REAL PAYMENT
         if (payment_id && process.env.NOWPAYMENTS_API_KEY) {
@@ -56,8 +71,7 @@ app.post("/webhook", async (req, res) => {
                     `https://api.nowpayments.io/v1/payment/${payment_id}`,
                     {
                         headers: {
-                            "x-api-key":
-                                process.env.NOWPAYMENTS_API_KEY
+                            "x-api-key": process.env.NOWPAYMENTS_API_KEY
                         }
                     }
                 );
@@ -65,22 +79,17 @@ app.post("/webhook", async (req, res) => {
                 if (verify.data.payment_status !== "finished") {
 
                     console.log("❌ PAYMENT NOT COMPLETED");
-
                     return res.sendStatus(200);
                 }
 
             } catch (err) {
 
-                console.log(
-                    "PAYMENT VERIFY ERROR:",
-                    err.message
-                );
-
+                console.log("PAYMENT VERIFY ERROR:", err.message);
                 return res.sendStatus(200);
             }
         }
 
-        console.log("PAYMENT VERIFIED FOR:", userId);
+        console.log("PAYMENT VERIFIED FOR:", userId, "PLAN:", plan);
 
         // get guild
         const guild = client.guilds.cache.first();
@@ -91,19 +100,15 @@ app.post("/webhook", async (req, res) => {
         }
 
         // get member
-        const member = await guild.members
-            .fetch(userId)
-            .catch(() => null);
+        const member = await guild.members.fetch(userId).catch(() => null);
 
         if (!member) {
             console.log("MEMBER NOT FOUND");
             return res.sendStatus(404);
         }
 
-        // get premium role
-        const role = guild.roles.cache.get(
-            "1509191517909024950"
-        );
+        // get role
+        const role = guild.roles.cache.get("1509191517909024950");
 
         if (!role) {
             console.log("ROLE NOT FOUND");
@@ -113,11 +118,10 @@ app.post("/webhook", async (req, res) => {
         // give premium role
         await member.roles.add(role);
 
-        // premium expiry = 30 days
-        const expiresAt =
-            Date.now() + (30 * 24 * 60 * 60 * 1000);
+        // ⏳ DYNAMIC EXPIRY
+        const expiresAt = Date.now() + (days * 24 * 60 * 60 * 1000);
 
-        // save premium in database
+        // save to DB
         db.run(
             `
             INSERT OR REPLACE INTO premium_users
@@ -128,19 +132,18 @@ app.post("/webhook", async (req, res) => {
         );
 
         console.log("✅ ROLE GIVEN TO:", userId);
-        console.log("💾 PREMIUM SAVED IN DATABASE");
+        console.log("💾 PREMIUM SAVED:", plan, `${days} days`);
 
         res.sendStatus(200);
 
     } catch (err) {
 
         console.log("WEBHOOK ERROR:", err.message);
-
         res.sendStatus(500);
     }
 });
 
-// IMPORTANT FOR RENDER
+// START SERVER
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, "0.0.0.0", () => {
