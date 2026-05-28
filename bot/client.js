@@ -1,3 +1,28 @@
+const { Client, GatewayIntentBits } = require("discord.js");
+const axios = require("axios");
+
+console.log("BOT FILE LOADED");
+console.log("TOKEN:", process.env.TOKEN ? "OK" : "MISSING");
+
+// create client
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent
+    ]
+});
+
+// ready event
+client.once("ready", () => {
+    console.log(`✅ BOT IS ONLINE: ${client.user.tag}`);
+});
+
+// error handling
+client.on("error", console.error);
+client.on("warn", console.warn);
+
+// ---------------- COMMANDS ----------------
 client.on("messageCreate", async (message) => {
     if (message.author.bot) return;
 
@@ -10,17 +35,19 @@ client.on("messageCreate", async (message) => {
         return message.reply("Ultra3Vault is alive ✅");
     }
 
-    // 🧪 FAKE PAYMENT TEST (NEW)
+    // 🧪 FAKE PAYMENT TEST
     if (content === "!fakepay") {
         try {
-            const axios = require("axios");
-
-            await axios.post("https://ultra3vault-bot.onrender.com/webhook", {
-                order_id: `${message.author.id}_test`,
-                payment_id: "fake"
-            });
+            await axios.post(
+                "https://ultra3vault-bot.onrender.com/webhook",
+                {
+                    order_id: `${message.author.id}_test`,
+                    payment_id: "fake"
+                }
+            );
 
             return message.reply("🧪 Fake payment sent to webhook");
+
         } catch (err) {
             console.log("FAKEPAY ERROR:", err.message);
             return message.reply("❌ Fake payment failed");
@@ -56,8 +83,11 @@ client.on("messageCreate", async (message) => {
         }
     }
 
-    // 📊 STATUS COMMAND
+    // 📊 STATUS
     if (content === "!status") {
-        return message.reply("⏳ Status system not connected yet (DB needed)");
+        return message.reply("⏳ Status system not connected yet");
     }
 });
+
+// login bot
+client.login(process.env.TOKEN);
