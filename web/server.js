@@ -1,6 +1,8 @@
 const express = require("express");
 const axios = require("axios");
 
+const client = require("../bot/client");
+
 const app = express();
 
 app.use(express.json());
