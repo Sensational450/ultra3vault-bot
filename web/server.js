@@ -1,18 +1,3 @@
-const express = require("express");
-const axios = require("axios");
-
-const client = require("../bot/client");
-
-const app = express();
-
-app.use(express.json());
-
-// homepage
-app.get("/", (req, res) => {
-    res.send("Ultra3Vault API is running 🚀");
-});
-
-// webhook
 app.post("/webhook", async (req, res) => {
     try {
         console.log("WEBHOOK RECEIVED:", req.body);
@@ -23,7 +8,39 @@ app.post("/webhook", async (req, res) => {
             return res.sendStatus(400);
         }
 
-        console.log("PAYMENT VERIFIED FOR:", order_id);
+        // extract user ID
+        const userId = order_id.split("_")[0];
+
+        console.log("PAYMENT VERIFIED FOR:", userId);
+
+        // get Discord guild
+        const guild = client.guilds.cache.first();
+
+        if (!guild) {
+            console.log("NO GUILD FOUND");
+            return res.sendStatus(500);
+        }
+
+        // get member
+        const member = await guild.members.fetch(userId).catch(() => null);
+
+        if (!member) {
+            console.log("MEMBER NOT FOUND");
+            return res.sendStatus(404);
+        }
+
+        // get premium role
+        const role = guild.roles.cache.get("1509191517909024950");
+
+        if (!role) {
+            console.log("ROLE NOT FOUND");
+            return res.sendStatus(404);
+        }
+
+        // add role
+        await member.roles.add(role);
+
+        console.log("✅ ROLE GIVEN TO:", userId);
 
         res.sendStatus(200);
 
@@ -31,11 +48,4 @@ app.post("/webhook", async (req, res) => {
         console.log("WEBHOOK ERROR:", err.message);
         res.sendStatus(500);
     }
-});
-
-// start server
-const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, () => {
-    console.log(`Web server running on port ${PORT}`);
 });
