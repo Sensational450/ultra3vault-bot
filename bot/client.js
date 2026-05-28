@@ -14,9 +14,44 @@ const client = new Client({
     ]
 });
 
-// ready event
+// ready event (SAFE VERSION ADDED)
 client.once("ready", () => {
     console.log(`✅ BOT IS ONLINE: ${client.user.tag}`);
+
+    // 🔄 AUTO CLEANUP ON STARTUP
+    setTimeout(() => {
+
+        try {
+            const guild = client.guilds.cache.first();
+            if (!guild) return;
+
+            db.all(`SELECT * FROM premium_users`, async (err, rows) => {
+                if (err) return console.log(err.message);
+
+                if (!rows || rows.length === 0) return;
+
+                for (const user of rows) {
+
+                    if (user.expires_at < Date.now()) {
+
+                        const member = await guild.members.fetch(user.user_id).catch(() => null);
+                        if (!member) continue;
+
+                        const role = guild.roles.cache.get("1509191517909024950");
+                        if (!role) continue;
+
+                        await member.roles.remove(role).catch(() => null);
+
+                        console.log("🧹 CLEANUP REMOVED:", user.user_id);
+                    }
+                }
+            });
+
+        } catch (err) {
+            console.log("STARTUP CLEANUP ERROR:", err.message);
+        }
+
+    }, 5000);
 });
 
 // error handling
@@ -52,7 +87,7 @@ setInterval(async () => {
     } catch (err) {
         console.log("AUTO EXPIRE ERROR:", err.message);
     }
-}, 10 * 60 * 1000); // every 10 minutes
+}, 10 * 60 * 1000);
 
 // ---------------- COMMANDS ----------------
 client.on("messageCreate", async (message) => {
