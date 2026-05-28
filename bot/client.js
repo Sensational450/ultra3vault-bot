@@ -26,10 +26,19 @@ function isPremium(row) {
     return row && row.expires_at > Date.now();
 }
 
-// prevent spam reminders
-const reminderCache = new Set();
+// ================= SYSTEM CACHE =================
+const SCHEDULED_CACHE = new Set();
+const ALERT_CACHE = new Set(); // 🔥 NEW: prevents duplicate DM alerts
 
-// ================= AUTO DM =================
+const PREMIUM_CHANNEL_ID = process.env.PREMIUM_CHANNEL_ID;
+
+const CATEGORY_TITLES = {
+    airdrop: "📡 NEW AIRDROP",
+    signals: "📊 TRADING SIGNAL",
+    news: "📰 CRYPTO NEWS"
+};
+
+// ================= AUTO DM PREMIUM ACTIVATION =================
 async function sendPremiumDM(userId, plan, expiresAt) {
     try {
         const user = await client.users.fetch(userId);
@@ -54,7 +63,7 @@ async function sendPremiumDM(userId, plan, expiresAt) {
 client.once("ready", () => {
     console.log(`✅ BOT IS ONLINE: ${client.user.tag}`);
 
-    // ================= EXPIRY REMINDER SYSTEM =================
+    // ================= 1) SCHEDULED CONTENT POSTING =================
     setInterval(async () => {
 
         try {
@@ -62,71 +71,95 @@ client.once("ready", () => {
             const guild = client.guilds.cache.first();
             if (!guild) return;
 
-            db.all(`SELECT * FROM premium_users`, async (err, rows) => {
+            const channel = guild.channels.cache.get(PREMIUM_CHANNEL_ID);
+            if (!channel) return;
 
-                if (err || !rows) return;
+            db.all(
+                `SELECT * FROM premium_content ORDER BY id DESC LIMIT 10`,
+                [],
+                async (err, rows) => {
 
-                const now = Date.now();
+                    if (err || !rows) return;
 
-                for (const user of rows) {
+                    for (const post of rows) {
 
-                    const userId = user.user_id;
-                    const timeLeft = user.expires_at - now;
+                        if (SCHEDULED_CACHE.has(post.id)) continue;
+                        SCHEDULED_CACHE.add(post.id);
 
-                    const member = await guild.members.fetch(userId).catch(() => null);
-                    const discordUser = await client.users.fetch(userId).catch(() => null);
+                        const header =
+                            CATEGORY_TITLES[post.type] ||
+                            "💎 PREMIUM UPDATE";
 
-                    if (!discordUser) continue;
+                        let msg =
+                            `${header}\n\n` +
+                            `📌 ${post.title || post.content}\n`;
 
-                    // ================= EXPIRED =================
-                    if (timeLeft <= 0) {
+                        if (post.link) msg += `\n🔗 ${post.link}`;
 
-                        discordUser.send(
-                            "❌ **Premium Expired**\n\n" +
-                            "⚠️ Your Ultra3Vault access has ended\n" +
-                            "👉 Use !plans to renew"
-                        ).catch(() => {});
-
-                        continue;
-                    }
-
-                    // ================= 3 DAYS WARNING =================
-                    if (
-                        timeLeft <= 3 * 24 * 60 * 60 * 1000 &&
-                        timeLeft > 2 * 24 * 60 * 60 * 1000 &&
-                        !reminderCache.has(userId + "_3")
-                    ) {
-                        reminderCache.add(userId + "_3");
-
-                        discordUser.send(
-                            "⏰ **3 Days Left**\n\n" +
-                            "🔥 Renew your premium soon\n" +
-                            "👉 Use !plans"
-                        ).catch(() => {});
-                    }
-
-                    // ================= 1 DAY WARNING =================
-                    if (
-                        timeLeft <= 24 * 60 * 60 * 1000 &&
-                        timeLeft > 23 * 60 * 60 * 1000 &&
-                        !reminderCache.has(userId + "_1")
-                    ) {
-                        reminderCache.add(userId + "_1");
-
-                        discordUser.send(
-                            "⚠️ **FINAL WARNING**\n\n" +
-                            "⌛ 1 day left on your premium\n" +
-                            "🚀 Renew now!"
-                        ).catch(() => {});
+                        await channel.send(msg).catch(() => null);
                     }
                 }
-            });
+            );
 
         } catch (err) {
-            console.log("REMINDER ERROR:", err.message);
+            console.log("SCHEDULER ERROR:", err.message);
         }
 
-    }, 60 * 60 * 1000);
+    }, 10 * 60 * 1000);
+
+    // ================= 2) 🔥 AUTO DM CONTENT ALERT SYSTEM (NEW) =================
+    setInterval(async () => {
+
+        try {
+
+            db.all(
+                `SELECT * FROM premium_content ORDER BY id DESC LIMIT 5`,
+                [],
+                async (err, rows) => {
+
+                    if (err || !rows) return;
+
+                    for (const post of rows) {
+
+                        const key = `alert_${post.id}`;
+
+                        if (ALERT_CACHE.has(key)) continue;
+                        ALERT_CACHE.add(key);
+
+                        db.all(
+                            `SELECT user_id FROM premium_users WHERE expires_at > ?`,
+                            [Date.now()],
+                            async (err, users) => {
+
+                                if (err || !users) return;
+
+                                for (const u of users) {
+
+                                    try {
+                                        const user = await client.users.fetch(u.user_id);
+
+                                        await user.send(
+                                            "📢 **NEW PREMIUM CONTENT ALERT**\n\n" +
+                                            `🔥 ${post.title || post.content}\n\n` +
+                                            (post.link ? `🔗 ${post.link}\n\n` : "") +
+                                            "👉 Use !content to view all updates"
+                                        );
+
+                                    } catch (e) {
+                                        console.log("DM FAIL:", u.user_id);
+                                    }
+                                }
+                            }
+                        );
+                    }
+                }
+            );
+
+        } catch (err) {
+            console.log("ALERT SYSTEM ERROR:", err.message);
+        }
+
+    }, 15 * 60 * 1000);
 });
 
 // ================= ERRORS =================
@@ -142,80 +175,7 @@ client.on("messageCreate", async (message) => {
     const ADMIN_ID = process.env.ADMIN_ID;
     const isAdmin = (m) => m.author.id === ADMIN_ID;
 
-    // ---------------- HELP ----------------
-    if (content === "!help") {
-        return message.reply(
-            "🤖 Commands:\n" +
-            "!plans\n!buy\n!premium\n!content"
-        );
-    }
-
-    // ---------------- PING ----------------
-    if (content === "!ping") {
-        return message.reply("Ultra3Vault is alive ✅");
-    }
-
-    // ---------------- PLANS ----------------
-    if (content === "!plans") {
-        return message.reply(
-            "💰 7d = $5 | 14d = $7 | 30d = $20"
-        );
-    }
-
-    // ---------------- BUY ----------------
-    if (content.startsWith("!buy")) {
-
-        try {
-
-            const plan = content.split(" ")[1];
-            if (!PLANS[plan]) return message.reply("Invalid plan");
-
-            const selected = PLANS[plan];
-
-            const res = await axios.post(
-                "https://api.nowpayments.io/v1/invoice",
-                {
-                    price_amount: selected.price,
-                    price_currency: "usd",
-                    order_id: `${message.author.id}_${plan}_${Date.now()}`
-                },
-                {
-                    headers: {
-                        "x-api-key": process.env.NOWPAYMENTS_API_KEY
-                    }
-                }
-            );
-
-            return message.reply(res.data.invoice_url);
-
-        } catch (err) {
-            return message.reply("Payment error");
-        }
-    }
-
-    // ---------------- PREMIUM ----------------
-    if (content === "!premium") {
-
-        db.get(
-            `SELECT * FROM premium_users WHERE user_id = ?`,
-            [message.author.id],
-
-            (err, row) => {
-
-                if (err || !isPremium(row)) {
-                    return message.reply("No premium");
-                }
-
-                const expiry = Math.floor(row.expires_at / 1000);
-
-                return message.reply(
-                    `Premium active\nExpires: <t:${expiry}:F>`
-                );
-            }
-        );
-    }
-
-    // ---------------- CONTENT ----------------
+    // ---------------- CONTENT VIEW ----------------
     if (content === "!content") {
 
         db.get(
@@ -225,18 +185,20 @@ client.on("messageCreate", async (message) => {
             (err, row) => {
 
                 if (err || !isPremium(row)) {
-                    return message.reply("Premium required");
+                    return message.reply("🔒 Premium required");
                 }
 
                 db.all(
-                    `SELECT * FROM premium_content ORDER BY id DESC LIMIT 3`,
+                    `SELECT * FROM premium_content ORDER BY id DESC LIMIT 5`,
                     [],
                     (err, rows) => {
 
-                        let msg = "💎 Content:\n\n";
+                        let msg = "💎 **Premium Content**\n\n";
 
                         for (const c of rows) {
-                            msg += `🔥 ${c.content}\n\n`;
+                            msg += `🔥 ${c.title || c.content}\n`;
+                            if (c.link) msg += `🔗 ${c.link}\n`;
+                            msg += `\n`;
                         }
 
                         return message.reply(msg);
@@ -246,19 +208,26 @@ client.on("messageCreate", async (message) => {
         );
     }
 
-    // ---------------- ADMIN ----------------
+    // ---------------- ADMIN POST (CATEGORY SUPPORT) ----------------
     if (content.startsWith("!postcontent")) {
 
         if (!isAdmin(message)) return;
 
-        const text = message.content.slice("!postcontent".length).trim();
+        const args = message.content.split(" ");
+        const type = args[1];
+        const title = args.slice(2).join(" ");
+
+        if (!type || !title) {
+            return message.reply("Usage: !postcontent airdrop/signals/news title");
+        }
 
         db.run(
-            `INSERT INTO premium_content (content, created_at) VALUES (?, ?)`,
-            [text, Date.now()]
+            `INSERT INTO premium_content (type, title, content, link, created_at)
+             VALUES (?, ?, ?, ?, ?)`,
+            [type, title, title, "", Date.now()]
         );
 
-        return message.reply("Posted");
+        return message.reply("✅ Posted with alert system enabled");
     }
 });
 
