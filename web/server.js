@@ -17,7 +17,6 @@ app.get("/", (req, res) => {
 function verifySignature(body, signature) {
 
     const secret = process.env.WEBHOOK_SECRET;
-
     if (!secret) return false;
 
     const hash = crypto
@@ -28,7 +27,7 @@ function verifySignature(body, signature) {
     return hash === signature;
 }
 
-// 📦 PLAN CONFIG
+// 📦 PLANS
 const PLANS = {
     "7d": 7,
     "14d": 14,
@@ -54,15 +53,13 @@ app.post("/webhook", async (req, res) => {
 
         if (!order_id) return res.sendStatus(400);
 
-        // extract user + plan
         const parts = order_id.split("_");
 
         const userId = parts[0];
         const plan = parts[1] || "7d";
-
         const days = PLANS[plan] || 7;
 
-        // 🔐 VERIFY REAL PAYMENT
+        // 🔐 VERIFY PAYMENT (NOWPAYMENTS)
         if (payment_id && process.env.NOWPAYMENTS_API_KEY) {
 
             try {
@@ -77,62 +74,72 @@ app.post("/webhook", async (req, res) => {
                 );
 
                 if (verify.data.payment_status !== "finished") {
-
                     console.log("❌ PAYMENT NOT COMPLETED");
                     return res.sendStatus(200);
                 }
 
             } catch (err) {
-
                 console.log("PAYMENT VERIFY ERROR:", err.message);
                 return res.sendStatus(200);
             }
         }
 
-        console.log("PAYMENT VERIFIED FOR:", userId, "PLAN:", plan);
+        console.log("PAYMENT VERIFIED:", userId, plan);
 
         // get guild
         const guild = client.guilds.cache.first();
-
-        if (!guild) {
-            console.log("NO GUILD FOUND");
-            return res.sendStatus(500);
-        }
+        if (!guild) return res.sendStatus(500);
 
         // get member
         const member = await guild.members.fetch(userId).catch(() => null);
+        if (!member) return res.sendStatus(404);
 
-        if (!member) {
-            console.log("MEMBER NOT FOUND");
-            return res.sendStatus(404);
-        }
-
-        // get role
+        // role
         const role = guild.roles.cache.get("1509191517909024950");
+        if (!role) return res.sendStatus(404);
 
-        if (!role) {
-            console.log("ROLE NOT FOUND");
-            return res.sendStatus(404);
-        }
-
-        // give premium role
+        // assign role
         await member.roles.add(role);
 
-        // ⏳ DYNAMIC EXPIRY
+        // expiry
         const expiresAt = Date.now() + (days * 24 * 60 * 60 * 1000);
 
-        // save to DB
+        // save DB
         db.run(
-            `
-            INSERT OR REPLACE INTO premium_users
-            (user_id, expires_at)
-            VALUES (?, ?)
-            `,
+            `INSERT OR REPLACE INTO premium_users (user_id, expires_at) VALUES (?, ?)`,
             [userId, expiresAt]
         );
 
-        console.log("✅ ROLE GIVEN TO:", userId);
-        console.log("💾 PREMIUM SAVED:", plan, `${days} days`);
+        console.log("💾 PREMIUM SAVED:", userId, plan);
+
+        // ================= AUTO DM SYSTEM =================
+        try {
+
+            const user = await client.users.fetch(userId).catch(() => null);
+
+            if (user) {
+
+                user.send(
+                    "💎 **Ultra3Vault Premium Activated!**\n\n" +
+                    `📦 Plan: ${plan.toUpperCase()}\n` +
+                    `⏳ Duration: ${days} days\n` +
+                    "🔥 Status: ACTIVE\n\n" +
+                    "📂 You now get:\n" +
+                    "• Airdrops 📡\n" +
+                    "• Signals 📊\n" +
+                    "• Crypto News 📰\n\n" +
+                    "🚀 Commands:\n" +
+                    "• !premium → status\n" +
+                    "• !content → posts\n\n" +
+                    "⚡ Enjoy!"
+                ).catch(() => {
+                    console.log("❌ DM FAILED:", userId);
+                });
+            }
+
+        } catch (err) {
+            console.log("AUTO DM ERROR:", err.message);
+        }
 
         res.sendStatus(200);
 
