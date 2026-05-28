@@ -28,7 +28,8 @@ function isPremium(row) {
 
 // ================= SYSTEM CACHE =================
 const SCHEDULED_CACHE = new Set();
-const ALERT_CACHE = new Set(); // 🔥 NEW: prevents duplicate DM alerts
+const ALERT_CACHE = new Set();
+let lastCheckedId = 0;
 
 const PREMIUM_CHANNEL_ID = process.env.PREMIUM_CHANNEL_ID;
 
@@ -38,7 +39,7 @@ const CATEGORY_TITLES = {
     news: "📰 CRYPTO NEWS"
 };
 
-// ================= AUTO DM PREMIUM ACTIVATION =================
+// ================= AUTO DM ACTIVATION =================
 async function sendPremiumDM(userId, plan, expiresAt) {
     try {
         const user = await client.users.fetch(userId);
@@ -63,7 +64,7 @@ async function sendPremiumDM(userId, plan, expiresAt) {
 client.once("ready", () => {
     console.log(`✅ BOT IS ONLINE: ${client.user.tag}`);
 
-    // ================= 1) SCHEDULED CONTENT POSTING =================
+    // ================= SCHEDULED POSTING =================
     setInterval(async () => {
 
         try {
@@ -75,20 +76,21 @@ client.once("ready", () => {
             if (!channel) return;
 
             db.all(
-                `SELECT * FROM premium_content ORDER BY id DESC LIMIT 10`,
-                [],
+                `SELECT * FROM premium_content WHERE id > ? ORDER BY id ASC`,
+                [lastCheckedId],
                 async (err, rows) => {
 
                     if (err || !rows) return;
 
                     for (const post of rows) {
 
+                        lastCheckedId = Math.max(lastCheckedId, post.id);
+
                         if (SCHEDULED_CACHE.has(post.id)) continue;
                         SCHEDULED_CACHE.add(post.id);
 
                         const header =
-                            CATEGORY_TITLES[post.type] ||
-                            "💎 PREMIUM UPDATE";
+                            CATEGORY_TITLES[post.type] || "💎 PREMIUM UPDATE";
 
                         let msg =
                             `${header}\n\n` +
@@ -107,14 +109,14 @@ client.once("ready", () => {
 
     }, 10 * 60 * 1000);
 
-    // ================= 2) 🔥 AUTO DM CONTENT ALERT SYSTEM (NEW) =================
+    // ================= AUTO DM CONTENT ALERT SYSTEM =================
     setInterval(async () => {
 
         try {
 
             db.all(
-                `SELECT * FROM premium_content ORDER BY id DESC LIMIT 5`,
-                [],
+                `SELECT * FROM premium_content WHERE id > ? ORDER BY id ASC`,
+                [lastCheckedId],
                 async (err, rows) => {
 
                     if (err || !rows) return;
@@ -133,17 +135,23 @@ client.once("ready", () => {
 
                                 if (err || !users) return;
 
-                                for (const u of users) {
+                                const activeUsers = users.filter(u => u.user_id);
+
+                                for (const u of activeUsers) {
 
                                     try {
+
                                         const user = await client.users.fetch(u.user_id);
 
                                         await user.send(
-                                            "📢 **NEW PREMIUM CONTENT ALERT**\n\n" +
+                                            "📢 **NEW PREMIUM CONTENT**\n\n" +
                                             `🔥 ${post.title || post.content}\n\n` +
                                             (post.link ? `🔗 ${post.link}\n\n` : "") +
-                                            "👉 Use !content to view all updates"
+                                            "👉 Use !content"
                                         );
+
+                                        // cooldown
+                                        ALERT_CACHE.add(`${u.user_id}_${post.id}`);
 
                                     } catch (e) {
                                         console.log("DM FAIL:", u.user_id);
@@ -162,10 +170,6 @@ client.once("ready", () => {
     }, 15 * 60 * 1000);
 });
 
-// ================= ERRORS =================
-client.on("error", console.error);
-client.on("warn", console.warn);
-
 // ================= COMMANDS =================
 client.on("messageCreate", async (message) => {
 
@@ -175,7 +179,7 @@ client.on("messageCreate", async (message) => {
     const ADMIN_ID = process.env.ADMIN_ID;
     const isAdmin = (m) => m.author.id === ADMIN_ID;
 
-    // ---------------- CONTENT VIEW ----------------
+    // ================= CONTENT =================
     if (content === "!content") {
 
         db.get(
@@ -198,7 +202,7 @@ client.on("messageCreate", async (message) => {
                         for (const c of rows) {
                             msg += `🔥 ${c.title || c.content}\n`;
                             if (c.link) msg += `🔗 ${c.link}\n`;
-                            msg += `\n`;
+                            msg += "\n";
                         }
 
                         return message.reply(msg);
@@ -208,7 +212,20 @@ client.on("messageCreate", async (message) => {
         );
     }
 
-    // ---------------- ADMIN POST (CATEGORY SUPPORT) ----------------
+    // ================= CATEGORY COMMANDS =================
+    if (content === "!airdrops") {
+        return message.reply("📡 Use premium content system (filtered version coming next upgrade)");
+    }
+
+    if (content === "!signals") {
+        return message.reply("📊 Use premium content system (filtered version coming next upgrade)");
+    }
+
+    if (content === "!news") {
+        return message.reply("📰 Use premium content system (filtered version coming next upgrade)");
+    }
+
+    // ================= ADMIN POST =================
     if (content.startsWith("!postcontent")) {
 
         if (!isAdmin(message)) return;
@@ -227,7 +244,7 @@ client.on("messageCreate", async (message) => {
             [type, title, title, "", Date.now()]
         );
 
-        return message.reply("✅ Posted with alert system enabled");
+        return message.reply("✅ Posted successfully");
     }
 });
 
