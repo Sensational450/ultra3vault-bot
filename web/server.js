@@ -2,6 +2,7 @@ const express = require("express");
 const axios = require("axios");
 
 const client = require("../bot/client");
+const db = require("../database/premium");
 
 const app = express();
 app.use(express.json());
