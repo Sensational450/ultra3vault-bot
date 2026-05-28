@@ -1,5 +1,6 @@
 const { Client, GatewayIntentBits } = require("discord.js");
 const axios = require("axios");
+const db = require("../database/premium");
 
 console.log("BOT FILE LOADED");
 console.log("TOKEN:", process.env.TOKEN ? "OK" : "MISSING");
@@ -21,6 +22,37 @@ client.once("ready", () => {
 // error handling
 client.on("error", console.error);
 client.on("warn", console.warn);
+
+// ---------------- AUTO EXPIRE SYSTEM ----------------
+setInterval(async () => {
+    try {
+        const guild = client.guilds.cache.first();
+        if (!guild) return;
+
+        db.all(`SELECT * FROM premium_users`, async (err, rows) => {
+            if (err) return console.log(err.message);
+
+            for (const user of rows) {
+
+                if (user.expires_at < Date.now()) {
+
+                    const member = await guild.members.fetch(user.user_id).catch(() => null);
+                    if (!member) continue;
+
+                    const role = guild.roles.cache.get("1509191517909024950");
+                    if (!role) continue;
+
+                    await member.roles.remove(role).catch(() => null);
+
+                    console.log("⛔ PREMIUM EXPIRED REMOVED:", user.user_id);
+                }
+            }
+        });
+
+    } catch (err) {
+        console.log("AUTO EXPIRE ERROR:", err.message);
+    }
+}, 10 * 60 * 1000); // every 10 minutes
 
 // ---------------- COMMANDS ----------------
 client.on("messageCreate", async (message) => {
@@ -106,8 +138,6 @@ client.on("messageCreate", async (message) => {
     // 📊 REAL STATUS SYSTEM
     if (content === "!status") {
 
-        const db = require("../database/premium");
-
         db.get(
             `
             SELECT * FROM premium_users
@@ -119,22 +149,15 @@ client.on("messageCreate", async (message) => {
 
                 if (err) {
                     console.log(err.message);
-                    return message.reply(
-                        "❌ Database error"
-                    );
+                    return message.reply("❌ Database error");
                 }
 
                 if (!row) {
-                    return message.reply(
-                        "❌ You are not premium"
-                    );
+                    return message.reply("❌ You are not premium");
                 }
 
-                // check expiry
                 if (row.expires_at < Date.now()) {
-                    return message.reply(
-                        "⌛ Your premium expired"
-                    );
+                    return message.reply("⌛ Your premium expired");
                 }
 
                 const expiry =
