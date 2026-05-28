@@ -1,5 +1,6 @@
 const express = require("express");
 const axios = require("axios");
+const crypto = require("crypto");
 
 const client = require("../bot/client");
 const db = require("../database/premium");
@@ -12,16 +13,72 @@ app.get("/", (req, res) => {
     res.send("Ultra3Vault API is running 🚀");
 });
 
+// 🔐 VERIFY WEBHOOK SIGNATURE
+function verifySignature(body, signature) {
+
+    const secret = process.env.WEBHOOK_SECRET;
+
+    const hash = crypto
+        .createHmac("sha256", secret)
+        .update(JSON.stringify(body))
+        .digest("hex");
+
+    return hash === signature;
+}
+
 // WEBHOOK
 app.post("/webhook", async (req, res) => {
+
     try {
+
+        // 🔐 SIGNATURE CHECK
+        const signature = req.headers["x-signature"];
+
+        if (!verifySignature(req.body, signature)) {
+            console.log("❌ INVALID WEBHOOK SIGNATURE");
+            return res.sendStatus(403);
+        }
+
         console.log("WEBHOOK RECEIVED:", req.body);
 
-        const { order_id } = req.body;
+        const { order_id, payment_id } = req.body;
 
         if (!order_id) return res.sendStatus(400);
 
         const userId = order_id.split("_")[0];
+
+        // 🔐 VERIFY REAL PAYMENT
+        if (payment_id && process.env.NOWPAYMENTS_API_KEY) {
+
+            try {
+
+                const verify = await axios.get(
+                    `https://api.nowpayments.io/v1/payment/${payment_id}`,
+                    {
+                        headers: {
+                            "x-api-key":
+                                process.env.NOWPAYMENTS_API_KEY
+                        }
+                    }
+                );
+
+                if (verify.data.payment_status !== "finished") {
+
+                    console.log("❌ PAYMENT NOT COMPLETED");
+
+                    return res.sendStatus(200);
+                }
+
+            } catch (err) {
+
+                console.log(
+                    "PAYMENT VERIFY ERROR:",
+                    err.message
+                );
+
+                return res.sendStatus(200);
+            }
+        }
 
         console.log("PAYMENT VERIFIED FOR:", userId);
 
@@ -34,7 +91,9 @@ app.post("/webhook", async (req, res) => {
         }
 
         // get member
-        const member = await guild.members.fetch(userId).catch(() => null);
+        const member = await guild.members
+            .fetch(userId)
+            .catch(() => null);
 
         if (!member) {
             console.log("MEMBER NOT FOUND");
@@ -42,7 +101,9 @@ app.post("/webhook", async (req, res) => {
         }
 
         // get premium role
-        const role = guild.roles.cache.get("1509191517909024950");
+        const role = guild.roles.cache.get(
+            "1509191517909024950"
+        );
 
         if (!role) {
             console.log("ROLE NOT FOUND");
@@ -53,7 +114,8 @@ app.post("/webhook", async (req, res) => {
         await member.roles.add(role);
 
         // premium expiry = 30 days
-        const expiresAt = Date.now() + (30 * 24 * 60 * 60 * 1000);
+        const expiresAt =
+            Date.now() + (30 * 24 * 60 * 60 * 1000);
 
         // save premium in database
         db.run(
@@ -71,7 +133,9 @@ app.post("/webhook", async (req, res) => {
         res.sendStatus(200);
 
     } catch (err) {
+
         console.log("WEBHOOK ERROR:", err.message);
+
         res.sendStatus(500);
     }
 });
