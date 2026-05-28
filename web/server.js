@@ -8,12 +8,36 @@ const db = require("../database/premium");
 const app = express();
 app.use(express.json());
 
-// HEALTH CHECK
+// ================= AUTO MIGRATION =================
+db.serialize(() => {
+
+    db.run(`
+        ALTER TABLE premium_content ADD COLUMN type TEXT DEFAULT 'news'
+    `, (err) => {
+        if (err) console.log("type column already exists");
+    });
+
+    db.run(`
+        ALTER TABLE premium_content ADD COLUMN title TEXT DEFAULT ''
+    `, (err) => {
+        if (err) console.log("title column already exists");
+    });
+
+    db.run(`
+        ALTER TABLE premium_content ADD COLUMN link TEXT DEFAULT ''
+    `, (err) => {
+        if (err) console.log("link column already exists");
+    });
+
+    console.log("🧠 Auto-migration checked on startup");
+});
+
+// ================= HEALTH CHECK =================
 app.get("/", (req, res) => {
     res.send("Ultra3Vault API is running 🚀");
 });
 
-// 🔐 VERIFY WEBHOOK SIGNATURE
+// ================= VERIFY WEBHOOK SIGNATURE =================
 function verifySignature(body, signature) {
 
     const secret = process.env.WEBHOOK_SECRET;
@@ -27,27 +51,24 @@ function verifySignature(body, signature) {
     return hash === signature;
 }
 
-// 📦 PLANS
+// ================= PLANS =================
 const PLANS = {
     "7d": 7,
     "14d": 14,
     "30d": 30
 };
 
-// WEBHOOK
+// ================= WEBHOOK =================
 app.post("/webhook", async (req, res) => {
 
     try {
 
-        // 🔐 SIGNATURE CHECK
         const signature = req.headers["x-signature"];
 
         if (!verifySignature(req.body, signature)) {
             console.log("❌ INVALID WEBHOOK SIGNATURE");
             return res.sendStatus(403);
         }
-
-        console.log("WEBHOOK RECEIVED:", req.body);
 
         const { order_id, payment_id } = req.body;
 
@@ -59,7 +80,7 @@ app.post("/webhook", async (req, res) => {
         const plan = parts[1] || "7d";
         const days = PLANS[plan] || 7;
 
-        // 🔐 VERIFY PAYMENT (NOWPAYMENTS)
+        // ================= VERIFY PAYMENT =================
         if (payment_id && process.env.NOWPAYMENTS_API_KEY) {
 
             try {
@@ -86,25 +107,21 @@ app.post("/webhook", async (req, res) => {
 
         console.log("PAYMENT VERIFIED:", userId, plan);
 
-        // get guild
+        // ================= GIVE ROLE =================
         const guild = client.guilds.cache.first();
         if (!guild) return res.sendStatus(500);
 
-        // get member
         const member = await guild.members.fetch(userId).catch(() => null);
         if (!member) return res.sendStatus(404);
 
-        // role
         const role = guild.roles.cache.get("1509191517909024950");
         if (!role) return res.sendStatus(404);
 
-        // assign role
         await member.roles.add(role);
 
-        // expiry
+        // ================= SAVE PREMIUM =================
         const expiresAt = Date.now() + (days * 24 * 60 * 60 * 1000);
 
-        // save DB
         db.run(
             `INSERT OR REPLACE INTO premium_users (user_id, expires_at) VALUES (?, ?)`,
             [userId, expiresAt]
@@ -118,7 +135,6 @@ app.post("/webhook", async (req, res) => {
             const user = await client.users.fetch(userId).catch(() => null);
 
             if (user) {
-
                 user.send(
                     "💎 **Ultra3Vault Premium Activated!**\n\n" +
                     `📦 Plan: ${plan.toUpperCase()}\n` +
@@ -144,13 +160,12 @@ app.post("/webhook", async (req, res) => {
         res.sendStatus(200);
 
     } catch (err) {
-
         console.log("WEBHOOK ERROR:", err.message);
         res.sendStatus(500);
     }
 });
 
-// START SERVER
+// ================= START SERVER =================
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, "0.0.0.0", () => {
