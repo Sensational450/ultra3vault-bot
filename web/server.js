@@ -1,19 +1,29 @@
+const express = require("express");
+const axios = require("axios");
+
+const client = require("../bot/client");
+
+const app = express();
+app.use(express.json());
+
+// HEALTH CHECK (VERY IMPORTANT FOR RENDER)
+app.get("/", (req, res) => {
+    res.send("Ultra3Vault API is running 🚀");
+});
+
+// WEBHOOK
 app.post("/webhook", async (req, res) => {
     try {
         console.log("WEBHOOK RECEIVED:", req.body);
 
         const { order_id } = req.body;
 
-        if (!order_id) {
-            return res.sendStatus(400);
-        }
+        if (!order_id) return res.sendStatus(400);
 
-        // extract user ID
         const userId = order_id.split("_")[0];
 
         console.log("PAYMENT VERIFIED FOR:", userId);
 
-        // get Discord guild
         const guild = client.guilds.cache.first();
 
         if (!guild) {
@@ -21,7 +31,6 @@ app.post("/webhook", async (req, res) => {
             return res.sendStatus(500);
         }
 
-        // get member
         const member = await guild.members.fetch(userId).catch(() => null);
 
         if (!member) {
@@ -29,7 +38,6 @@ app.post("/webhook", async (req, res) => {
             return res.sendStatus(404);
         }
 
-        // get premium role
         const role = guild.roles.cache.get("1509191517909024950");
 
         if (!role) {
@@ -37,7 +45,6 @@ app.post("/webhook", async (req, res) => {
             return res.sendStatus(404);
         }
 
-        // add role
         await member.roles.add(role);
 
         console.log("✅ ROLE GIVEN TO:", userId);
@@ -48,4 +55,11 @@ app.post("/webhook", async (req, res) => {
         console.log("WEBHOOK ERROR:", err.message);
         res.sendStatus(500);
     }
+});
+
+// IMPORTANT: RENDER PORT BINDING
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Web server running on port ${PORT}`);
 });
