@@ -24,6 +24,7 @@ client.on("warn", console.warn);
 
 // ---------------- COMMANDS ----------------
 client.on("messageCreate", async (message) => {
+
     if (message.author.bot) return;
 
     console.log("MESSAGE:", message.content);
@@ -37,7 +38,9 @@ client.on("messageCreate", async (message) => {
 
     // 🧪 FAKE PAYMENT TEST
     if (content === "!fakepay") {
+
         try {
+
             await axios.post(
                 "https://ultra3vault-bot.onrender.com/webhook",
                 {
@@ -46,19 +49,29 @@ client.on("messageCreate", async (message) => {
                 }
             );
 
-            return message.reply("🧪 Fake payment sent to webhook");
+            return message.reply(
+                "🧪 Fake payment sent to webhook"
+            );
 
         } catch (err) {
+
             console.log("FAKEPAY ERROR:", err.message);
-            return message.reply("❌ Fake payment failed");
+
+            return message.reply(
+                "❌ Fake payment failed"
+            );
         }
     }
 
     // 💰 BUY COMMAND
     if (content.startsWith("!buy")) {
+
         try {
+
             if (!process.env.NOWPAYMENTS_API_KEY) {
-                return message.reply("❌ Payment system not set up");
+                return message.reply(
+                    "❌ Payment system not set up"
+                );
             }
 
             const response = await axios.post(
@@ -70,22 +83,68 @@ client.on("messageCreate", async (message) => {
                 },
                 {
                     headers: {
-                        "x-api-key": process.env.NOWPAYMENTS_API_KEY
+                        "x-api-key":
+                            process.env.NOWPAYMENTS_API_KEY
                     }
                 }
             );
 
-            return message.reply(`💰 Pay here:\n${response.data.invoice_url}`);
+            return message.reply(
+                `💰 Pay here:\n${response.data.invoice_url}`
+            );
 
         } catch (err) {
+
             console.log("BUY ERROR:", err.message);
-            return message.reply("❌ Payment error");
+
+            return message.reply(
+                "❌ Payment error"
+            );
         }
     }
 
-    // 📊 STATUS
+    // 📊 REAL STATUS SYSTEM
     if (content === "!status") {
-        return message.reply("⏳ Status system not connected yet");
+
+        const db = require("../database/premium");
+
+        db.get(
+            `
+            SELECT * FROM premium_users
+            WHERE user_id = ?
+            `,
+            [message.author.id],
+
+            (err, row) => {
+
+                if (err) {
+                    console.log(err.message);
+                    return message.reply(
+                        "❌ Database error"
+                    );
+                }
+
+                if (!row) {
+                    return message.reply(
+                        "❌ You are not premium"
+                    );
+                }
+
+                // check expiry
+                if (row.expires_at < Date.now()) {
+                    return message.reply(
+                        "⌛ Your premium expired"
+                    );
+                }
+
+                const expiry =
+                    Math.floor(row.expires_at / 1000);
+
+                return message.reply(
+                    `✅ Premium Active\n⏳ Expires: <t:${expiry}:F>`
+                );
+            }
+        );
     }
 });
 
