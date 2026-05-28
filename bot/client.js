@@ -70,7 +70,6 @@ client.on("messageCreate", async (message) => {
     if (content === "!fakepay") {
 
         try {
-
             await axios.post(
                 "https://ultra3vault-bot.onrender.com/webhook",
                 {
@@ -81,7 +80,6 @@ client.on("messageCreate", async (message) => {
 
             return message.reply("🧪 Fake payment sent");
         } catch (err) {
-
             console.log("FAKEPAY ERROR:", err.message);
             return message.reply("❌ Fake payment failed");
         }
@@ -123,7 +121,6 @@ client.on("messageCreate", async (message) => {
             );
 
         } catch (err) {
-
             console.log("BUY ERROR:", err.message);
             return message.reply("❌ Payment error");
         }
@@ -158,6 +155,103 @@ client.on("messageCreate", async (message) => {
                     "💎 **Premium Status**\n\n" +
                     `📅 Expires: <t:${expiry}:F>\n` +
                     `⏳ Days Left: ${daysLeft} days`
+                );
+            }
+        );
+    }
+
+    // ================= ADMIN SYSTEM =================
+    const ADMIN_ID = process.env.ADMIN_ID;
+
+    function isAdmin(message) {
+        return message.author.id === ADMIN_ID;
+    }
+
+    // ➕ ADD PREMIUM
+    if (content.startsWith("!addpremium")) {
+
+        if (!isAdmin(message)) {
+            return message.reply("❌ You are not authorized");
+        }
+
+        const args = message.content.split(" ");
+        const user = message.mentions.users.first();
+        const plan = args[2];
+
+        if (!user || !PLANS[plan]) {
+            return message.reply("❌ Usage: !addpremium @user 7d|14d|30d");
+        }
+
+        const expiresAt = Date.now() + (PLANS[plan].days * 24 * 60 * 60 * 1000);
+
+        db.run(
+            `INSERT OR REPLACE INTO premium_users (user_id, expires_at) VALUES (?, ?)`,
+            [user.id, expiresAt]
+        );
+
+        const guild = client.guilds.cache.first();
+        const member = await guild.members.fetch(user.id).catch(() => null);
+
+        if (member) {
+            const role = guild.roles.cache.get("1509191517909024950");
+            if (role) await member.roles.add(role);
+        }
+
+        return message.reply(`✅ Premium added to ${user.tag} (${plan})`);
+    }
+
+    // ❌ REMOVE PREMIUM
+    if (content.startsWith("!removepremium")) {
+
+        if (!isAdmin(message)) {
+            return message.reply("❌ You are not authorized");
+        }
+
+        const user = message.mentions.users.first();
+
+        if (!user) {
+            return message.reply("❌ Usage: !removepremium @user");
+        }
+
+        db.run(`DELETE FROM premium_users WHERE user_id = ?`, [user.id]);
+
+        const guild = client.guilds.cache.first();
+        const member = await guild.members.fetch(user.id).catch(() => null);
+
+        if (member) {
+            const role = guild.roles.cache.get("1509191517909024950");
+            if (role) await member.roles.remove(role).catch(() => null);
+        }
+
+        return message.reply(`❌ Premium removed from ${user.tag}`);
+    }
+
+    // 🔍 CHECK PREMIUM
+    if (content.startsWith("!checkpremium")) {
+
+        if (!isAdmin(message)) {
+            return message.reply("❌ You are not authorized");
+        }
+
+        const user = message.mentions.users.first();
+
+        if (!user) {
+            return message.reply("❌ Usage: !checkpremium @user");
+        }
+
+        db.get(
+            `SELECT * FROM premium_users WHERE user_id = ?`,
+            [user.id],
+
+            (err, row) => {
+
+                if (err) return message.reply("❌ DB error");
+                if (!row) return message.reply("❌ No premium found");
+
+                const expiry = Math.floor(row.expires_at / 1000);
+
+                return message.reply(
+                    `💎 Premium Info\n👤 User: ${user.tag}\n⏳ Expires: <t:${expiry}:F>`
                 );
             }
         );
