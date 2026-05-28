@@ -21,6 +21,32 @@ const PLANS = {
     "30d": { price: 20, days: 30 }
 };
 
+// ================= HELPERS =================
+function isPremium(row) {
+    return row && row.expires_at > Date.now();
+}
+
+// ================= AUTO DM SYSTEM =================
+async function sendPremiumDM(userId, plan, expiresAt) {
+    try {
+        const user = await client.users.fetch(userId);
+
+        await user.send(
+            "💎 **Ultra3Vault Premium Activated!**\n\n" +
+            "✅ Access granted successfully\n" +
+            `📦 Plan: ${plan}\n` +
+            `⏳ Expires: <t:${Math.floor(expiresAt / 1000)}:F>\n\n` +
+            "🚀 Commands unlocked:\n" +
+            "• !content → premium content\n" +
+            "• !premium → check status\n\n" +
+            "🔥 Enjoy your access!"
+        );
+
+    } catch (err) {
+        console.log("DM ERROR:", err.message);
+    }
+}
+
 // ================= READY =================
 client.once("ready", () => {
     console.log(`✅ BOT IS ONLINE: ${client.user.tag}`);
@@ -39,6 +65,9 @@ client.on("messageCreate", async (message) => {
 
     console.log("MESSAGE:", message.content);
 
+    const ADMIN_ID = process.env.ADMIN_ID;
+    const isAdmin = (msg) => msg.author.id === ADMIN_ID;
+
     // ---------------- HELP ----------------
     if (content === "!help") {
         return message.reply(
@@ -46,6 +75,7 @@ client.on("messageCreate", async (message) => {
             "💰 !plans → View pricing\n" +
             "🛒 !buy 7d | 14d | 30d → Buy premium\n" +
             "💎 !premium → Check status\n" +
+            "📦 !content → Premium content\n" +
             "🧪 !fakepay → Test system"
         );
     }
@@ -95,7 +125,6 @@ client.on("messageCreate", async (message) => {
             }
 
             const plan = content.split(" ")[1];
-
             if (!PLANS[plan]) {
                 return message.reply("❌ Invalid plan. Use !plans");
             }
@@ -135,18 +164,8 @@ client.on("messageCreate", async (message) => {
 
             (err, row) => {
 
-                if (err) {
-                    console.log(err.message);
-                    return message.reply("❌ Database error");
-                }
-
-                if (!row) {
-                    return message.reply("❌ You are not premium");
-                }
-
-                if (row.expires_at < Date.now()) {
-                    return message.reply("⌛ Your premium has expired");
-                }
+                if (err) return message.reply("❌ Database error");
+                if (!isPremium(row)) return message.reply("❌ You are not premium");
 
                 const expiry = Math.floor(row.expires_at / 1000);
                 const daysLeft = Math.ceil((row.expires_at - Date.now()) / (1000 * 60 * 60 * 24));
@@ -160,23 +179,47 @@ client.on("messageCreate", async (message) => {
         );
     }
 
-    // ================= ADMIN SYSTEM =================
-    const ADMIN_ID = process.env.ADMIN_ID;
+    // ---------------- PREMIUM CONTENT ----------------
+    if (content === "!content") {
 
-    function isAdmin(message) {
-        return message.author.id === ADMIN_ID;
+        db.get(
+            `SELECT * FROM premium_users WHERE user_id = ?`,
+            [message.author.id],
+
+            (err, row) => {
+
+                if (err) return message.reply("❌ Database error");
+                if (!isPremium(row)) return message.reply("🔒 Premium required");
+
+                db.all(
+                    `SELECT * FROM premium_content ORDER BY id DESC LIMIT 3`,
+                    [],
+                    (err, rows) => {
+
+                        if (err || !rows || rows.length === 0) {
+                            return message.reply("📭 No premium content yet");
+                        }
+
+                        let output = "💎 **Latest Premium Content**\n\n";
+
+                        for (const post of rows) {
+                            output += `🔥 ${post.content}\n\n`;
+                        }
+
+                        return message.reply(output);
+                    }
+                );
+            }
+        );
     }
 
-    // ➕ ADD PREMIUM
+    // ---------------- ADMIN: ADD PREMIUM ----------------
     if (content.startsWith("!addpremium")) {
 
-        if (!isAdmin(message)) {
-            return message.reply("❌ You are not authorized");
-        }
+        if (!isAdmin(message)) return message.reply("❌ Not authorized");
 
-        const args = message.content.split(" ");
         const user = message.mentions.users.first();
-        const plan = args[2];
+        const plan = message.content.split(" ")[2];
 
         if (!user || !PLANS[plan]) {
             return message.reply("❌ Usage: !addpremium @user 7d|14d|30d");
@@ -189,6 +232,8 @@ client.on("messageCreate", async (message) => {
             [user.id, expiresAt]
         );
 
+        await sendPremiumDM(user.id, plan, expiresAt);
+
         const guild = client.guilds.cache.first();
         const member = await guild.members.fetch(user.id).catch(() => null);
 
@@ -197,21 +242,16 @@ client.on("messageCreate", async (message) => {
             if (role) await member.roles.add(role);
         }
 
-        return message.reply(`✅ Premium added to ${user.tag} (${plan})`);
+        return message.reply(`✅ Premium added to ${user.tag}`);
     }
 
-    // ❌ REMOVE PREMIUM
+    // ---------------- ADMIN: REMOVE PREMIUM ----------------
     if (content.startsWith("!removepremium")) {
 
-        if (!isAdmin(message)) {
-            return message.reply("❌ You are not authorized");
-        }
+        if (!isAdmin(message)) return message.reply("❌ Not authorized");
 
         const user = message.mentions.users.first();
-
-        if (!user) {
-            return message.reply("❌ Usage: !removepremium @user");
-        }
+        if (!user) return message.reply("❌ Usage: !removepremium @user");
 
         db.run(`DELETE FROM premium_users WHERE user_id = ?`, [user.id]);
 
@@ -226,36 +266,22 @@ client.on("messageCreate", async (message) => {
         return message.reply(`❌ Premium removed from ${user.tag}`);
     }
 
-    // 🔍 CHECK PREMIUM
-    if (content.startsWith("!checkpremium")) {
+    // ---------------- ADMIN: POST CONTENT ----------------
+    if (content.startsWith("!postcontent")) {
 
-        if (!isAdmin(message)) {
-            return message.reply("❌ You are not authorized");
-        }
+        if (!isAdmin(message)) return message.reply("❌ Not authorized");
 
-        const user = message.mentions.users.first();
+        const text = message.content.slice("!postcontent".length).trim();
+        if (!text) return message.reply("❌ Provide content");
 
-        if (!user) {
-            return message.reply("❌ Usage: !checkpremium @user");
-        }
-
-        db.get(
-            `SELECT * FROM premium_users WHERE user_id = ?`,
-            [user.id],
-
-            (err, row) => {
-
-                if (err) return message.reply("❌ DB error");
-                if (!row) return message.reply("❌ No premium found");
-
-                const expiry = Math.floor(row.expires_at / 1000);
-
-                return message.reply(
-                    `💎 Premium Info\n👤 User: ${user.tag}\n⏳ Expires: <t:${expiry}:F>`
-                );
-            }
+        db.run(
+            `INSERT INTO premium_content (content, created_at) VALUES (?, ?)`,
+            [text, Date.now()]
         );
+
+        return message.reply("✅ Content posted");
     }
+
 });
 
 // ================= LOGIN =================
