@@ -5,17 +5,22 @@ const path = require("path");
 const app = express();
 app.use(express.json());
 
-// ---------------- LOAD ROUTES AUTOMATICALLY ----------------
+// ---------------- SAFE ROUTE LOADER ----------------
 const routesPath = path.join(__dirname, "routes");
 
-fs.readdirSync(routesPath).forEach((file) => {
-    const route = require(`./routes/${file}`);
+if (fs.existsSync(routesPath)) {
+    fs.readdirSync(routesPath).forEach((file) => {
+        const route = require(`./routes/${file}`);
 
-    if (typeof route === "function") {
-        route(app);
-    }
-});
+        if (typeof route === "function") {
+            route(app);
+        }
+    });
+} else {
+    console.log("⚠️ routes folder missing - skipping route loader");
+}
 
+// ---------------- BASE ROUTE ----------------
 app.get("/", (req, res) => {
     res.send("Ultra3Vault API is running 🚀");
 });
