@@ -91,3 +91,5 @@ client.on("messageCreate", async (message) => {
 
 // login bot
 client.login(process.env.TOKEN);
+
+module.exports = client;
