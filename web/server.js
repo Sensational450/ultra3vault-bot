@@ -5,50 +5,23 @@ const app = express();
 
 app.use(express.json());
 
-// ================= HOME =================
+// homepage
 app.get("/", (req, res) => {
     res.send("Ultra3Vault API is running 🚀");
 });
 
-// ================= WEBHOOK =================
+// webhook
 app.post("/webhook", async (req, res) => {
     try {
-        const { order_id, payment_id } = req.body;
+        console.log("WEBHOOK RECEIVED:", req.body);
+
+        const { order_id } = req.body;
 
         if (!order_id) {
-            return res.sendStatus(200);
+            return res.sendStatus(400);
         }
 
-        const userId = order_id.split("_")[0];
-
-        console.log("WEBHOOK RECEIVED:", order_id);
-
-        // fakepay bypass
-        if (
-            payment_id &&
-            payment_id !== "fake" &&
-            process.env.NOWPAYMENTS_API_KEY
-        ) {
-            const verify = await axios.get(
-                `https://api.nowpayments.io/v1/payment/${payment_id}`,
-                {
-                    headers: {
-                        "x-api-key": process.env.NOWPAYMENTS_API_KEY
-                    }
-                }
-            );
-
-            if (verify.data.payment_status !== "finished") {
-                console.log("PAYMENT NOT FINISHED");
-                return res.sendStatus(200);
-            }
-        }
-
-        console.log("PAYMENT VERIFIED FOR:", userId);
-
-        // for now just log success
-        // role system comes next
-        console.log("✅ PREMIUM SIMULATION SUCCESS");
+        console.log("PAYMENT VERIFIED FOR:", order_id);
 
         res.sendStatus(200);
 
@@ -58,7 +31,7 @@ app.post("/webhook", async (req, res) => {
     }
 });
 
-// ================= START SERVER =================
+// start server
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
