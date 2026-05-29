@@ -7,10 +7,7 @@ const { hasPosted, savePost } = require("../database/rssDB");
 // ================= ENGINE IMPORTS =================
 const { getScamScore, getRiskLevel } = require("./engine/antiScamAI");
 
-const {
-    logRSS,
-    logSecurity
-} = require("../database/analyticsDB");
+const { logRSS, logSecurity } = require("../database/analyticsDB");
 
 // 🧠 SELF LEARNING AI
 const {
@@ -31,7 +28,7 @@ const {
     getSentiment
 } = require("./engine/sentimentAI");
 
-// 🧠 RULE ENGINE (NOW USED)
+// 🧠 RULE ENGINE (IMPORTANT)
 const {
     isVIPSignal,
     getPriority,
@@ -49,7 +46,7 @@ const FEEDS = [
     "https://www.theblock.co/rss.xml"
 ];
 
-// ================= NEWS SCORE =================
+// ================= SCORE ENGINE =================
 async function getNewsScore(title = "", content = "") {
 
     const text = (title + " " + content).toLowerCase();
@@ -57,16 +54,16 @@ async function getNewsScore(title = "", content = "") {
     let score = 0;
 
     const highValue = [
-        "bitcoin", "btc", "ethereum", "eth",
-        "sec", "etf", "hack", "exploit",
-        "listing", "binance", "coinbase",
-        "liquidation", "crash", "airdrop"
+        "bitcoin","btc","ethereum","eth",
+        "sec","etf","hack","exploit",
+        "listing","binance","coinbase",
+        "liquidation","crash","airdrop"
     ];
 
     const lowValue = [
-        "sponsored", "giveaway", "click here",
-        "subscribe", "advertisement",
-        "price prediction", "opinion"
+        "sponsored","giveaway","click here",
+        "subscribe","advertisement",
+        "price prediction","opinion"
     ];
 
     highValue.forEach(w => { if (text.includes(w)) score += 3; });
@@ -74,6 +71,7 @@ async function getNewsScore(title = "", content = "") {
 
     if (text.length > 80) score += 1;
 
+    // 🧠 AI learning boost
     const learningBoost = await getLearningScore(text);
     score += learningBoost;
 
@@ -145,8 +143,9 @@ async function fetchRSS(client) {
 
                 const title = item.title || "";
                 const content = item.contentSnippet || "";
+                const fullText = title + " " + content;
 
-                // ================= SCAM =================
+                // ================= SCAM CHECK =================
                 const scamScore = getScamScore(title, content, item.link);
                 const risk = getRiskLevel(scamScore);
 
@@ -155,7 +154,7 @@ async function fetchRSS(client) {
                     continue;
                 }
 
-                // ================= SCORE =================
+                // ================= AI SCORE =================
                 const score = await getNewsScore(title, content);
                 if (score <= 0) continue;
 
@@ -169,20 +168,25 @@ async function fetchRSS(client) {
                 const sentiment = getSentiment(sentimentScore);
 
                 // ================= WHALE =================
-                const whaleAmount = detectWhaleAmount(title + " " + content);
+                const whaleAmount = detectWhaleAmount(fullText);
                 const whaleAlert = isWhaleTransaction(whaleAmount);
 
                 const whaleData = whaleAlert
                     ? classifyWhale(title, content)
                     : { type: "NONE", sentiment: "NEUTRAL" };
 
-                // ================= ROUTING (FIXED RULE ENGINE) =================
+                // ================= INTELLIGENT ROUTING =================
                 const priority = getPriority(score);
                 const vipSignal = isVIPSignal(score, airdrop, breaking);
 
                 let channelName = getChannelName(score, airdrop, breaking, category);
 
+                // 🔥 MULTI-CHANNEL INTELLIGENCE OVERRIDES
                 if (whaleAlert) channelName = "whale-alerts";
+                if (vipSignal) channelName = "vip-alerts";
+                if (risk === "DANGEROUS") channelName = "security-alerts";
+                if (airdrop) channelName = "airdrop-alerts";
+                if (breaking && score >= 6) channelName = "breaking-news";
 
                 const channel = client.channels.cache.find(
                     ch => ch.name === channelName
@@ -196,35 +200,30 @@ async function fetchRSS(client) {
                     .setURL(item.link)
                     .setDescription((content || "Latest update").slice(0, 220))
                     .setColor(
-                        sentiment === "BULLISH"
-                            ? 0x00ff00
-                            : sentiment === "BEARISH"
-                                ? 0xff0000
-                                : whaleAlert
-                                    ? 0x8A2BE2
-                                    : priority === "VIP"
-                                        ? 0xff00ff
-                                        : 0x00BFFF
+                        whaleAlert ? 0x8A2BE2 :
+                        vipSignal ? 0xff00ff :
+                        sentiment === "BULLISH" ? 0x00ff00 :
+                        sentiment === "BEARISH" ? 0xff0000 :
+                        0x00BFFF
                     )
                     .addFields(
                         { name: "⚡ Priority", value: priority, inline: true },
                         { name: "📈 Sentiment", value: sentiment, inline: true },
                         { name: "🐋 Whale", value: whaleAlert ? "YES" : "NO", inline: true },
-                        { name: "💰 Type", value: whaleData.type, inline: true }
+                        { name: "💰 Type", value: whaleData.type, inline: true },
+                        { name: "🧠 AI Score", value: String(score), inline: true }
                     )
                     .setTimestamp(new Date(item.pubDate || Date.now()));
 
                 await channel.send({ embeds: [embed] });
 
-                // ================= LEARNING =================
-                const fullText = title + " " + content;
-
+                // ================= LEARNING SYSTEM =================
                 if (score >= 6) learnPositive(fullText);
                 else learnNegative(fullText);
 
                 await savePost(item.link, item.title);
 
-                console.log(`✅ Posted: ${title}`);
+                console.log(`🚀 Posted [${channelName}]: ${title}`);
             }
 
         } catch (err) {
