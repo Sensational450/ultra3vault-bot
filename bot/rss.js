@@ -17,6 +17,13 @@ const {
     getRiskLevel
 } = require("./engine/antiScamAI");
 
+// 📊 VIP ANALYTICS SYSTEM
+const {
+    logRSS,
+    logSecurity,
+    logVIPEvent
+} = require("../database/analyticsDB");
+
 const parser = new Parser();
 
 // ================= FEEDS =================
@@ -85,13 +92,21 @@ function getNewsScore(title = "", content = "") {
 
 // ================= DETECTORS =================
 function isBreakingNews(title = "") {
-    const text = title.toLowerCase();
-    return BREAKING_KEYWORDS.some(word => text.includes(word));
+    return BREAKING_KEYWORDS.some(word =>
+        title.toLowerCase().includes(word)
+    );
 }
 
 function isAirdrop(title = "", content = "") {
-    const text = (title + " " + content).toLowerCase();
-    return AIRDROP_KEYWORDS.some(word => text.includes(word));
+    return AIRDROP_KEYWORDS.some(word =>
+        (title + " " + content).toLowerCase().includes(word)
+    );
+}
+
+function isScam(title = "", content = "") {
+    return SCAM_KEYWORDS.some(word =>
+        (title + " " + content).toLowerCase().includes(word)
+    );
 }
 
 // ================= CATEGORY =================
@@ -119,6 +134,10 @@ async function fetchRSS(client) {
 
         try {
             const parsed = await parser.parseURL(feed);
+
+            // 📊 LOG FEED USAGE
+            logRSS("feed_loaded", feed);
+
             const items = parsed.items || [];
 
             for (const item of items.slice(0, 5)) {
@@ -131,17 +150,25 @@ async function fetchRSS(client) {
                 const title = item.title || "";
                 const content = item.contentSnippet || "";
 
-                // ================= SCAM AI 2.0 =================
+                // ================= SCAM AI =================
                 const scamScore = getScamScore(title, content, item.link);
                 const risk = getRiskLevel(scamScore);
 
                 if (risk === "DANGEROUS") {
                     console.log(`🚨 BLOCKED SCAM: ${title}`);
+
+                    logSecurity("SCAM_BLOCKED", title, "DANGEROUS");
+
                     continue;
+                }
+
+                if (risk === "SUSPICIOUS") {
+                    logSecurity("SUSPICIOUS", title, "MEDIUM");
                 }
 
                 // ================= AI SCORE =================
                 const score = getNewsScore(title, content);
+
                 if (score <= 0) {
                     console.log("🚫 AI BLOCKED:", title);
                     continue;
@@ -152,7 +179,6 @@ async function fetchRSS(client) {
                 const breaking = isBreakingNews(title);
                 const category = detectType(title);
 
-                // ================= RULE ENGINE =================
                 const priority = getPriority(score);
                 const vipSignal = isVIPSignal(score, airdrop, breaking);
 
@@ -189,28 +215,28 @@ async function fetchRSS(client) {
                         { name: "🧠 AI Score", value: String(score), inline: true },
                         { name: "⚡ Priority", value: priority, inline: true },
                         { name: "💰 Opportunity", value: airdrop ? "AIRDROP" : "NEWS", inline: true },
-                        { name: "🛡️ Security Risk", value: risk, inline: true }
+                        { name: "🛡️ Risk", value: risk, inline: true }
                     )
                     .setTimestamp(new Date(item.pubDate || Date.now()));
 
                 await channel.send({ embeds: [embed] });
 
+                // ================= SAVE =================
                 await savePost(item.link, item.title);
 
-                // ================= VIP ALERT =================
+                // ================= VIP SIGNAL =================
                 if (vipSignal) {
                     const vipChannel = client.channels.cache.find(ch => ch.name === "vip-alerts");
+
                     if (vipChannel) {
                         vipChannel.send({ embeds: [embed] }).catch(() => {});
                     }
+
+                    logVIPEvent("system", title);
                 }
 
                 // ================= LOGS =================
-                if (risk === "SUSPICIOUS") {
-                    console.log(`⚠️ SUSPICIOUS: ${title}`);
-                } else if (risk === "DANGEROUS") {
-                    console.log(`🚨 BLOCKED SCAM: ${title}`);
-                } else if (priority === "VIP") {
+                if (priority === "VIP") {
                     console.log(`💎 VIP SIGNAL: ${title}`);
                 } else if (airdrop) {
                     console.log(`💰 AIRDROP: ${title}`);
