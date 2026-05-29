@@ -1,27 +1,9 @@
-// ================= WHALE KEYWORDS =================
+// ================= WHALE TRACKER ENGINE =================
 
-const WHALE_KEYWORDS = [
-    "moved",
-    "transfer",
-    "whale",
-    "million",
-    "billion",
-    "binance",
-    "coinbase",
-    "kraken",
-    "exchange",
-    "wallet",
-    "stablecoin",
-    "usdt",
-    "usdc",
-    "btc",
-    "bitcoin",
-    "ethereum",
-    "eth"
-];
+// minimum whale transaction
+const MIN_WHALE_USD = 100000;
 
-// ================= EXCHANGE LIST =================
-
+// known exchanges
 const EXCHANGES = [
     "binance",
     "coinbase",
@@ -32,75 +14,77 @@ const EXCHANGES = [
 ];
 
 // ================= DETECT WHALE =================
-
-function isWhaleAlert(title = "", content = "") {
-
-    const text = (title + " " + content).toLowerCase();
-
-    let score = 0;
-
-    WHALE_KEYWORDS.forEach(word => {
-        if (text.includes(word)) {
-            score += 1;
-        }
-    });
-
-    // strong money indicators
-    if (
-        text.includes("$100m") ||
-        text.includes("$500m") ||
-        text.includes("1 billion") ||
-        text.includes("500 million")
-    ) {
-        score += 5;
-    }
-
-    return score >= 4;
+function isWhaleTransaction(amountUSD = 0) {
+    return amountUSD >= MIN_WHALE_USD;
 }
 
-// ================= MARKET IMPACT =================
+// ================= CLASSIFY FLOW =================
+function classifyWhale(from = "", to = "") {
 
-function getMarketImpact(title = "", content = "") {
+    const fromText = from.toLowerCase();
+    const toText = to.toLowerCase();
 
-    const text = (title + " " + content).toLowerCase();
+    const fromExchange = EXCHANGES.some(ex =>
+        fromText.includes(ex)
+    );
 
-    if (
-        text.includes("liquidation") ||
-        text.includes("crash") ||
-        text.includes("dump")
-    ) {
-        return "EXTREME";
+    const toExchange = EXCHANGES.some(ex =>
+        toText.includes(ex)
+    );
+
+    // wallet → exchange
+    if (!fromExchange && toExchange) {
+        return {
+            type: "EXCHANGE_INFLOW",
+            sentiment: "BEARISH"
+        };
     }
 
-    if (
-        text.includes("binance") ||
-        text.includes("coinbase") ||
-        text.includes("etf")
-    ) {
-        return "HIGH";
+    // exchange → wallet
+    if (fromExchange && !toExchange) {
+        return {
+            type: "EXCHANGE_OUTFLOW",
+            sentiment: "BULLISH"
+        };
     }
 
-    return "MEDIUM";
+    // exchange → exchange
+    if (fromExchange && toExchange) {
+        return {
+            type: "EXCHANGE_TRANSFER",
+            sentiment: "NEUTRAL"
+        };
+    }
+
+    // whale wallet transfer
+    return {
+        type: "WHALE_TRANSFER",
+        sentiment: "UNKNOWN"
+    };
 }
 
-// ================= EXCHANGE DETECTOR =================
+// ================= WHALE SCORE =================
+function getWhaleScore(amountUSD = 0) {
 
-function detectExchange(title = "", content = "") {
+    if (amountUSD >= 10000000) return 10;
+    if (amountUSD >= 5000000) return 9;
+    if (amountUSD >= 1000000) return 8;
+    if (amountUSD >= 500000) return 7;
+    if (amountUSD >= 250000) return 6;
+    if (amountUSD >= 100000) return 5;
 
-    const text = (title + " " + content).toLowerCase();
-
-    for (const exchange of EXCHANGES) {
-
-        if (text.includes(exchange)) {
-            return exchange.toUpperCase();
-        }
-    }
-
-    return "UNKNOWN";
+    return 0;
 }
 
+// ================= VIP WHALE =================
+function isVIPWhale(score = 0) {
+    return score >= 8;
+}
+
+// ================= EXPORTS =================
 module.exports = {
-    isWhaleAlert,
-    getMarketImpact,
-    detectExchange
+    isWhaleTransaction,
+    classifyWhale,
+    getWhaleScore,
+    isVIPWhale
 };
