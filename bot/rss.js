@@ -24,10 +24,11 @@ const {
     logVIPEvent
 } = require("../database/analyticsDB");
 
-// 🤖 SELF-LEARNING AI (FIXED IMPORT)
+// 🤖 SELF-LEARNING AI (FIXED)
 const {
-    learnFromPost,
-    getAdaptiveBoost
+    learnPositive,
+    learnNegative,
+    getLearningScore
 } = require("./engine/learningAI.js");
 
 // 🐋 WHALE TRACKER
@@ -41,12 +42,7 @@ const {
 // 📈 MARKET SENTIMENT AI
 const {
     getSentimentScore,
-    getSentiment,
-    detectTrendStrength,
-    detectFearGreed,
-    detectMarketEmotion,
-    isExtremeFear,
-    isExtremeGreed
+    getSentiment
 } = require("./engine/sentimentAI");
 
 const parser = new Parser();
@@ -60,31 +56,8 @@ const FEEDS = [
     "https://www.theblock.co/rss.xml"
 ];
 
-// ================= BREAKING KEYWORDS =================
-const BREAKING_KEYWORDS = [
-    "bitcoin", "btc", "ethereum", "eth",
-    "hack", "exploit", "liquidation",
-    "crash", "pump", "dump",
-    "sec", "etf", "listing",
-    "binance", "coinbase"
-];
-
-// ================= AIRDROP KEYWORDS =================
-const AIRDROP_KEYWORDS = [
-    "airdrop", "testnet", "retroactive", "points",
-    "reward", "farming", "quest", "whitelist",
-    "early access", "beta", "campaign"
-];
-
-// ================= SCAM FILTER =================
-const SCAM_KEYWORDS = [
-    "send funds", "connect wallet", "claim now",
-    "verify wallet", "urgent action", "private key",
-    "seed phrase", "100% guaranteed"
-];
-
 // ================= AI SCORE =================
-function getNewsScore(title = "", content = "") {
+async function getNewsScore(title = "", content = "") {
 
     const text = (title + " " + content).toLowerCase();
 
@@ -113,31 +86,25 @@ function getNewsScore(title = "", content = "") {
 
     if (text.length > 80) score += 1;
 
-    score += getAdaptiveBoost(text);
+    // 🧠 Self-learning boost (FIXED)
+    const learningBoost = await getLearningScore(text);
+    score += learningBoost;
 
     return score;
 }
 
 // ================= DETECTORS =================
 function isBreakingNews(title = "") {
-    return BREAKING_KEYWORDS.some(word =>
-        title.toLowerCase().includes(word)
-    );
+    return ["bitcoin","btc","ethereum","eth","hack","exploit","liquidation","crash","sec","etf"]
+        .some(word => title.toLowerCase().includes(word));
 }
 
 function isAirdrop(title = "", content = "") {
-    return AIRDROP_KEYWORDS.some(word =>
-        (title + " " + content).toLowerCase().includes(word)
-    );
+    return ["airdrop","testnet","retroactive","quest","whitelist","beta"]
+        .some(word => (title + " " + content).toLowerCase().includes(word));
 }
 
-function isScam(title = "", content = "") {
-    return SCAM_KEYWORDS.some(word =>
-        (title + " " + content).toLowerCase().includes(word)
-    );
-}
-
-// ================= WHALE AMOUNT DETECTOR =================
+// ================= WHALE DETECTOR =================
 function detectWhaleAmount(text = "") {
 
     const regex = /\$?([\d,.]+)\s?(million|billion|m|b)?/gi;
@@ -146,21 +113,13 @@ function detectWhaleAmount(text = "") {
 
     while ((match = regex.exec(text)) !== null) {
 
-        let amount = parseFloat(
-            match[1].replace(/,/g, "")
-        );
-
+        let amount = parseFloat(match[1].replace(/,/g, ""));
         const unit = (match[2] || "").toLowerCase();
 
-        if (unit === "billion" || unit === "b") {
-            amount *= 1000000000;
-        } else if (unit === "million" || unit === "m") {
-            amount *= 1000000;
-        }
+        if (unit === "billion" || unit === "b") amount *= 1e9;
+        else if (unit === "million" || unit === "m") amount *= 1e6;
 
-        if (amount >= 100000) {
-            return amount;
-        }
+        if (amount >= 100000) return amount;
     }
 
     return 0;
@@ -171,10 +130,9 @@ function detectType(title = "") {
 
     const text = title.toLowerCase();
 
-    if (text.includes("airdrop")) return "airdrops";
+    if (text.includes("airdrop")) return "airdrop-alerts";
     if (text.includes("bitcoin") || text.includes("btc")) return "bitcoin-news";
     if (text.includes("ethereum") || text.includes("eth")) return "altcoin-news";
-    if (text.includes("solana")) return "altcoin-news";
     if (text.includes("hack") || text.includes("exploit")) return "security-news";
 
     return "crypto-news";
@@ -183,17 +141,13 @@ function detectType(title = "") {
 // ================= MAIN ENGINE =================
 async function fetchRSS(client) {
 
-    if (!client) {
-        console.log("❌ RSS ERROR: client missing");
-        return;
-    }
+    if (!client) return;
 
     for (const feed of FEEDS) {
 
         try {
 
             const parsed = await parser.parseURL(feed);
-
             logRSS("feed_loaded", feed);
 
             const items = parsed.items || [];
@@ -201,31 +155,43 @@ async function fetchRSS(client) {
             for (const item of items.slice(0, 5)) {
 
                 if (!item.link) continue;
-
                 if (await hasPosted(item.link)) continue;
 
                 const title = item.title || "";
                 const content = item.contentSnippet || "";
 
-                const score = getNewsScore(title, content);
+                // ================= SCAM CHECK =================
+                const scamScore = getScamScore(title, content, item.link);
+                const risk = getRiskLevel(scamScore);
 
+                if (risk === "DANGEROUS") {
+                    logSecurity("SCAM_BLOCKED", title, "DANGEROUS");
+                    continue;
+                }
+
+                // ================= AI SCORE =================
+                const score = await getNewsScore(title, content);
                 if (score <= 0) continue;
 
+                // ================= FLAGS =================
                 const airdrop = isAirdrop(title, content);
                 const breaking = isBreakingNews(title);
                 const category = detectType(title);
 
+                // ================= SENTIMENT =================
                 const sentimentScore = getSentimentScore(title, content);
                 const sentiment = getSentiment(sentimentScore);
 
+                // ================= WHALE =================
                 const whaleAmount = detectWhaleAmount(title + " " + content);
                 const whaleAlert = isWhaleTransaction(whaleAmount);
 
+                // ================= ROUTING =================
                 let channelName = category;
 
                 if (whaleAlert) channelName = "whale-alerts";
-                if (breaking) channelName = "breaking-news";
-                if (airdrop) channelName = "airdrop-alerts";
+                else if (breaking) channelName = "breaking-news";
+                else if (airdrop) channelName = "airdrop-alerts";
 
                 const channel = client.channels.cache.find(
                     ch => ch.name === channelName
@@ -233,6 +199,7 @@ async function fetchRSS(client) {
 
                 if (!channel) continue;
 
+                // ================= EMBED =================
                 const embed = new EmbedBuilder()
                     .setTitle(title)
                     .setURL(item.link)
@@ -250,8 +217,11 @@ async function fetchRSS(client) {
 
                 await channel.send({ embeds: [embed] });
 
-                // ✅ FIXED LEARNING AI CALL
-                learnFromPost(title, content, "NORMAL");
+                // 🧠 LEARNING AI FIXED
+                const fullText = title + " " + content;
+
+                if (score >= 6) learnPositive(fullText);
+                else learnNegative(fullText);
 
                 await savePost(item.link, item.title);
 
