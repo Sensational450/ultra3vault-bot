@@ -1,6 +1,9 @@
 const Parser = require("rss-parser");
 const { EmbedBuilder } = require("discord.js");
 
+// ✅ SQLite integration
+const { hasPosted, savePost } = require("../database/rssDB");
+
 const parser = new Parser();
 
 // ================= FEEDS =================
@@ -11,10 +14,6 @@ const FEEDS = [
     "https://cryptoslate.com/feed/",
     "https://www.theblock.co/rss.xml"
 ];
-
-// ================= SMART STORAGE =================
-// keeps track of seen links in memory
-const postedLinks = new Set();
 
 // ================= QUALITY FILTER =================
 function isLowQuality(title = "", content = "") {
@@ -63,9 +62,8 @@ async function fetchRSS(client) {
 
                 if (!item.link) continue;
 
-                // ================= DUPLICATE PROTECTION =================
-                if (postedLinks.has(item.link)) continue;
-                postedLinks.add(item.link);
+                // ================= DATABASE DUPLICATE CHECK =================
+                if (await hasPosted(item.link)) continue;
 
                 // ================= QUALITY FILTER =================
                 if (isLowQuality(item.title, item.contentSnippet)) {
@@ -96,6 +94,9 @@ async function fetchRSS(client) {
                     .setTimestamp(new Date(item.pubDate || Date.now()));
 
                 await channel.send({ embeds: [embed] });
+
+                // ================= SAVE TO DATABASE =================
+                savePost(item.link, item.title);
 
                 console.log(`✅ Posted: ${item.title}`);
 
