@@ -1,137 +1,88 @@
 const Parser = require("rss-parser");
+const {
+    EmbedBuilder
+} = require("discord.js");
+
 const parser = new Parser();
 
-const db = require("../database/premium");
-
-// ================= RSS FEEDS =================
+// RSS FEEDS
 const FEEDS = [
     "https://cointelegraph.com/rss",
-    "https://www.coindesk.com/arc/outboundfeeds/rss/"
+    "https://www.coindesk.com/arc/outboundfeeds/rss/",
+    "https://decrypt.co/feed",
+    "https://blog.binance.com/en/rss",
+    "https://www.theblock.co/rss.xml"
 ];
 
-// ================= CATEGORY DETECTOR =================
-function detectType(title) {
+// Store posted links
+const postedLinks = new Set();
 
+// Detect category
+function detectType(title) {
     const text = title.toLowerCase();
 
-    if (
-        text.includes("airdrop") ||
-        text.includes("claim") ||
-        text.includes("reward")
-    ) {
-        return "airdrop";
-    }
+    if (text.includes("airdrop")) return "airdrops";
+    if (text.includes("bitcoin") || text.includes("btc")) return "bitcoin-news";
+    if (text.includes("ethereum") || text.includes("eth")) return "altcoin-news";
+    if (text.includes("solana")) return "altcoin-news";
+    if (text.includes("gaming")) return "play-to-earn";
 
-    if (
-        text.includes("signal") ||
-        text.includes("trade") ||
-        text.includes("bitcoin price") ||
-        text.includes("btc")
-    ) {
-        return "signals";
-    }
-
-    return "news";
+    return "crypto-news";
 }
 
-// ================= SAVE TO DATABASE =================
-function savePost(post) {
+// Main RSS Function
+async function fetchRSS(client) {
 
-    return new Promise((resolve) => {
-
-        // prevent duplicates
-        db.get(
-            `SELECT * FROM premium_content WHERE title = ?`,
-            [post.title],
-
-            (err, row) => {
-
-                if (row) {
-                    return resolve(false);
-                }
-
-                db.run(
-                    `INSERT INTO premium_content
-                    (type, title, content, link, created_at)
-                    VALUES (?, ?, ?, ?, ?)`,
-                    [
-                        post.type,
-                        post.title,
-                        post.title,
-                        post.link,
-                        Date.now()
-                    ],
-
-                    (err) => {
-
-                        if (err) {
-                            console.log("RSS DB ERROR:", err.message);
-                            return resolve(false);
-                        }
-
-                        console.log("✅ RSS POST SAVED:", post.title);
-
-                        resolve(true);
-                    }
-                );
-            }
-        );
-    });
-}
-
-// ================= FETCH RSS =================
-async function fetchRSS() {
-
-    let results = [];
-
-    for (const url of FEEDS) {
+    for (const feed of FEEDS) {
 
         try {
 
-            const feed = await parser.parseURL(url);
+            const parsed = await parser.parseURL(feed);
 
-            for (const item of feed.items.slice(0, 5)) {
+            for (const item of parsed.items.slice(0, 5)) {
 
-                const post = {
-                    title: item.title,
-                    link: item.link,
-                    type: detectType(item.title)
-                };
+                // Skip duplicates
+                if (postedLinks.has(item.link)) continue;
 
-                results.push(post);
+                postedLinks.add(item.link);
 
-                // auto save to database
-                await savePost(post);
+                const category = detectType(item.title);
+
+                // Find channel by name
+                const channel = client.channels.cache.find(
+                    ch => ch.name === category
+                );
+
+                if (!channel) continue;
+
+                // Create embed
+                const embed = new EmbedBuilder()
+                    .setTitle(item.title)
+                    .setURL(item.link)
+                    .setDescription(
+                        item.contentSnippet?.slice(0, 200) + "..."
+                        || "New crypto update"
+                    )
+                    .setColor(0x00BFFF)
+                    .setFooter({
+                        text: parsed.title
+                    })
+                    .setTimestamp(new Date(item.pubDate || Date.now()));
+
+                await channel.send({
+                    embeds: [embed]
+                });
+
+                console.log(`Posted: ${item.title}`);
+
             }
 
         } catch (err) {
-
-            console.log("RSS ERROR:", err.message);
+            console.error(`RSS Error (${feed})`, err);
         }
+
     }
 
-    return results;
 }
 
-// ================= AUTO RSS LOOP =================
-function startRSSSystem() {
-
-    console.log("🚀 RSS AUTO SYSTEM STARTED");
-
-    // run instantly
-    fetchRSS();
-
-    // run every 30 minutes
-    setInterval(async () => {
-
-        console.log("🔄 Checking RSS feeds...");
-
-        await fetchRSS();
-
-    }, 30 * 60 * 1000);
-}
-
-module.exports = {
-    fetchRSS,
-    startRSSSystem
-};
+module.exports = fetchRSS;
