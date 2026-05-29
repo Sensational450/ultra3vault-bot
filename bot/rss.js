@@ -30,6 +30,13 @@ const {
     getAdaptiveBoost
 } = require("./engine/selfLearningAI");
 
+// 🐋 WHALE TRACKER
+const {
+    isWhaleAlert,
+    getMarketImpact,
+    detectExchange
+} = require("./engine/whaleTracker");
+
 const parser = new Parser();
 
 // ================= FEEDS =================
@@ -195,6 +202,22 @@ async function fetchRSS(client) {
                 const breaking = isBreakingNews(title);
                 const category = detectType(title);
 
+                // ================= WHALE ALERT =================
+                const whaleAlert = isWhaleAlert(
+                    title,
+                    content
+                );
+
+                const marketImpact = getMarketImpact(
+                    title,
+                    content
+                );
+
+                const exchange = detectExchange(
+                    title,
+                    content
+                );
+
                 // ================= RULE ENGINE =================
                 const priority = getPriority(score);
 
@@ -204,42 +227,63 @@ async function fetchRSS(client) {
                     breaking
                 );
 
-                const channelName = getChannelName(
-                    score,
-                    airdrop,
-                    breaking,
-                    category
-                );
+                // ================= ROUTING =================
+                let channel;
 
-                const channel = client.channels.cache.find(
-                    ch => ch.name === channelName
-                );
+                if (whaleAlert) {
+
+                    channel = client.channels.cache.find(
+                        ch => ch.name === "whale-alerts"
+                    );
+
+                } else if (airdrop) {
+
+                    channel = client.channels.cache.find(
+                        ch => ch.name === "airdrop-alerts"
+                    );
+
+                } else if (breaking || score >= 6) {
+
+                    channel = client.channels.cache.find(
+                        ch => ch.name === "breaking-news"
+                    );
+
+                } else {
+
+                    channel = client.channels.cache.find(
+                        ch => ch.name === category
+                    );
+                }
 
                 if (!channel) continue;
 
                 // ================= EMBED =================
                 const embed = new EmbedBuilder()
                     .setTitle(
-                        airdrop
-                            ? "💰 AIRDROP ALERT: " + title
-                            : breaking
-                                ? "🚨 BREAKING: " + title
-                                : "🚀 " + title
+                        whaleAlert
+                            ? "🐋 WHALE ALERT: " + title
+                            : airdrop
+                                ? "💰 AIRDROP ALERT: " + title
+                                : breaking
+                                    ? "🚨 BREAKING: " + title
+                                    : "🚀 " + title
                     )
                     .setURL(item.link)
                     .setDescription(
                         (content || "Latest crypto update").slice(0, 220)
                     )
                     .setColor(
-                        airdrop
-                            ? 0xffd700
-                            : breaking
-                                ? 0xff0000
-                                : priority === "VIP"
-                                    ? 0xff00ff
-                                    : priority === "HIGH"
-                                        ? 0xffa500
-                                        : 0x00BFFF
+                        whaleAlert
+                            ? 0x8A2BE2
+                            : airdrop
+                                ? 0xffd700
+                                : breaking
+                                    ? 0xff0000
+                                    : priority === "VIP"
+                                        ? 0xff00ff
+                                        : priority === "HIGH"
+                                            ? 0xffa500
+                                            : 0x00BFFF
                     )
                     .addFields(
                         {
@@ -270,6 +314,21 @@ async function fetchRSS(client) {
                         {
                             name: "🛡️ Risk",
                             value: risk,
+                            inline: true
+                        },
+                        {
+                            name: "🐋 Whale Alert",
+                            value: whaleAlert ? "YES" : "NO",
+                            inline: true
+                        },
+                        {
+                            name: "📈 Market Impact",
+                            value: marketImpact,
+                            inline: true
+                        },
+                        {
+                            name: "🏦 Exchange",
+                            value: exchange,
                             inline: true
                         }
                     )
@@ -306,6 +365,10 @@ async function fetchRSS(client) {
                 if (priority === "VIP") {
 
                     console.log(`💎 VIP SIGNAL: ${title}`);
+
+                } else if (whaleAlert) {
+
+                    console.log(`🐋 WHALE ALERT: ${title}`);
 
                 } else if (airdrop) {
 
