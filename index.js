@@ -10,8 +10,8 @@ require("dotenv").config();
 // start bot client
 const client = require("./bot/client");
 
-// load RSS system
-const fetchRSS = require("./bot/RSS");
+// load RSS system (FIXED: matches rss.js lowercase file)
+const fetchRSS = require("./bot/rss.js");
 
 // start web server
 require("./web/server");
