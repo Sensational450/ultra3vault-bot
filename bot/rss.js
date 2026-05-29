@@ -3,16 +3,16 @@ const { EmbedBuilder } = require("discord.js");
 
 const parser = new Parser();
 
-// RSS FEEDS
+// RSS FEEDS (FIXED)
 const FEEDS = [
     "https://cointelegraph.com/rss",
     "https://www.coindesk.com/arc/outboundfeeds/rss/",
     "https://decrypt.co/feed",
-    "https://blog.binance.com/en/rss",
+    "https://cryptoslate.com/feed/",
     "https://www.theblock.co/rss.xml"
 ];
 
-// Store posted links (resets on restart, later we upgrade to DB)
+// Store posted links (resets on restart)
 const postedLinks = new Set();
 
 // Detect category
@@ -51,7 +51,7 @@ async function fetchRSS(client) {
                 if (postedLinks.has(item.link)) continue;
                 postedLinks.add(item.link);
 
-                const category = detectType(item.title);
+                const category = detectType(item.title || "");
 
                 const channel = client.channels.cache.find(
                     ch => ch.name === category
@@ -81,5 +81,5 @@ async function fetchRSS(client) {
     }
 }
 
-// IMPORTANT EXPORT (Option 1 - correct)
+// EXPORT
 module.exports = fetchRSS;
