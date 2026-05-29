@@ -27,12 +27,8 @@ const {
     getSentiment
 } = require("./engine/sentimentAI");
 
-// 🧠 RULE ENGINE
-const {
-    isVIPSignal,
-    getPriority,
-    getChannelName
-} = require("./engine/rules");
+// 🧠 ROUTING ENGINE
+const { getPriority, getChannelName } = require("./engine/rules");
 
 const parser = new Parser();
 
@@ -45,7 +41,10 @@ const FEEDS = [
     "https://www.theblock.co/rss.xml"
 ];
 
-// ================= AI SCORE =================
+// ================= SIMPLE CACHE (noise control) =================
+const seen = new Set();
+
+// ================= AI SCORE ENGINE =================
 async function getNewsScore(title = "", content = "") {
 
     const text = (title + " " + content).toLowerCase();
@@ -70,6 +69,7 @@ async function getNewsScore(title = "", content = "") {
 
     if (text.length > 80) score += 1;
 
+    // 🧠 LEARNING BOOST (self-improving system)
     score += await getLearningScore(text);
 
     return score;
@@ -86,7 +86,7 @@ function isAirdrop(title = "", content = "") {
         .some(w => (title + " " + content).toLowerCase().includes(w));
 }
 
-// ================= WHALE =================
+// ================= WHALE DETECTOR =================
 function detectWhaleAmount(text = "") {
 
     const regex = /\$?([\d,.]+)\s?(million|billion|m|b)?/gi;
@@ -119,7 +119,7 @@ function detectType(title = "") {
     return "crypto-news";
 }
 
-// ================= INTELLIGENT ROUTING ENGINE =================
+// ================= INTELLIGENCE ROUTER =================
 function routeNews({
     score,
     vipSignal,
@@ -127,18 +127,17 @@ function routeNews({
     airdrop,
     whaleAlert,
     risk,
-    category
+    sentiment
 }) {
-    // 🔥 HIGHEST PRIORITY FIRST
-
     if (risk === "DANGEROUS") return "security-alerts";
     if (whaleAlert) return "whale-alerts";
+    if (vipSignal && score >= 7) return "vip-alpha";   // 🔥 upgraded VIP layer
     if (vipSignal) return "vip-alerts";
     if (airdrop) return "airdrop-alerts";
     if (breaking && score >= 6) return "breaking-news";
+    if (sentiment === "VERY BULLISH") return "bullish-signals";
 
-    // fallback to rule engine
-    return getChannelName(score, airdrop, breaking, category);
+    return getChannelName(score, airdrop, breaking, "crypto-news");
 }
 
 // ================= MAIN ENGINE =================
@@ -156,6 +155,9 @@ async function fetchRSS(client) {
             for (const item of parsed.items.slice(0, 5)) {
 
                 if (!item.link) continue;
+                if (seen.has(item.link)) continue;
+                seen.add(item.link);
+
                 if (await hasPosted(item.link)) continue;
 
                 const title = item.title || "";
@@ -178,7 +180,6 @@ async function fetchRSS(client) {
                 // ================= FLAGS =================
                 const airdrop = isAirdrop(title, content);
                 const breaking = isBreakingNews(title);
-                const category = detectType(title);
 
                 // ================= SENTIMENT =================
                 const sentimentScore = getSentimentScore(title, content);
@@ -192,10 +193,10 @@ async function fetchRSS(client) {
                     ? classifyWhale(title, content)
                     : { type: "NONE", sentiment: "NEUTRAL" };
 
-                // ================= RULE ENGINE =================
-                const priority = getPriority(score);
-                const vipSignal = isVIPSignal(score, airdrop, breaking);
+                // ================= VIP SIGNAL =================
+                const vipSignal = score >= 6 || whaleAlert || sentiment === "VERY BULLISH";
 
+                // ================= ROUTING =================
                 const channelName = routeNews({
                     score,
                     vipSignal,
@@ -203,7 +204,7 @@ async function fetchRSS(client) {
                     airdrop,
                     whaleAlert,
                     risk,
-                    category
+                    sentiment
                 });
 
                 const channel = client.channels.cache.find(
@@ -226,11 +227,11 @@ async function fetchRSS(client) {
                         0x00BFFF
                     )
                     .addFields(
-                        { name: "⚡ Priority", value: priority, inline: true },
+                        { name: "⚡ Score", value: String(score), inline: true },
                         { name: "📈 Sentiment", value: sentiment, inline: true },
                         { name: "🐋 Whale", value: whaleAlert ? "YES" : "NO", inline: true },
                         { name: "💰 Type", value: whaleData.type, inline: true },
-                        { name: "🧠 AI Score", value: String(score), inline: true }
+                        { name: "🔥 VIP", value: vipSignal ? "YES" : "NO", inline: true }
                     )
                     .setTimestamp(new Date(item.pubDate || Date.now()));
 
