@@ -15,22 +15,53 @@ const FEEDS = [
     "https://www.theblock.co/rss.xml"
 ];
 
-// ================= QUALITY FILTER =================
-function isLowQuality(title = "", content = "") {
-    const text = (title + " + " + content).toLowerCase();
+// ================= BREAKING KEYWORDS =================
+const BREAKING_KEYWORDS = [
+    "bitcoin", "btc", "ethereum", "eth",
+    "hack", "exploit", "liquidation",
+    "crash", "pump", "dump",
+    "sec", "etf", "listing",
+    "binance", "coinbase"
+];
 
-    const spamKeywords = [
-        "sponsored",
-        "giveaway",
-        "click here",
-        "subscribe",
-        "advertisement"
+// ================= AI FILTER SYSTEM =================
+function getNewsScore(title = "", content = "") {
+    const text = (title + " " + content).toLowerCase();
+
+    let score = 0;
+
+    const highValue = [
+        "bitcoin", "btc", "ethereum", "eth",
+        "sec", "etf", "hack", "exploit",
+        "listing", "binance", "coinbase",
+        "liquidation", "crash"
     ];
 
-    return spamKeywords.some(word => text.includes(word));
+    const lowValue = [
+        "sponsored", "giveaway", "click here",
+        "subscribe", "advertisement",
+        "price prediction", "opinion"
+    ];
+
+    highValue.forEach(word => {
+        if (text.includes(word)) score += 3;
+    });
+
+    lowValue.forEach(word => {
+        if (text.includes(word)) score -= 2;
+    });
+
+    if (text.length > 80) score += 1;
+
+    return score;
 }
 
-// ================= CATEGORY DETECTION =================
+function isBreakingNews(title = "") {
+    const text = title.toLowerCase();
+    return BREAKING_KEYWORDS.some(word => text.includes(word));
+}
+
+// ================= CATEGORY =================
 function detectType(title = "") {
     const text = title.toLowerCase();
 
@@ -43,31 +74,7 @@ function detectType(title = "") {
     return "crypto-news";
 }
 
-// ================= BREAKING NEWS SYSTEM =================
-const BREAKING_KEYWORDS = [
-    "bitcoin",
-    "btc",
-    "ethereum",
-    "eth",
-    "hack",
-    "exploit",
-    "liquidation",
-    "crash",
-    "pump",
-    "dump",
-    "sec",
-    "etf",
-    "listing",
-    "binance",
-    "coinbase"
-];
-
-function isBreakingNews(title = "") {
-    const text = title.toLowerCase();
-    return BREAKING_KEYWORDS.some(word => text.includes(word));
-}
-
-// ================= MAIN RSS ENGINE =================
+// ================= MAIN ENGINE =================
 async function fetchRSS(client) {
 
     if (!client) {
@@ -79,32 +86,38 @@ async function fetchRSS(client) {
 
         try {
             const parsed = await parser.parseURL(feed);
-
             const items = parsed.items || [];
 
             for (const item of items.slice(0, 5)) {
 
                 if (!item.link) continue;
 
-                // ================= DATABASE DUPLICATE CHECK =================
+                // ================= DUPLICATE CHECK =================
                 if (await hasPosted(item.link)) continue;
 
-                // ================= QUALITY FILTER =================
-                if (isLowQuality(item.title, item.contentSnippet)) {
-                    console.log("🚫 Skipped low quality:", item.title);
+                const title = item.title || "";
+                const content = item.contentSnippet || "";
+
+                // ================= AI SCORE =================
+                const score = getNewsScore(title, content);
+
+                if (score <= 0) {
+                    console.log("🚫 AI BLOCKED:", title);
                     continue;
                 }
 
-                const title = item.title || "";
-                const category = detectType(title);
+                // ================= QUALITY FILTER (extra safety) =================
+                if (content.toLowerCase().includes("advertisement")) continue;
 
-                // ================= BREAKING NEWS CHECK =================
+                // ================= BREAKING CHECK =================
                 const breaking = isBreakingNews(title);
+
+                const category = detectType(title);
 
                 // ================= CHANNEL ROUTING =================
                 let channel;
 
-                if (breaking) {
+                if (breaking || score >= 6) {
                     channel = client.channels.cache.find(ch => ch.name === "breaking-news");
                 } else {
                     channel = client.channels.cache.find(ch => ch.name === category);
@@ -112,7 +125,13 @@ async function fetchRSS(client) {
 
                 if (!channel) continue;
 
-                // ================= SMART EMBED =================
+                // ================= PRIORITY LABEL =================
+                let priority =
+                    score >= 6 ? "HIGH"
+                    : score >= 3 ? "NORMAL"
+                    : "LOW";
+
+                // ================= EMBED =================
                 const embed = new EmbedBuilder()
                     .setTitle(
                         breaking
@@ -121,27 +140,31 @@ async function fetchRSS(client) {
                     )
                     .setURL(item.link)
                     .setDescription(
-                        (item.contentSnippet || "Latest crypto update").slice(0, 220)
+                        (content || "Latest crypto update").slice(0, 220)
                     )
                     .setColor(
                         breaking
                             ? 0xff0000
-                            : (category === "airdrops" ? 0x00ff99 : 0x00BFFF)
+                            : priority === "HIGH"
+                                ? 0xffa500
+                                : category === "airdrops"
+                                    ? 0x00ff99
+                                    : 0x00BFFF
                     )
                     .addFields(
                         { name: "📡 Source", value: parsed.title || "RSS Feed", inline: true },
                         { name: "📂 Category", value: category, inline: true },
-                        { name: "⚡ Priority", value: breaking ? "BREAKING" : "NORMAL", inline: true }
+                        { name: "🧠 AI Score", value: String(score), inline: true },
+                        { name: "⚡ Priority", value: priority, inline: true }
                     )
                     .setTimestamp(new Date(item.pubDate || Date.now()));
 
                 await channel.send({ embeds: [embed] });
 
-                // ================= SAVE TO DATABASE =================
+                // ================= SAVE =================
                 savePost(item.link, item.title);
 
-                console.log(`✅ Posted: ${item.title}`);
-
+                console.log(`✅ Posted (${priority}): ${title}`);
             }
 
         } catch (err) {
@@ -150,5 +173,4 @@ async function fetchRSS(client) {
     }
 }
 
-// ================= EXPORT =================
 module.exports = fetchRSS;
