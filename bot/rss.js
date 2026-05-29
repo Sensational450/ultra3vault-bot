@@ -4,6 +4,13 @@ const { EmbedBuilder } = require("discord.js");
 // ✅ SQLite integration
 const { hasPosted, savePost } = require("../database/rssDB");
 
+// 🧠 RULE ENGINE IMPORT
+const {
+    isVIPSignal,
+    getPriority,
+    getChannelName
+} = require("./engine/rules");
+
 const parser = new Parser();
 
 // ================= FEEDS =================
@@ -70,19 +77,17 @@ function getNewsScore(title = "", content = "") {
     return score;
 }
 
-// ================= BREAKING =================
+// ================= DETECTORS =================
 function isBreakingNews(title = "") {
     const text = title.toLowerCase();
     return BREAKING_KEYWORDS.some(word => text.includes(word));
 }
 
-// ================= AIRDROP DETECTION =================
 function isAirdrop(title = "", content = "") {
     const text = (title + " " + content).toLowerCase();
     return AIRDROP_KEYWORDS.some(word => text.includes(word));
 }
 
-// ================= SCAM DETECTION =================
 function isScam(title = "", content = "") {
     const text = (title + " " + content).toLowerCase();
     return SCAM_KEYWORDS.some(word => text.includes(word));
@@ -133,7 +138,6 @@ async function fetchRSS(client) {
 
                 // ================= AI SCORE =================
                 const score = getNewsScore(title, content);
-
                 if (score <= 0) {
                     console.log("🚫 AI BLOCKED:", title);
                     continue;
@@ -144,25 +148,14 @@ async function fetchRSS(client) {
                 const breaking = isBreakingNews(title);
                 const category = detectType(title);
 
-                // ================= ROUTING =================
-                let channel;
+                // ================= RULE ENGINE =================
+                const priority = getPriority(score);
+                const vipSignal = isVIPSignal(score, airdrop, breaking);
 
-                if (airdrop) {
-                    channel = client.channels.cache.find(ch => ch.name === "airdrop-alerts");
-                } else if (breaking || score >= 6) {
-                    channel = client.channels.cache.find(ch => ch.name === "breaking-news");
-                } else {
-                    channel = client.channels.cache.find(ch => ch.name === category);
-                }
+                const channelName = getChannelName(score, airdrop, breaking, category);
+                const channel = client.channels.cache.find(ch => ch.name === channelName);
 
                 if (!channel) continue;
-
-                // ================= PRIORITY =================
-                let priority =
-                    score >= 7 ? "VIP"
-                    : score >= 5 ? "HIGH"
-                    : score >= 3 ? "NORMAL"
-                    : "LOW";
 
                 // ================= EMBED =================
                 const embed = new EmbedBuilder()
@@ -199,6 +192,15 @@ async function fetchRSS(client) {
 
                 await savePost(item.link, item.title);
 
+                // ================= VIP ALERT =================
+                if (vipSignal) {
+                    const vipChannel = client.channels.cache.find(ch => ch.name === "vip-alerts");
+                    if (vipChannel) {
+                        vipChannel.send({ embeds: [embed] }).catch(() => {});
+                    }
+                }
+
+                // ================= LOGS =================
                 if (priority === "VIP") {
                     console.log(`💎 VIP SIGNAL: ${title}`);
                 } else if (airdrop) {
