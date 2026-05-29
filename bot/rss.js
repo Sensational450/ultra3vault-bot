@@ -38,6 +38,12 @@ const {
     isVIPWhale
 } = require("./engine/whaleTracker");
 
+// 📈 MARKET SENTIMENT AI
+const {
+    getSentimentScore,
+    getSentiment
+} = require("./engine/sentimentAI");
+
 const parser = new Parser();
 
 // ================= FEEDS =================
@@ -228,6 +234,16 @@ async function fetchRSS(client) {
                 const breaking = isBreakingNews(title);
                 const category = detectType(title);
 
+                // ================= SENTIMENT AI =================
+                const sentimentScore = getSentimentScore(
+                    title,
+                    content
+                );
+
+                const sentiment = getSentiment(
+                    sentimentScore
+                );
+
                 // ================= WHALE ANALYSIS =================
                 const whaleAmount = detectWhaleAmount(
                     title + " " + content
@@ -316,17 +332,21 @@ async function fetchRSS(client) {
                         (content || "Latest crypto update").slice(0, 220)
                     )
                     .setColor(
-                        whaleAlert
-                            ? 0x8A2BE2
-                            : airdrop
-                                ? 0xffd700
-                                : breaking
-                                    ? 0xff0000
-                                    : priority === "VIP"
-                                        ? 0xff00ff
-                                        : priority === "HIGH"
-                                            ? 0xffa500
-                                            : 0x00BFFF
+                        sentiment === "BULLISH"
+                            ? 0x00ff00
+                            : sentiment === "BEARISH"
+                                ? 0xff0000
+                                : whaleAlert
+                                    ? 0x8A2BE2
+                                    : airdrop
+                                        ? 0xffd700
+                                        : breaking
+                                            ? 0xff0000
+                                            : priority === "VIP"
+                                                ? 0xff00ff
+                                                : priority === "HIGH"
+                                                    ? 0xffa500
+                                                    : 0x00BFFF
                     )
                     .addFields(
                         {
@@ -342,6 +362,16 @@ async function fetchRSS(client) {
                         {
                             name: "🧠 AI Score",
                             value: String(score),
+                            inline: true
+                        },
+                        {
+                            name: "📈 Market Sentiment",
+                            value: sentiment,
+                            inline: true
+                        },
+                        {
+                            name: "🧠 Sentiment Score",
+                            value: String(sentimentScore),
                             inline: true
                         },
                         {
