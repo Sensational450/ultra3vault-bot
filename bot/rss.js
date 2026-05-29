@@ -27,8 +27,8 @@ const {
     getSentiment
 } = require("./engine/sentimentAI");
 
-// 🧠 ROUTING ENGINE
-const { getPriority, getChannelName } = require("./engine/rules");
+// 🧠 VIP ROUTER (NEW CORE BRAIN)
+const { getVIPClass } = require("./engine/vipRouter");
 
 const parser = new Parser();
 
@@ -41,10 +41,10 @@ const FEEDS = [
     "https://www.theblock.co/rss.xml"
 ];
 
-// ================= SIMPLE CACHE (noise control) =================
+// ================= CACHE =================
 const seen = new Set();
 
-// ================= AI SCORE ENGINE =================
+// ================= SCORE ENGINE =================
 async function getNewsScore(title = "", content = "") {
 
     const text = (title + " " + content).toLowerCase();
@@ -69,10 +69,7 @@ async function getNewsScore(title = "", content = "") {
 
     if (text.length > 80) score += 1;
 
-    // 🧠 LEARNING BOOST (self-improving system)
-    score += await getLearningScore(text);
-
-    return score;
+    return score + await getLearningScore(text);
 }
 
 // ================= DETECTORS =================
@@ -86,7 +83,7 @@ function isAirdrop(title = "", content = "") {
         .some(w => (title + " " + content).toLowerCase().includes(w));
 }
 
-// ================= WHALE DETECTOR =================
+// ================= WHALE =================
 function detectWhaleAmount(text = "") {
 
     const regex = /\$?([\d,.]+)\s?(million|billion|m|b)?/gi;
@@ -117,27 +114,6 @@ function detectType(title = "") {
     if (t.includes("hack") || t.includes("exploit")) return "security-news";
 
     return "crypto-news";
-}
-
-// ================= INTELLIGENCE ROUTER =================
-function routeNews({
-    score,
-    vipSignal,
-    breaking,
-    airdrop,
-    whaleAlert,
-    risk,
-    sentiment
-}) {
-    if (risk === "DANGEROUS") return "security-alerts";
-    if (whaleAlert) return "whale-alerts";
-    if (vipSignal && score >= 7) return "vip-alpha";   // 🔥 upgraded VIP layer
-    if (vipSignal) return "vip-alerts";
-    if (airdrop) return "airdrop-alerts";
-    if (breaking && score >= 6) return "breaking-news";
-    if (sentiment === "VERY BULLISH") return "bullish-signals";
-
-    return getChannelName(score, airdrop, breaking, "crypto-news");
 }
 
 // ================= MAIN ENGINE =================
@@ -173,7 +149,7 @@ async function fetchRSS(client) {
                     continue;
                 }
 
-                // ================= AI SCORE =================
+                // ================= SCORE =================
                 const score = await getNewsScore(title, content);
                 if (score <= 0) continue;
 
@@ -193,19 +169,27 @@ async function fetchRSS(client) {
                     ? classifyWhale(title, content)
                     : { type: "NONE", sentiment: "NEUTRAL" };
 
-                // ================= VIP SIGNAL =================
-                const vipSignal = score >= 6 || whaleAlert || sentiment === "VERY BULLISH";
-
-                // ================= ROUTING =================
-                const channelName = routeNews({
+                // ================= VIP BRAIN (NEW) =================
+                const vip = getVIPClass({
                     score,
-                    vipSignal,
-                    breaking,
-                    airdrop,
+                    sentiment,
                     whaleAlert,
                     risk,
-                    sentiment
+                    breaking,
+                    airdrop
                 });
+
+                const channelMap = {
+                    SECURITY_THREAT: "security-alerts",
+                    WHALE_MOVE: "whale-alerts",
+                    VIP_ALPHA: "vip-alpha",
+                    VIP_SIGNAL: "vip-alerts",
+                    AIR_DROP: "airdrop-alerts",
+                    WATCHLIST: "breaking-news",
+                    NOISE: "crypto-news"
+                };
+
+                const channelName = channelMap[vip.tier] || "crypto-news";
 
                 const channel = client.channels.cache.find(
                     ch => ch.name === channelName
@@ -219,19 +203,20 @@ async function fetchRSS(client) {
                     .setURL(item.link)
                     .setDescription((content || "Latest update").slice(0, 220))
                     .setColor(
-                        risk === "DANGEROUS" ? 0xff0000 :
-                        whaleAlert ? 0x8A2BE2 :
-                        vipSignal ? 0xff00ff :
+                        vip.tier === "VIP_ALPHA" ? 0xff00ff :
+                        vip.tier === "WHALE_MOVE" ? 0x8A2BE2 :
+                        vip.tier === "SECURITY_THREAT" ? 0xff0000 :
                         sentiment === "BULLISH" ? 0x00ff00 :
                         sentiment === "BEARISH" ? 0xff0000 :
                         0x00BFFF
                     )
                     .addFields(
+                        { name: "🧠 Tier", value: vip.tier, inline: true },
+                        { name: "🎯 Confidence", value: vip.confidence + "%", inline: true },
                         { name: "⚡ Score", value: String(score), inline: true },
                         { name: "📈 Sentiment", value: sentiment, inline: true },
                         { name: "🐋 Whale", value: whaleAlert ? "YES" : "NO", inline: true },
-                        { name: "💰 Type", value: whaleData.type, inline: true },
-                        { name: "🔥 VIP", value: vipSignal ? "YES" : "NO", inline: true }
+                        { name: "💰 Type", value: whaleData.type, inline: true }
                     )
                     .setTimestamp(new Date(item.pubDate || Date.now()));
 
@@ -243,7 +228,7 @@ async function fetchRSS(client) {
 
                 await savePost(item.link, item.title);
 
-                console.log(`🚀 Posted [${channelName}]: ${title}`);
+                console.log(`🚀 Posted [${vip.tier} → ${channelName}]: ${title}`);
             }
 
         } catch (err) {
