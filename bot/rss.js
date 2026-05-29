@@ -27,7 +27,7 @@ const {
     getSentiment
 } = require("./engine/sentimentAI");
 
-// 🧠 VIP ROUTER (CORE BRAIN)
+// 🧠 VIP ROUTER
 const { getVIPClass } = require("./engine/vipRouter");
 
 // 📊 ALPHA ENGINE
@@ -119,11 +119,18 @@ function detectType(title = "") {
     return "crypto-news";
 }
 
+// ================= ROUTING ENGINE =================
+function routeNews(vipTier, channelMap) {
+    return channelMap[vipTier] || "crypto-news";
+}
+
 // ================= MAIN ENGINE =================
 async function fetchRSS(client) {
+
     if (!client) return;
 
     for (const feed of FEEDS) {
+
         try {
             const parsed = await parser.parseURL(feed);
             logRSS("feed_loaded", feed);
@@ -169,7 +176,7 @@ async function fetchRSS(client) {
                     ? classifyWhale(title, content)
                     : { type: "NONE", sentiment: "NEUTRAL" };
 
-                // ================= VIP CLASS =================
+                // ================= VIP SYSTEM =================
                 const vip = getVIPClass({
                     score,
                     sentiment,
@@ -179,17 +186,22 @@ async function fetchRSS(client) {
                     airdrop
                 });
 
-                // ================= ALPHA =================
+                const tier = vip.tier;
+                const membership = membershipTiers[tier] || membershipTiers.FREE;
+
+                const allowedChannels = membership.access;
+
+                // ================= ALPHA ENGINE =================
                 const alpha = getAlphaScore({
                     score,
                     sentiment,
                     whaleAlert,
-                    vipTier: vip.tier,
+                    vipTier: tier,
                     breaking,
                     airdrop
                 });
 
-                // ================= ROUTING =================
+                // ================= CHANNEL MAP =================
                 const channelMap = {
                     SECURITY_THREAT: "security-alerts",
                     WHALE_MOVE: "whale-alerts",
@@ -200,7 +212,13 @@ async function fetchRSS(client) {
                     NOISE: "crypto-news"
                 };
 
-                const channelName = channelMap[vip.tier] || "crypto-news";
+                let channelName = routeNews(tier, channelMap);
+
+                // ================= MEMBERSHIP ENFORCEMENT =================
+                if (!allowedChannels.includes(channelName)) {
+                    console.log(`⛔ BLOCKED (${tier}) → ${channelName}`);
+                    continue;
+                }
 
                 const channel = client.channels.cache.find(
                     ch => ch.name === channelName
@@ -214,27 +232,25 @@ async function fetchRSS(client) {
                     .setURL(item.link)
                     .setDescription((content || "Latest update").slice(0, 220))
                     .setColor(
-                        vip.tier === "VIP_ALPHA" ? 0xff00ff :
-                        vip.tier === "WHALE_MOVE" ? 0x8A2BE2 :
-                        vip.tier === "SECURITY_THREAT" ? 0xff0000 :
+                        tier === "VIP_ALPHA" ? 0xff00ff :
+                        tier === "VIP_SIGNAL" ? 0xffcc00 :
+                        whaleAlert ? 0x8A2BE2 :
                         sentiment === "BULLISH" ? 0x00ff00 :
                         sentiment === "BEARISH" ? 0xff0000 :
                         0x00BFFF
                     )
                     .addFields(
-                        { name: "🧠 Tier", value: vip.tier, inline: true },
-                        { name: "🎯 Confidence", value: vip.confidence + "%", inline: true },
+                        { name: "🧠 Tier", value: tier, inline: true },
+                        { name: "💎 Membership", value: membership.name, inline: true },
+                        { name: "🔐 Access", value: allowedChannels.join(", "), inline: true },
+
                         { name: "⚡ Score", value: String(score), inline: true },
+                        { name: "📈 Sentiment", value: sentiment, inline: true },
+                        { name: "🐋 Whale", value: whaleAlert ? "YES" : "NO", inline: true },
 
                         { name: "📊 Pump", value: alpha.pump + "%", inline: true },
                         { name: "📉 Dump", value: alpha.dump + "%", inline: true },
-                        { name: "🎯 Action", value: alpha.action, inline: true },
-
-                        { name: "📈 Sentiment", value: sentiment, inline: true },
-                        { name: "🐋 Whale", value: whaleAlert ? "YES" : "NO", inline: true },
-                        { name: "💰 Type", value: whaleData.type, inline: true },
-
-                        { name: "📡 System", value: "Ultra3 Intelligence Router v3", inline: true }
+                        { name: "🎯 Action", value: alpha.action, inline: true }
                     )
                     .setTimestamp(new Date(item.pubDate || Date.now()));
 
@@ -246,7 +262,7 @@ async function fetchRSS(client) {
 
                 await savePost(item.link, item.title);
 
-                console.log(`🚀 [${vip.tier} | ${alpha.action}] → ${channelName}: ${title}`);
+                console.log(`🚀 [${tier}] → ${channelName}: ${title}`);
             }
 
         } catch (err) {
