@@ -28,7 +28,7 @@ const {
 const {
     learnFromPost,
     getAdaptiveBoost
-} = require("./engine/LearningAI.js");
+} = require("./engine/learningAI.js");
 
 // 🐋 WHALE TRACKER
 const {
