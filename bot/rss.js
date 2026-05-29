@@ -17,7 +17,7 @@ const FEEDS = [
 
 // ================= QUALITY FILTER =================
 function isLowQuality(title = "", content = "") {
-    const text = (title + " " + content).toLowerCase();
+    const text = (title + " + " + content).toLowerCase();
 
     const spamKeywords = [
         "sponsored",
@@ -41,6 +41,30 @@ function detectType(title = "") {
     if (text.includes("hack") || text.includes("exploit")) return "security-news";
 
     return "crypto-news";
+}
+
+// ================= BREAKING NEWS SYSTEM =================
+const BREAKING_KEYWORDS = [
+    "bitcoin",
+    "btc",
+    "ethereum",
+    "eth",
+    "hack",
+    "exploit",
+    "liquidation",
+    "crash",
+    "pump",
+    "dump",
+    "sec",
+    "etf",
+    "listing",
+    "binance",
+    "coinbase"
+];
+
+function isBreakingNews(title = "") {
+    const text = title.toLowerCase();
+    return BREAKING_KEYWORDS.some(word => text.includes(word));
 }
 
 // ================= MAIN RSS ENGINE =================
@@ -71,25 +95,43 @@ async function fetchRSS(client) {
                     continue;
                 }
 
-                const category = detectType(item.title || "");
+                const title = item.title || "";
+                const category = detectType(title);
 
-                const channel = client.channels.cache.find(
-                    ch => ch.name === category
-                );
+                // ================= BREAKING NEWS CHECK =================
+                const breaking = isBreakingNews(title);
+
+                // ================= CHANNEL ROUTING =================
+                let channel;
+
+                if (breaking) {
+                    channel = client.channels.cache.find(ch => ch.name === "breaking-news");
+                } else {
+                    channel = client.channels.cache.find(ch => ch.name === category);
+                }
 
                 if (!channel) continue;
 
                 // ================= SMART EMBED =================
                 const embed = new EmbedBuilder()
-                    .setTitle("🚀 " + (item.title || "Crypto Update"))
+                    .setTitle(
+                        breaking
+                            ? "🚨 BREAKING: " + title
+                            : "🚀 " + title
+                    )
                     .setURL(item.link)
                     .setDescription(
                         (item.contentSnippet || "Latest crypto update").slice(0, 220)
                     )
-                    .setColor(category === "airdrops" ? 0x00ff99 : 0x00BFFF)
+                    .setColor(
+                        breaking
+                            ? 0xff0000
+                            : (category === "airdrops" ? 0x00ff99 : 0x00BFFF)
+                    )
                     .addFields(
                         { name: "📡 Source", value: parsed.title || "RSS Feed", inline: true },
-                        { name: "📂 Category", value: category, inline: true }
+                        { name: "📂 Category", value: category, inline: true },
+                        { name: "⚡ Priority", value: breaking ? "BREAKING" : "NORMAL", inline: true }
                     )
                     .setTimestamp(new Date(item.pubDate || Date.now()));
 
