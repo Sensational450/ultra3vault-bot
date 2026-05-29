@@ -32,9 +32,10 @@ const {
 
 // 🐋 WHALE TRACKER
 const {
-    isWhaleAlert,
-    getMarketImpact,
-    detectExchange
+    isWhaleTransaction,
+    classifyWhale,
+    getWhaleScore,
+    isVIPWhale
 } = require("./engine/whaleTracker");
 
 const parser = new Parser();
@@ -91,7 +92,6 @@ function getNewsScore(title = "", content = "") {
         "price prediction", "opinion"
     ];
 
-    // ================= BASE AI =================
     highValue.forEach(word => {
         if (text.includes(word)) score += 3;
     });
@@ -102,7 +102,6 @@ function getNewsScore(title = "", content = "") {
 
     if (text.length > 80) score += 1;
 
-    // ================= SELF-LEARNING BOOST =================
     score += getAdaptiveBoost(text);
 
     return score;
@@ -125,6 +124,35 @@ function isScam(title = "", content = "") {
     return SCAM_KEYWORDS.some(word =>
         (title + " " + content).toLowerCase().includes(word)
     );
+}
+
+// ================= WHALE AMOUNT DETECTOR =================
+function detectWhaleAmount(text = "") {
+
+    const regex = /\$?([\d,.]+)\s?(million|billion|m|b)?/gi;
+
+    let match;
+
+    while ((match = regex.exec(text)) !== null) {
+
+        let amount = parseFloat(
+            match[1].replace(/,/g, "")
+        );
+
+        const unit = (match[2] || "").toLowerCase();
+
+        if (unit === "billion" || unit === "b") {
+            amount *= 1000000000;
+        } else if (unit === "million" || unit === "m") {
+            amount *= 1000000;
+        }
+
+        if (amount >= 100000) {
+            return amount;
+        }
+    }
+
+    return 0;
 }
 
 // ================= CATEGORY =================
@@ -155,7 +183,6 @@ async function fetchRSS(client) {
 
             const parsed = await parser.parseURL(feed);
 
-            // 📊 LOG FEED USAGE
             logRSS("feed_loaded", feed);
 
             const items = parsed.items || [];
@@ -164,7 +191,6 @@ async function fetchRSS(client) {
 
                 if (!item.link) continue;
 
-                // ================= DUPLICATE CHECK =================
                 if (await hasPosted(item.link)) continue;
 
                 const title = item.title || "";
@@ -202,21 +228,38 @@ async function fetchRSS(client) {
                 const breaking = isBreakingNews(title);
                 const category = detectType(title);
 
-                // ================= WHALE ALERT =================
-                const whaleAlert = isWhaleAlert(
-                    title,
-                    content
+                // ================= WHALE ANALYSIS =================
+                const whaleAmount = detectWhaleAmount(
+                    title + " " + content
                 );
 
-                const marketImpact = getMarketImpact(
-                    title,
-                    content
+                const whaleAlert = isWhaleTransaction(
+                    whaleAmount
                 );
 
-                const exchange = detectExchange(
-                    title,
-                    content
-                );
+                let whaleData = {
+                    type: "NONE",
+                    sentiment: "NEUTRAL"
+                };
+
+                let whaleScore = 0;
+                let vipWhale = false;
+
+                if (whaleAlert) {
+
+                    whaleData = classifyWhale(
+                        title,
+                        content
+                    );
+
+                    whaleScore = getWhaleScore(
+                        whaleAmount
+                    );
+
+                    vipWhale = isVIPWhale(
+                        whaleScore
+                    );
+                }
 
                 // ================= RULE ENGINE =================
                 const priority = getPriority(score);
@@ -322,13 +365,25 @@ async function fetchRSS(client) {
                             inline: true
                         },
                         {
-                            name: "📈 Market Impact",
-                            value: marketImpact,
+                            name: "💵 Whale Size",
+                            value: whaleAlert
+                                ? `$${whaleAmount.toLocaleString()}`
+                                : "NONE",
                             inline: true
                         },
                         {
-                            name: "🏦 Exchange",
-                            value: exchange,
+                            name: "📈 Sentiment",
+                            value: whaleData.sentiment,
+                            inline: true
+                        },
+                        {
+                            name: "🔄 Whale Type",
+                            value: whaleData.type,
+                            inline: true
+                        },
+                        {
+                            name: "🐋 Whale Score",
+                            value: String(whaleScore),
                             inline: true
                         }
                     )
@@ -339,11 +394,24 @@ async function fetchRSS(client) {
                 // ================= SEND =================
                 await channel.send({ embeds: [embed] });
 
-                // 🤖 AI LEARNS FROM SUCCESSFUL POSTS
                 learnFromPost(title, content, priority);
 
-                // ================= SAVE =================
                 await savePost(item.link, item.title);
+
+                // ================= VIP WHALE =================
+                if (vipWhale) {
+
+                    const vipWhaleChannel = client.channels.cache.find(
+                        ch => ch.name === "vip-whale-signals"
+                    );
+
+                    if (vipWhaleChannel) {
+
+                        await vipWhaleChannel.send({
+                            embeds: [embed]
+                        }).catch(() => {});
+                    }
+                }
 
                 // ================= VIP SIGNAL =================
                 if (vipSignal) {
