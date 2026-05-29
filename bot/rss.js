@@ -3,7 +3,7 @@ const { EmbedBuilder } = require("discord.js");
 
 const parser = new Parser();
 
-// RSS FEEDS (FIXED)
+// ================= FEEDS =================
 const FEEDS = [
     "https://cointelegraph.com/rss",
     "https://www.coindesk.com/arc/outboundfeeds/rss/",
@@ -12,10 +12,26 @@ const FEEDS = [
     "https://www.theblock.co/rss.xml"
 ];
 
-// Store posted links (resets on restart)
+// ================= SMART STORAGE =================
+// keeps track of seen links in memory
 const postedLinks = new Set();
 
-// Detect category
+// ================= QUALITY FILTER =================
+function isLowQuality(title = "", content = "") {
+    const text = (title + " " + content).toLowerCase();
+
+    const spamKeywords = [
+        "sponsored",
+        "giveaway",
+        "click here",
+        "subscribe",
+        "advertisement"
+    ];
+
+    return spamKeywords.some(word => text.includes(word));
+}
+
+// ================= CATEGORY DETECTION =================
 function detectType(title = "") {
     const text = title.toLowerCase();
 
@@ -23,16 +39,16 @@ function detectType(title = "") {
     if (text.includes("bitcoin") || text.includes("btc")) return "bitcoin-news";
     if (text.includes("ethereum") || text.includes("eth")) return "altcoin-news";
     if (text.includes("solana")) return "altcoin-news";
-    if (text.includes("gaming") || text.includes("game")) return "play-to-earn";
+    if (text.includes("hack") || text.includes("exploit")) return "security-news";
 
     return "crypto-news";
 }
 
-// Main RSS Function
+// ================= MAIN RSS ENGINE =================
 async function fetchRSS(client) {
 
     if (!client) {
-        console.log("❌ RSS ERROR: client not provided");
+        console.log("❌ RSS ERROR: client missing");
         return;
     }
 
@@ -47,9 +63,15 @@ async function fetchRSS(client) {
 
                 if (!item.link) continue;
 
-                // Skip duplicates
+                // ================= DUPLICATE PROTECTION =================
                 if (postedLinks.has(item.link)) continue;
                 postedLinks.add(item.link);
+
+                // ================= QUALITY FILTER =================
+                if (isLowQuality(item.title, item.contentSnippet)) {
+                    console.log("🚫 Skipped low quality:", item.title);
+                    continue;
+                }
 
                 const category = detectType(item.title || "");
 
@@ -59,14 +81,18 @@ async function fetchRSS(client) {
 
                 if (!channel) continue;
 
+                // ================= SMART EMBED =================
                 const embed = new EmbedBuilder()
-                    .setTitle(item.title || "Crypto Update")
+                    .setTitle("🚀 " + (item.title || "Crypto Update"))
                     .setURL(item.link)
                     .setDescription(
-                        (item.contentSnippet || "New crypto update").slice(0, 200)
+                        (item.contentSnippet || "Latest crypto update").slice(0, 220)
                     )
-                    .setColor(0x00BFFF)
-                    .setFooter({ text: parsed.title || "RSS Feed" })
+                    .setColor(category === "airdrops" ? 0x00ff99 : 0x00BFFF)
+                    .addFields(
+                        { name: "📡 Source", value: parsed.title || "RSS Feed", inline: true },
+                        { name: "📂 Category", value: category, inline: true }
+                    )
                     .setTimestamp(new Date(item.pubDate || Date.now()));
 
                 await channel.send({ embeds: [embed] });
@@ -81,5 +107,5 @@ async function fetchRSS(client) {
     }
 }
 
-// EXPORT
+// ================= EXPORT =================
 module.exports = fetchRSS;
