@@ -41,7 +41,12 @@ const {
 // 📈 MARKET SENTIMENT AI
 const {
     getSentimentScore,
-    getSentiment
+    getSentiment,
+    detectTrendStrength,
+    detectFearGreed,
+    detectMarketEmotion,
+    isExtremeFear,
+    isExtremeGreed
 } = require("./engine/sentimentAI");
 
 const parser = new Parser();
@@ -244,6 +249,27 @@ async function fetchRSS(client) {
                     sentimentScore
                 );
 
+                const trendStrength = detectTrendStrength(
+                    sentimentScore
+                );
+
+                const marketEmotion = detectMarketEmotion(
+                    title,
+                    content
+                );
+
+                const fearGreed = detectFearGreed(
+                    sentimentScore
+                );
+
+                const extremeFear = isExtremeFear(
+                    sentimentScore
+                );
+
+                const extremeGreed = isExtremeGreed(
+                    sentimentScore
+                );
+
                 // ================= WHALE ANALYSIS =================
                 const whaleAmount = detectWhaleAmount(
                     title + " " + content
@@ -332,21 +358,25 @@ async function fetchRSS(client) {
                         (content || "Latest crypto update").slice(0, 220)
                     )
                     .setColor(
-                        sentiment === "BULLISH"
+                        extremeGreed
                             ? 0x00ff00
-                            : sentiment === "BEARISH"
+                            : extremeFear
                                 ? 0xff0000
-                                : whaleAlert
-                                    ? 0x8A2BE2
-                                    : airdrop
-                                        ? 0xffd700
-                                        : breaking
-                                            ? 0xff0000
-                                            : priority === "VIP"
-                                                ? 0xff00ff
-                                                : priority === "HIGH"
-                                                    ? 0xffa500
-                                                    : 0x00BFFF
+                                : sentiment === "BULLISH"
+                                    ? 0x32CD32
+                                    : sentiment === "BEARISH"
+                                        ? 0xDC143C
+                                        : whaleAlert
+                                            ? 0x8A2BE2
+                                            : airdrop
+                                                ? 0xffd700
+                                                : breaking
+                                                    ? 0xff4500
+                                                    : priority === "VIP"
+                                                        ? 0xff00ff
+                                                        : priority === "HIGH"
+                                                            ? 0xffa500
+                                                            : 0x00BFFF
                     )
                     .addFields(
                         {
@@ -375,6 +405,31 @@ async function fetchRSS(client) {
                             inline: true
                         },
                         {
+                            name: "🔥 Trend Strength",
+                            value: trendStrength,
+                            inline: true
+                        },
+                        {
+                            name: "😨 Fear & Greed",
+                            value: fearGreed,
+                            inline: true
+                        },
+                        {
+                            name: "🧠 Market Emotion",
+                            value: marketEmotion,
+                            inline: true
+                        },
+                        {
+                            name: "🚨 Extreme Fear",
+                            value: extremeFear ? "YES" : "NO",
+                            inline: true
+                        },
+                        {
+                            name: "🚀 Extreme Greed",
+                            value: extremeGreed ? "YES" : "NO",
+                            inline: true
+                        },
+                        {
                             name: "⚡ Priority",
                             value: priority,
                             inline: true
@@ -392,28 +447,6 @@ async function fetchRSS(client) {
                         {
                             name: "🐋 Whale Alert",
                             value: whaleAlert ? "YES" : "NO",
-                            inline: true
-                        },
-                        {
-                            name: "💵 Whale Size",
-                            value: whaleAlert
-                                ? `$${whaleAmount.toLocaleString()}`
-                                : "NONE",
-                            inline: true
-                        },
-                        {
-                            name: "📈 Sentiment",
-                            value: whaleData.sentiment,
-                            inline: true
-                        },
-                        {
-                            name: "🔄 Whale Type",
-                            value: whaleData.type,
-                            inline: true
-                        },
-                        {
-                            name: "🐋 Whale Score",
-                            value: String(whaleScore),
                             inline: true
                         }
                     )
@@ -443,6 +476,25 @@ async function fetchRSS(client) {
                     }
                 }
 
+                // ================= MARKET EMOTION ALERT =================
+                if (extremeFear || extremeGreed) {
+
+                    const emotionChannel = client.channels.cache.find(
+                        ch => ch.name === "market-emotions"
+                    );
+
+                    if (emotionChannel) {
+
+                        await emotionChannel.send({
+                            embeds: [embed]
+                        }).catch(() => {});
+                    }
+
+                    console.log(
+                        `🧠 MARKET EMOTION: ${marketEmotion}`
+                    );
+                }
+
                 // ================= VIP SIGNAL =================
                 if (vipSignal) {
 
@@ -459,23 +511,7 @@ async function fetchRSS(client) {
                     logVIPEvent("system", title);
                 }
 
-                // ================= LOGS =================
-                if (priority === "VIP") {
-
-                    console.log(`💎 VIP SIGNAL: ${title}`);
-
-                } else if (whaleAlert) {
-
-                    console.log(`🐋 WHALE ALERT: ${title}`);
-
-                } else if (airdrop) {
-
-                    console.log(`💰 AIRDROP: ${title}`);
-
-                } else {
-
-                    console.log(`✅ Posted (${priority}): ${title}`);
-                }
+                console.log(`✅ Posted: ${title}`);
             }
 
         } catch (err) {
