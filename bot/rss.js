@@ -30,8 +30,11 @@ const {
 // 🧠 VIP ROUTER (CORE BRAIN)
 const { getVIPClass } = require("./engine/vipRouter");
 
-// 📊 ALPHA ENGINE (PUMP/DUMP PREDICTION)
+// 📊 ALPHA ENGINE
 const { getAlphaScore } = require("./engine/alphaEngine");
+
+// 💎 MEMBERSHIP TIERS
+const membershipTiers = require("./engine/membershipTiers");
 
 const parser = new Parser();
 
@@ -49,7 +52,6 @@ const seen = new Set();
 
 // ================= SCORE ENGINE =================
 async function getNewsScore(title = "", content = "") {
-
     const text = (title + " " + content).toLowerCase();
 
     let score = 0;
@@ -88,13 +90,11 @@ function isAirdrop(title = "", content = "") {
 
 // ================= WHALE =================
 function detectWhaleAmount(text = "") {
-
     const regex = /\$?([\d,.]+)\s?(million|billion|m|b)?/gi;
 
     let match;
 
     while ((match = regex.exec(text)) !== null) {
-
         let amount = parseFloat(match[1].replace(/,/g, ""));
         const unit = (match[2] || "").toLowerCase();
 
@@ -121,13 +121,10 @@ function detectType(title = "") {
 
 // ================= MAIN ENGINE =================
 async function fetchRSS(client) {
-
     if (!client) return;
 
     for (const feed of FEEDS) {
-
         try {
-
             const parsed = await parser.parseURL(feed);
             logRSS("feed_loaded", feed);
 
@@ -172,7 +169,7 @@ async function fetchRSS(client) {
                     ? classifyWhale(title, content)
                     : { type: "NONE", sentiment: "NEUTRAL" };
 
-                // ================= VIP BRAIN =================
+                // ================= VIP CLASS =================
                 const vip = getVIPClass({
                     score,
                     sentiment,
@@ -182,7 +179,7 @@ async function fetchRSS(client) {
                     airdrop
                 });
 
-                // ================= ALPHA ENGINE =================
+                // ================= ALPHA =================
                 const alpha = getAlphaScore({
                     score,
                     sentiment,
@@ -235,7 +232,9 @@ async function fetchRSS(client) {
 
                         { name: "📈 Sentiment", value: sentiment, inline: true },
                         { name: "🐋 Whale", value: whaleAlert ? "YES" : "NO", inline: true },
-                        { name: "💰 Type", value: whaleData.type, inline: true }
+                        { name: "💰 Type", value: whaleData.type, inline: true },
+
+                        { name: "📡 System", value: "Ultra3 Intelligence Router v3", inline: true }
                     )
                     .setTimestamp(new Date(item.pubDate || Date.now()));
 
