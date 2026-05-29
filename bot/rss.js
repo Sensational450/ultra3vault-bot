@@ -24,7 +24,7 @@ const BREAKING_KEYWORDS = [
     "binance", "coinbase"
 ];
 
-// ================= AI FILTER SYSTEM =================
+// ================= AI SCORE SYSTEM =================
 function getNewsScore(title = "", content = "") {
     const text = (title + " " + content).toLowerCase();
 
@@ -56,9 +56,31 @@ function getNewsScore(title = "", content = "") {
     return score;
 }
 
+// ================= BREAKING =================
 function isBreakingNews(title = "") {
     const text = title.toLowerCase();
     return BREAKING_KEYWORDS.some(word => text.includes(word));
+}
+
+// ================= AIRDROP AI =================
+const AIRDROP_KEYWORDS = [
+    "airdrop",
+    "testnet",
+    "retroactive",
+    "points",
+    "reward",
+    "earn tokens",
+    "farming",
+    "campaign",
+    "quest",
+    "whitelist",
+    "early access",
+    "beta reward"
+];
+
+function isAirdrop(title = "", content = "") {
+    const text = (title + " + " + content).toLowerCase();
+    return AIRDROP_KEYWORDS.some(word => text.includes(word));
 }
 
 // ================= CATEGORY =================
@@ -92,7 +114,7 @@ async function fetchRSS(client) {
 
                 if (!item.link) continue;
 
-                // ================= DUPLICATE CHECK =================
+                // ================= DUPLICATES =================
                 if (await hasPosted(item.link)) continue;
 
                 const title = item.title || "";
@@ -106,18 +128,20 @@ async function fetchRSS(client) {
                     continue;
                 }
 
-                // ================= QUALITY FILTER (extra safety) =================
-                if (content.toLowerCase().includes("advertisement")) continue;
+                // ================= AIRDROP DETECTION =================
+                const airdrop = isAirdrop(title, content);
 
-                // ================= BREAKING CHECK =================
+                // ================= BREAKING =================
                 const breaking = isBreakingNews(title);
 
                 const category = detectType(title);
 
-                // ================= CHANNEL ROUTING =================
+                // ================= ROUTING =================
                 let channel;
 
-                if (breaking || score >= 6) {
+                if (airdrop) {
+                    channel = client.channels.cache.find(ch => ch.name === "airdrop-alerts");
+                } else if (breaking || score >= 6) {
                     channel = client.channels.cache.find(ch => ch.name === "breaking-news");
                 } else {
                     channel = client.channels.cache.find(ch => ch.name === category);
@@ -125,7 +149,7 @@ async function fetchRSS(client) {
 
                 if (!channel) continue;
 
-                // ================= PRIORITY LABEL =================
+                // ================= PRIORITY =================
                 let priority =
                     score >= 6 ? "HIGH"
                     : score >= 3 ? "NORMAL"
@@ -134,28 +158,33 @@ async function fetchRSS(client) {
                 // ================= EMBED =================
                 const embed = new EmbedBuilder()
                     .setTitle(
-                        breaking
-                            ? "🚨 BREAKING: " + title
-                            : "🚀 " + title
+                        airdrop
+                            ? "💰 AIRDROP ALERT: " + title
+                            : breaking
+                                ? "🚨 BREAKING: " + title
+                                : "🚀 " + title
                     )
                     .setURL(item.link)
                     .setDescription(
                         (content || "Latest crypto update").slice(0, 220)
                     )
                     .setColor(
-                        breaking
-                            ? 0xff0000
-                            : priority === "HIGH"
-                                ? 0xffa500
-                                : category === "airdrops"
-                                    ? 0x00ff99
-                                    : 0x00BFFF
+                        airdrop
+                            ? 0xffd700
+                            : breaking
+                                ? 0xff0000
+                                : priority === "HIGH"
+                                    ? 0xffa500
+                                    : category === "airdrops"
+                                        ? 0x00ff99
+                                        : 0x00BFFF
                     )
                     .addFields(
                         { name: "📡 Source", value: parsed.title || "RSS Feed", inline: true },
                         { name: "📂 Category", value: category, inline: true },
                         { name: "🧠 AI Score", value: String(score), inline: true },
-                        { name: "⚡ Priority", value: priority, inline: true }
+                        { name: "⚡ Priority", value: priority, inline: true },
+                        { name: "💰 Opportunity", value: airdrop ? "AIRDROP / REWARD" : "NEWS", inline: true }
                     )
                     .setTimestamp(new Date(item.pubDate || Date.now()));
 
@@ -164,7 +193,11 @@ async function fetchRSS(client) {
                 // ================= SAVE =================
                 savePost(item.link, item.title);
 
-                console.log(`✅ Posted (${priority}): ${title}`);
+                if (airdrop) {
+                    console.log(`💰 AIRDROP DETECTED: ${title}`);
+                } else {
+                    console.log(`✅ Posted (${priority}): ${title}`);
+                }
             }
 
         } catch (err) {
