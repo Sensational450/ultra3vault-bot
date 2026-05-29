@@ -1,7 +1,5 @@
 const Parser = require("rss-parser");
-const {
-    EmbedBuilder
-} = require("discord.js");
+const { EmbedBuilder } = require("discord.js");
 
 const parser = new Parser();
 
@@ -14,18 +12,18 @@ const FEEDS = [
     "https://www.theblock.co/rss.xml"
 ];
 
-// Store posted links
+// Store posted links (resets on restart, later we upgrade to DB)
 const postedLinks = new Set();
 
 // Detect category
-function detectType(title) {
+function detectType(title = "") {
     const text = title.toLowerCase();
 
     if (text.includes("airdrop")) return "airdrops";
     if (text.includes("bitcoin") || text.includes("btc")) return "bitcoin-news";
     if (text.includes("ethereum") || text.includes("eth")) return "altcoin-news";
     if (text.includes("solana")) return "altcoin-news";
-    if (text.includes("gaming")) return "play-to-earn";
+    if (text.includes("gaming") || text.includes("game")) return "play-to-earn";
 
     return "crypto-news";
 }
@@ -33,56 +31,55 @@ function detectType(title) {
 // Main RSS Function
 async function fetchRSS(client) {
 
+    if (!client) {
+        console.log("❌ RSS ERROR: client not provided");
+        return;
+    }
+
     for (const feed of FEEDS) {
 
         try {
-
             const parsed = await parser.parseURL(feed);
 
-            for (const item of parsed.items.slice(0, 5)) {
+            const items = parsed.items || [];
+
+            for (const item of items.slice(0, 5)) {
+
+                if (!item.link) continue;
 
                 // Skip duplicates
                 if (postedLinks.has(item.link)) continue;
-
                 postedLinks.add(item.link);
 
                 const category = detectType(item.title);
 
-                // Find channel by name
                 const channel = client.channels.cache.find(
                     ch => ch.name === category
                 );
 
                 if (!channel) continue;
 
-                // Create embed
                 const embed = new EmbedBuilder()
-                    .setTitle(item.title)
+                    .setTitle(item.title || "Crypto Update")
                     .setURL(item.link)
                     .setDescription(
-                        item.contentSnippet?.slice(0, 200) + "..."
-                        || "New crypto update"
+                        (item.contentSnippet || "New crypto update").slice(0, 200)
                     )
                     .setColor(0x00BFFF)
-                    .setFooter({
-                        text: parsed.title
-                    })
+                    .setFooter({ text: parsed.title || "RSS Feed" })
                     .setTimestamp(new Date(item.pubDate || Date.now()));
 
-                await channel.send({
-                    embeds: [embed]
-                });
+                await channel.send({ embeds: [embed] });
 
-                console.log(`Posted: ${item.title}`);
+                console.log(`✅ Posted: ${item.title}`);
 
             }
 
         } catch (err) {
-            console.error(`RSS Error (${feed})`, err);
+            console.error(`❌ RSS Error (${feed}):`, err.message);
         }
-
     }
-
 }
 
+// IMPORTANT EXPORT (Option 1 - correct)
 module.exports = fetchRSS;
