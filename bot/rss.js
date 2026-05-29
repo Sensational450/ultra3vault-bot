@@ -24,6 +24,12 @@ const {
     logVIPEvent
 } = require("../database/analyticsDB");
 
+// 🤖 SELF-LEARNING AI
+const {
+    learnFromPost,
+    getAdaptiveBoost
+} = require("./engine/selfLearningAI");
+
 const parser = new Parser();
 
 // ================= FEEDS =================
@@ -60,6 +66,7 @@ const SCAM_KEYWORDS = [
 
 // ================= AI SCORE =================
 function getNewsScore(title = "", content = "") {
+
     const text = (title + " " + content).toLowerCase();
 
     let score = 0;
@@ -77,6 +84,7 @@ function getNewsScore(title = "", content = "") {
         "price prediction", "opinion"
     ];
 
+    // ================= BASE AI =================
     highValue.forEach(word => {
         if (text.includes(word)) score += 3;
     });
@@ -86,6 +94,9 @@ function getNewsScore(title = "", content = "") {
     });
 
     if (text.length > 80) score += 1;
+
+    // ================= SELF-LEARNING BOOST =================
+    score += getAdaptiveBoost(text);
 
     return score;
 }
@@ -111,6 +122,7 @@ function isScam(title = "", content = "") {
 
 // ================= CATEGORY =================
 function detectType(title = "") {
+
     const text = title.toLowerCase();
 
     if (text.includes("airdrop")) return "airdrops";
@@ -133,6 +145,7 @@ async function fetchRSS(client) {
     for (const feed of FEEDS) {
 
         try {
+
             const parsed = await parser.parseURL(feed);
 
             // 📊 LOG FEED USAGE
@@ -155,6 +168,7 @@ async function fetchRSS(client) {
                 const risk = getRiskLevel(scamScore);
 
                 if (risk === "DANGEROUS") {
+
                     console.log(`🚨 BLOCKED SCAM: ${title}`);
 
                     logSecurity("SCAM_BLOCKED", title, "DANGEROUS");
@@ -170,7 +184,9 @@ async function fetchRSS(client) {
                 const score = getNewsScore(title, content);
 
                 if (score <= 0) {
+
                     console.log("🚫 AI BLOCKED:", title);
+
                     continue;
                 }
 
@@ -179,11 +195,25 @@ async function fetchRSS(client) {
                 const breaking = isBreakingNews(title);
                 const category = detectType(title);
 
+                // ================= RULE ENGINE =================
                 const priority = getPriority(score);
-                const vipSignal = isVIPSignal(score, airdrop, breaking);
 
-                const channelName = getChannelName(score, airdrop, breaking, category);
-                const channel = client.channels.cache.find(ch => ch.name === channelName);
+                const vipSignal = isVIPSignal(
+                    score,
+                    airdrop,
+                    breaking
+                );
+
+                const channelName = getChannelName(
+                    score,
+                    airdrop,
+                    breaking,
+                    category
+                );
+
+                const channel = client.channels.cache.find(
+                    ch => ch.name === channelName
+                );
 
                 if (!channel) continue;
 
@@ -197,7 +227,9 @@ async function fetchRSS(client) {
                                 : "🚀 " + title
                     )
                     .setURL(item.link)
-                    .setDescription((content || "Latest crypto update").slice(0, 220))
+                    .setDescription(
+                        (content || "Latest crypto update").slice(0, 220)
+                    )
                     .setColor(
                         airdrop
                             ? 0xffd700
@@ -210,26 +242,61 @@ async function fetchRSS(client) {
                                         : 0x00BFFF
                     )
                     .addFields(
-                        { name: "📡 Source", value: parsed.title || "RSS Feed", inline: true },
-                        { name: "📂 Category", value: category, inline: true },
-                        { name: "🧠 AI Score", value: String(score), inline: true },
-                        { name: "⚡ Priority", value: priority, inline: true },
-                        { name: "💰 Opportunity", value: airdrop ? "AIRDROP" : "NEWS", inline: true },
-                        { name: "🛡️ Risk", value: risk, inline: true }
+                        {
+                            name: "📡 Source",
+                            value: parsed.title || "RSS Feed",
+                            inline: true
+                        },
+                        {
+                            name: "📂 Category",
+                            value: category,
+                            inline: true
+                        },
+                        {
+                            name: "🧠 AI Score",
+                            value: String(score),
+                            inline: true
+                        },
+                        {
+                            name: "⚡ Priority",
+                            value: priority,
+                            inline: true
+                        },
+                        {
+                            name: "💰 Opportunity",
+                            value: airdrop ? "AIRDROP" : "NEWS",
+                            inline: true
+                        },
+                        {
+                            name: "🛡️ Risk",
+                            value: risk,
+                            inline: true
+                        }
                     )
-                    .setTimestamp(new Date(item.pubDate || Date.now()));
+                    .setTimestamp(
+                        new Date(item.pubDate || Date.now())
+                    );
 
+                // ================= SEND =================
                 await channel.send({ embeds: [embed] });
+
+                // 🤖 AI LEARNS FROM SUCCESSFUL POSTS
+                learnFromPost(title, content, priority);
 
                 // ================= SAVE =================
                 await savePost(item.link, item.title);
 
                 // ================= VIP SIGNAL =================
                 if (vipSignal) {
-                    const vipChannel = client.channels.cache.find(ch => ch.name === "vip-alerts");
+
+                    const vipChannel = client.channels.cache.find(
+                        ch => ch.name === "vip-alerts"
+                    );
 
                     if (vipChannel) {
-                        vipChannel.send({ embeds: [embed] }).catch(() => {});
+                        vipChannel.send({
+                            embeds: [embed]
+                        }).catch(() => {});
                     }
 
                     logVIPEvent("system", title);
@@ -237,16 +304,25 @@ async function fetchRSS(client) {
 
                 // ================= LOGS =================
                 if (priority === "VIP") {
+
                     console.log(`💎 VIP SIGNAL: ${title}`);
+
                 } else if (airdrop) {
+
                     console.log(`💰 AIRDROP: ${title}`);
+
                 } else {
+
                     console.log(`✅ Posted (${priority}): ${title}`);
                 }
             }
 
         } catch (err) {
-            console.error(`❌ RSS Error (${feed}):`, err.message);
+
+            console.error(
+                `❌ RSS Error (${feed}):`,
+                err.message
+            );
         }
     }
 }
