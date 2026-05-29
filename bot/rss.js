@@ -4,12 +4,11 @@ const { EmbedBuilder } = require("discord.js");
 // ================= DB =================
 const { hasPosted, savePost } = require("../database/rssDB");
 
-// ================= ENGINE IMPORTS =================
+// ================= ENGINE =================
 const { getScamScore, getRiskLevel } = require("./engine/antiScamAI");
-
 const { logRSS, logSecurity } = require("../database/analyticsDB");
 
-// 🧠 SELF LEARNING AI
+// 🧠 LEARNING AI
 const {
     learnPositive,
     learnNegative,
@@ -22,13 +21,13 @@ const {
     classifyWhale
 } = require("./engine/whaleTracker");
 
-// 📈 SENTIMENT AI
+// 📈 SENTIMENT
 const {
     getSentimentScore,
     getSentiment
 } = require("./engine/sentimentAI");
 
-// 🧠 RULE ENGINE (IMPORTANT)
+// 🧠 RULE ENGINE
 const {
     isVIPSignal,
     getPriority,
@@ -46,7 +45,7 @@ const FEEDS = [
     "https://www.theblock.co/rss.xml"
 ];
 
-// ================= SCORE ENGINE =================
+// ================= AI SCORE =================
 async function getNewsScore(title = "", content = "") {
 
     const text = (title + " " + content).toLowerCase();
@@ -71,9 +70,7 @@ async function getNewsScore(title = "", content = "") {
 
     if (text.length > 80) score += 1;
 
-    // 🧠 AI learning boost
-    const learningBoost = await getLearningScore(text);
-    score += learningBoost;
+    score += await getLearningScore(text);
 
     return score;
 }
@@ -122,6 +119,28 @@ function detectType(title = "") {
     return "crypto-news";
 }
 
+// ================= INTELLIGENT ROUTING ENGINE =================
+function routeNews({
+    score,
+    vipSignal,
+    breaking,
+    airdrop,
+    whaleAlert,
+    risk,
+    category
+}) {
+    // 🔥 HIGHEST PRIORITY FIRST
+
+    if (risk === "DANGEROUS") return "security-alerts";
+    if (whaleAlert) return "whale-alerts";
+    if (vipSignal) return "vip-alerts";
+    if (airdrop) return "airdrop-alerts";
+    if (breaking && score >= 6) return "breaking-news";
+
+    // fallback to rule engine
+    return getChannelName(score, airdrop, breaking, category);
+}
+
 // ================= MAIN ENGINE =================
 async function fetchRSS(client) {
 
@@ -134,9 +153,7 @@ async function fetchRSS(client) {
             const parsed = await parser.parseURL(feed);
             logRSS("feed_loaded", feed);
 
-            const items = parsed.items || [];
-
-            for (const item of items.slice(0, 5)) {
+            for (const item of parsed.items.slice(0, 5)) {
 
                 if (!item.link) continue;
                 if (await hasPosted(item.link)) continue;
@@ -145,7 +162,7 @@ async function fetchRSS(client) {
                 const content = item.contentSnippet || "";
                 const fullText = title + " " + content;
 
-                // ================= SCAM CHECK =================
+                // ================= SCAM =================
                 const scamScore = getScamScore(title, content, item.link);
                 const risk = getRiskLevel(scamScore);
 
@@ -175,18 +192,19 @@ async function fetchRSS(client) {
                     ? classifyWhale(title, content)
                     : { type: "NONE", sentiment: "NEUTRAL" };
 
-                // ================= INTELLIGENT ROUTING =================
+                // ================= RULE ENGINE =================
                 const priority = getPriority(score);
                 const vipSignal = isVIPSignal(score, airdrop, breaking);
 
-                let channelName = getChannelName(score, airdrop, breaking, category);
-
-                // 🔥 MULTI-CHANNEL INTELLIGENCE OVERRIDES
-                if (whaleAlert) channelName = "whale-alerts";
-                if (vipSignal) channelName = "vip-alerts";
-                if (risk === "DANGEROUS") channelName = "security-alerts";
-                if (airdrop) channelName = "airdrop-alerts";
-                if (breaking && score >= 6) channelName = "breaking-news";
+                const channelName = routeNews({
+                    score,
+                    vipSignal,
+                    breaking,
+                    airdrop,
+                    whaleAlert,
+                    risk,
+                    category
+                });
 
                 const channel = client.channels.cache.find(
                     ch => ch.name === channelName
@@ -200,6 +218,7 @@ async function fetchRSS(client) {
                     .setURL(item.link)
                     .setDescription((content || "Latest update").slice(0, 220))
                     .setColor(
+                        risk === "DANGEROUS" ? 0xff0000 :
                         whaleAlert ? 0x8A2BE2 :
                         vipSignal ? 0xff00ff :
                         sentiment === "BULLISH" ? 0x00ff00 :
@@ -217,7 +236,7 @@ async function fetchRSS(client) {
 
                 await channel.send({ embeds: [embed] });
 
-                // ================= LEARNING SYSTEM =================
+                // ================= LEARNING =================
                 if (score >= 6) learnPositive(fullText);
                 else learnNegative(fullText);
 
