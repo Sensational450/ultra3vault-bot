@@ -24,11 +24,11 @@ const {
     logVIPEvent
 } = require("../database/analyticsDB");
 
-// 🤖 SELF-LEARNING AI
+// 🤖 SELF-LEARNING AI (FIXED IMPORT)
 const {
     learnFromPost,
     getAdaptiveBoost
-} = require("./engine/selfLearningAI");
+} = require("./engine/LearningAI");
 
 // 🐋 WHALE TRACKER
 const {
@@ -207,319 +207,59 @@ async function fetchRSS(client) {
                 const title = item.title || "";
                 const content = item.contentSnippet || "";
 
-                // ================= SCAM AI =================
-                const scamScore = getScamScore(title, content, item.link);
-                const risk = getRiskLevel(scamScore);
-
-                if (risk === "DANGEROUS") {
-
-                    console.log(`🚨 BLOCKED SCAM: ${title}`);
-
-                    logSecurity("SCAM_BLOCKED", title, "DANGEROUS");
-
-                    continue;
-                }
-
-                if (risk === "SUSPICIOUS") {
-                    logSecurity("SUSPICIOUS", title, "MEDIUM");
-                }
-
-                // ================= AI SCORE =================
                 const score = getNewsScore(title, content);
 
-                if (score <= 0) {
+                if (score <= 0) continue;
 
-                    console.log("🚫 AI BLOCKED:", title);
-
-                    continue;
-                }
-
-                // ================= FLAGS =================
                 const airdrop = isAirdrop(title, content);
                 const breaking = isBreakingNews(title);
                 const category = detectType(title);
 
-                // ================= SENTIMENT AI =================
-                const sentimentScore = getSentimentScore(
-                    title,
-                    content
+                const sentimentScore = getSentimentScore(title, content);
+                const sentiment = getSentiment(sentimentScore);
+
+                const whaleAmount = detectWhaleAmount(title + " " + content);
+                const whaleAlert = isWhaleTransaction(whaleAmount);
+
+                let channelName = category;
+
+                if (whaleAlert) channelName = "whale-alerts";
+                if (breaking) channelName = "breaking-news";
+                if (airdrop) channelName = "airdrop-alerts";
+
+                const channel = client.channels.cache.find(
+                    ch => ch.name === channelName
                 );
-
-                const sentiment = getSentiment(
-                    sentimentScore
-                );
-
-                const trendStrength = detectTrendStrength(
-                    sentimentScore
-                );
-
-                const marketEmotion = detectMarketEmotion(
-                    title,
-                    content
-                );
-
-                const fearGreed = detectFearGreed(
-                    sentimentScore
-                );
-
-                const extremeFear = isExtremeFear(
-                    sentimentScore
-                );
-
-                const extremeGreed = isExtremeGreed(
-                    sentimentScore
-                );
-
-                // ================= WHALE ANALYSIS =================
-                const whaleAmount = detectWhaleAmount(
-                    title + " " + content
-                );
-
-                const whaleAlert = isWhaleTransaction(
-                    whaleAmount
-                );
-
-                let whaleData = {
-                    type: "NONE",
-                    sentiment: "NEUTRAL"
-                };
-
-                let whaleScore = 0;
-                let vipWhale = false;
-
-                if (whaleAlert) {
-
-                    whaleData = classifyWhale(
-                        title,
-                        content
-                    );
-
-                    whaleScore = getWhaleScore(
-                        whaleAmount
-                    );
-
-                    vipWhale = isVIPWhale(
-                        whaleScore
-                    );
-                }
-
-                // ================= RULE ENGINE =================
-                const priority = getPriority(score);
-
-                const vipSignal = isVIPSignal(
-                    score,
-                    airdrop,
-                    breaking
-                );
-
-                // ================= ROUTING =================
-                let channel;
-
-                if (whaleAlert) {
-
-                    channel = client.channels.cache.find(
-                        ch => ch.name === "whale-alerts"
-                    );
-
-                } else if (airdrop) {
-
-                    channel = client.channels.cache.find(
-                        ch => ch.name === "airdrop-alerts"
-                    );
-
-                } else if (breaking || score >= 6) {
-
-                    channel = client.channels.cache.find(
-                        ch => ch.name === "breaking-news"
-                    );
-
-                } else {
-
-                    channel = client.channels.cache.find(
-                        ch => ch.name === category
-                    );
-                }
 
                 if (!channel) continue;
 
-                // ================= EMBED =================
                 const embed = new EmbedBuilder()
-                    .setTitle(
-                        whaleAlert
-                            ? "🐋 WHALE ALERT: " + title
-                            : airdrop
-                                ? "💰 AIRDROP ALERT: " + title
-                                : breaking
-                                    ? "🚨 BREAKING: " + title
-                                    : "🚀 " + title
-                    )
+                    .setTitle(title)
                     .setURL(item.link)
-                    .setDescription(
-                        (content || "Latest crypto update").slice(0, 220)
-                    )
+                    .setDescription((content || "Latest update").slice(0, 220))
                     .setColor(
-                        extremeGreed
+                        sentiment === "BULLISH"
                             ? 0x00ff00
-                            : extremeFear
+                            : sentiment === "BEARISH"
                                 ? 0xff0000
-                                : sentiment === "BULLISH"
-                                    ? 0x32CD32
-                                    : sentiment === "BEARISH"
-                                        ? 0xDC143C
-                                        : whaleAlert
-                                            ? 0x8A2BE2
-                                            : airdrop
-                                                ? 0xffd700
-                                                : breaking
-                                                    ? 0xff4500
-                                                    : priority === "VIP"
-                                                        ? 0xff00ff
-                                                        : priority === "HIGH"
-                                                            ? 0xffa500
-                                                            : 0x00BFFF
+                                : whaleAlert
+                                    ? 0x8A2BE2
+                                    : 0x00BFFF
                     )
-                    .addFields(
-                        {
-                            name: "📡 Source",
-                            value: parsed.title || "RSS Feed",
-                            inline: true
-                        },
-                        {
-                            name: "📂 Category",
-                            value: category,
-                            inline: true
-                        },
-                        {
-                            name: "🧠 AI Score",
-                            value: String(score),
-                            inline: true
-                        },
-                        {
-                            name: "📈 Market Sentiment",
-                            value: sentiment,
-                            inline: true
-                        },
-                        {
-                            name: "🧠 Sentiment Score",
-                            value: String(sentimentScore),
-                            inline: true
-                        },
-                        {
-                            name: "🔥 Trend Strength",
-                            value: trendStrength,
-                            inline: true
-                        },
-                        {
-                            name: "😨 Fear & Greed",
-                            value: fearGreed,
-                            inline: true
-                        },
-                        {
-                            name: "🧠 Market Emotion",
-                            value: marketEmotion,
-                            inline: true
-                        },
-                        {
-                            name: "🚨 Extreme Fear",
-                            value: extremeFear ? "YES" : "NO",
-                            inline: true
-                        },
-                        {
-                            name: "🚀 Extreme Greed",
-                            value: extremeGreed ? "YES" : "NO",
-                            inline: true
-                        },
-                        {
-                            name: "⚡ Priority",
-                            value: priority,
-                            inline: true
-                        },
-                        {
-                            name: "💰 Opportunity",
-                            value: airdrop ? "AIRDROP" : "NEWS",
-                            inline: true
-                        },
-                        {
-                            name: "🛡️ Risk",
-                            value: risk,
-                            inline: true
-                        },
-                        {
-                            name: "🐋 Whale Alert",
-                            value: whaleAlert ? "YES" : "NO",
-                            inline: true
-                        }
-                    )
-                    .setTimestamp(
-                        new Date(item.pubDate || Date.now())
-                    );
+                    .setTimestamp(new Date(item.pubDate || Date.now()));
 
-                // ================= SEND =================
                 await channel.send({ embeds: [embed] });
 
-                learnFromPost(title, content, priority);
+                // ✅ FIXED LEARNING AI CALL
+                learnFromPost(title, content, "NORMAL");
 
                 await savePost(item.link, item.title);
-
-                // ================= VIP WHALE =================
-                if (vipWhale) {
-
-                    const vipWhaleChannel = client.channels.cache.find(
-                        ch => ch.name === "vip-whale-signals"
-                    );
-
-                    if (vipWhaleChannel) {
-
-                        await vipWhaleChannel.send({
-                            embeds: [embed]
-                        }).catch(() => {});
-                    }
-                }
-
-                // ================= MARKET EMOTION ALERT =================
-                if (extremeFear || extremeGreed) {
-
-                    const emotionChannel = client.channels.cache.find(
-                        ch => ch.name === "market-emotions"
-                    );
-
-                    if (emotionChannel) {
-
-                        await emotionChannel.send({
-                            embeds: [embed]
-                        }).catch(() => {});
-                    }
-
-                    console.log(
-                        `🧠 MARKET EMOTION: ${marketEmotion}`
-                    );
-                }
-
-                // ================= VIP SIGNAL =================
-                if (vipSignal) {
-
-                    const vipChannel = client.channels.cache.find(
-                        ch => ch.name === "vip-alerts"
-                    );
-
-                    if (vipChannel) {
-                        vipChannel.send({
-                            embeds: [embed]
-                        }).catch(() => {});
-                    }
-
-                    logVIPEvent("system", title);
-                }
 
                 console.log(`✅ Posted: ${title}`);
             }
 
         } catch (err) {
-
-            console.error(
-                `❌ RSS Error (${feed}):`,
-                err.message
-            );
+            console.error(`❌ RSS Error (${feed}):`, err.message);
         }
     }
 }
