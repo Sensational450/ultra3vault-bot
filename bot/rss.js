@@ -1,49 +1,42 @@
 const Parser = require("rss-parser");
 const { EmbedBuilder } = require("discord.js");
 
-// ✅ SQLite integration
+// ================= DB =================
 const { hasPosted, savePost } = require("../database/rssDB");
 
-// 🧠 RULE ENGINE IMPORT
-const {
-    isVIPSignal,
-    getPriority,
-    getChannelName
-} = require("./engine/rules");
+// ================= ENGINE IMPORTS =================
+const { getScamScore, getRiskLevel } = require("./engine/antiScamAI");
 
-// 🛡️ ANTI-SCAM AI IMPORT
-const {
-    getScamScore,
-    getRiskLevel
-} = require("./engine/antiScamAI");
-
-// 📊 VIP ANALYTICS SYSTEM
 const {
     logRSS,
-    logSecurity,
-    logVIPEvent
+    logSecurity
 } = require("../database/analyticsDB");
 
-// 🤖 SELF-LEARNING AI (FIXED)
+// 🧠 SELF LEARNING AI
 const {
     learnPositive,
     learnNegative,
     getLearningScore
 } = require("./engine/learningAI.js");
 
-// 🐋 WHALE TRACKER
+// 🐋 WHALE ENGINE
 const {
     isWhaleTransaction,
-    classifyWhale,
-    getWhaleScore,
-    isVIPWhale
+    classifyWhale
 } = require("./engine/whaleTracker");
 
-// 📈 MARKET SENTIMENT AI
+// 📈 SENTIMENT AI
 const {
     getSentimentScore,
     getSentiment
 } = require("./engine/sentimentAI");
+
+// 🧠 RULE ENGINE (NOW USED)
+const {
+    isVIPSignal,
+    getPriority,
+    getChannelName
+} = require("./engine/rules");
 
 const parser = new Parser();
 
@@ -56,7 +49,7 @@ const FEEDS = [
     "https://www.theblock.co/rss.xml"
 ];
 
-// ================= AI SCORE =================
+// ================= NEWS SCORE =================
 async function getNewsScore(title = "", content = "") {
 
     const text = (title + " " + content).toLowerCase();
@@ -76,17 +69,11 @@ async function getNewsScore(title = "", content = "") {
         "price prediction", "opinion"
     ];
 
-    highValue.forEach(word => {
-        if (text.includes(word)) score += 3;
-    });
-
-    lowValue.forEach(word => {
-        if (text.includes(word)) score -= 2;
-    });
+    highValue.forEach(w => { if (text.includes(w)) score += 3; });
+    lowValue.forEach(w => { if (text.includes(w)) score -= 2; });
 
     if (text.length > 80) score += 1;
 
-    // 🧠 Self-learning boost (FIXED)
     const learningBoost = await getLearningScore(text);
     score += learningBoost;
 
@@ -96,15 +83,15 @@ async function getNewsScore(title = "", content = "") {
 // ================= DETECTORS =================
 function isBreakingNews(title = "") {
     return ["bitcoin","btc","ethereum","eth","hack","exploit","liquidation","crash","sec","etf"]
-        .some(word => title.toLowerCase().includes(word));
+        .some(w => title.toLowerCase().includes(w));
 }
 
 function isAirdrop(title = "", content = "") {
     return ["airdrop","testnet","retroactive","quest","whitelist","beta"]
-        .some(word => (title + " " + content).toLowerCase().includes(word));
+        .some(w => (title + " " + content).toLowerCase().includes(w));
 }
 
-// ================= WHALE DETECTOR =================
+// ================= WHALE =================
 function detectWhaleAmount(text = "") {
 
     const regex = /\$?([\d,.]+)\s?(million|billion|m|b)?/gi;
@@ -127,13 +114,12 @@ function detectWhaleAmount(text = "") {
 
 // ================= CATEGORY =================
 function detectType(title = "") {
+    const t = title.toLowerCase();
 
-    const text = title.toLowerCase();
-
-    if (text.includes("airdrop")) return "airdrop-alerts";
-    if (text.includes("bitcoin") || text.includes("btc")) return "bitcoin-news";
-    if (text.includes("ethereum") || text.includes("eth")) return "altcoin-news";
-    if (text.includes("hack") || text.includes("exploit")) return "security-news";
+    if (t.includes("airdrop")) return "airdrop-alerts";
+    if (t.includes("bitcoin") || t.includes("btc")) return "bitcoin-news";
+    if (t.includes("ethereum") || t.includes("eth")) return "altcoin-news";
+    if (t.includes("hack") || t.includes("exploit")) return "security-news";
 
     return "crypto-news";
 }
@@ -160,7 +146,7 @@ async function fetchRSS(client) {
                 const title = item.title || "";
                 const content = item.contentSnippet || "";
 
-                // ================= SCAM CHECK =================
+                // ================= SCAM =================
                 const scamScore = getScamScore(title, content, item.link);
                 const risk = getRiskLevel(scamScore);
 
@@ -169,7 +155,7 @@ async function fetchRSS(client) {
                     continue;
                 }
 
-                // ================= AI SCORE =================
+                // ================= SCORE =================
                 const score = await getNewsScore(title, content);
                 if (score <= 0) continue;
 
@@ -186,12 +172,17 @@ async function fetchRSS(client) {
                 const whaleAmount = detectWhaleAmount(title + " " + content);
                 const whaleAlert = isWhaleTransaction(whaleAmount);
 
-                // ================= ROUTING =================
-                let channelName = category;
+                const whaleData = whaleAlert
+                    ? classifyWhale(title, content)
+                    : { type: "NONE", sentiment: "NEUTRAL" };
+
+                // ================= ROUTING (FIXED RULE ENGINE) =================
+                const priority = getPriority(score);
+                const vipSignal = isVIPSignal(score, airdrop, breaking);
+
+                let channelName = getChannelName(score, airdrop, breaking, category);
 
                 if (whaleAlert) channelName = "whale-alerts";
-                else if (breaking) channelName = "breaking-news";
-                else if (airdrop) channelName = "airdrop-alerts";
 
                 const channel = client.channels.cache.find(
                     ch => ch.name === channelName
@@ -211,13 +202,21 @@ async function fetchRSS(client) {
                                 ? 0xff0000
                                 : whaleAlert
                                     ? 0x8A2BE2
-                                    : 0x00BFFF
+                                    : priority === "VIP"
+                                        ? 0xff00ff
+                                        : 0x00BFFF
+                    )
+                    .addFields(
+                        { name: "⚡ Priority", value: priority, inline: true },
+                        { name: "📈 Sentiment", value: sentiment, inline: true },
+                        { name: "🐋 Whale", value: whaleAlert ? "YES" : "NO", inline: true },
+                        { name: "💰 Type", value: whaleData.type, inline: true }
                     )
                     .setTimestamp(new Date(item.pubDate || Date.now()));
 
                 await channel.send({ embeds: [embed] });
 
-                // 🧠 LEARNING AI FIXED
+                // ================= LEARNING =================
                 const fullText = title + " " + content;
 
                 if (score >= 6) learnPositive(fullText);
