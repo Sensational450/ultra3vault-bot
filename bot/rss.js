@@ -27,8 +27,11 @@ const {
     getSentiment
 } = require("./engine/sentimentAI");
 
-// 🧠 VIP ROUTER (NEW CORE BRAIN)
+// 🧠 VIP ROUTER (CORE BRAIN)
 const { getVIPClass } = require("./engine/vipRouter");
+
+// 📊 ALPHA ENGINE (PUMP/DUMP PREDICTION)
+const { getAlphaScore } = require("./engine/alphaEngine");
 
 const parser = new Parser();
 
@@ -169,7 +172,7 @@ async function fetchRSS(client) {
                     ? classifyWhale(title, content)
                     : { type: "NONE", sentiment: "NEUTRAL" };
 
-                // ================= VIP BRAIN (NEW) =================
+                // ================= VIP BRAIN =================
                 const vip = getVIPClass({
                     score,
                     sentiment,
@@ -179,6 +182,17 @@ async function fetchRSS(client) {
                     airdrop
                 });
 
+                // ================= ALPHA ENGINE =================
+                const alpha = getAlphaScore({
+                    score,
+                    sentiment,
+                    whaleAlert,
+                    vipTier: vip.tier,
+                    breaking,
+                    airdrop
+                });
+
+                // ================= ROUTING =================
                 const channelMap = {
                     SECURITY_THREAT: "security-alerts",
                     WHALE_MOVE: "whale-alerts",
@@ -214,6 +228,11 @@ async function fetchRSS(client) {
                         { name: "🧠 Tier", value: vip.tier, inline: true },
                         { name: "🎯 Confidence", value: vip.confidence + "%", inline: true },
                         { name: "⚡ Score", value: String(score), inline: true },
+
+                        { name: "📊 Pump", value: alpha.pump + "%", inline: true },
+                        { name: "📉 Dump", value: alpha.dump + "%", inline: true },
+                        { name: "🎯 Action", value: alpha.action, inline: true },
+
                         { name: "📈 Sentiment", value: sentiment, inline: true },
                         { name: "🐋 Whale", value: whaleAlert ? "YES" : "NO", inline: true },
                         { name: "💰 Type", value: whaleData.type, inline: true }
@@ -228,7 +247,7 @@ async function fetchRSS(client) {
 
                 await savePost(item.link, item.title);
 
-                console.log(`🚀 Posted [${vip.tier} → ${channelName}]: ${title}`);
+                console.log(`🚀 [${vip.tier} | ${alpha.action}] → ${channelName}: ${title}`);
             }
 
         } catch (err) {
