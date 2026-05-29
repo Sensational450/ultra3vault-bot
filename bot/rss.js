@@ -11,6 +11,12 @@ const {
     getChannelName
 } = require("./engine/rules");
 
+// 🛡️ ANTI-SCAM AI IMPORT
+const {
+    getScamScore,
+    getRiskLevel
+} = require("./engine/antiScamAI");
+
 const parser = new Parser();
 
 // ================= FEEDS =================
@@ -88,11 +94,6 @@ function isAirdrop(title = "", content = "") {
     return AIRDROP_KEYWORDS.some(word => text.includes(word));
 }
 
-function isScam(title = "", content = "") {
-    const text = (title + " " + content).toLowerCase();
-    return SCAM_KEYWORDS.some(word => text.includes(word));
-}
-
 // ================= CATEGORY =================
 function detectType(title = "") {
     const text = title.toLowerCase();
@@ -130,9 +131,12 @@ async function fetchRSS(client) {
                 const title = item.title || "";
                 const content = item.contentSnippet || "";
 
-                // ================= SCAM BLOCK =================
-                if (isScam(title, content)) {
-                    console.log("🚫 SCAM BLOCKED:", title);
+                // ================= SCAM AI 2.0 =================
+                const scamScore = getScamScore(title, content, item.link);
+                const risk = getRiskLevel(scamScore);
+
+                if (risk === "DANGEROUS") {
+                    console.log(`🚨 BLOCKED SCAM: ${title}`);
                     continue;
                 }
 
@@ -184,7 +188,8 @@ async function fetchRSS(client) {
                         { name: "📂 Category", value: category, inline: true },
                         { name: "🧠 AI Score", value: String(score), inline: true },
                         { name: "⚡ Priority", value: priority, inline: true },
-                        { name: "💰 Opportunity", value: airdrop ? "AIRDROP" : "NEWS", inline: true }
+                        { name: "💰 Opportunity", value: airdrop ? "AIRDROP" : "NEWS", inline: true },
+                        { name: "🛡️ Security Risk", value: risk, inline: true }
                     )
                     .setTimestamp(new Date(item.pubDate || Date.now()));
 
@@ -201,7 +206,11 @@ async function fetchRSS(client) {
                 }
 
                 // ================= LOGS =================
-                if (priority === "VIP") {
+                if (risk === "SUSPICIOUS") {
+                    console.log(`⚠️ SUSPICIOUS: ${title}`);
+                } else if (risk === "DANGEROUS") {
+                    console.log(`🚨 BLOCKED SCAM: ${title}`);
+                } else if (priority === "VIP") {
                     console.log(`💎 VIP SIGNAL: ${title}`);
                 } else if (airdrop) {
                     console.log(`💰 AIRDROP: ${title}`);
