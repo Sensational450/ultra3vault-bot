@@ -1,32 +1,38 @@
-// ================= MAIN STARTER =================
+const dotenv = require("dotenv");
+dotenv.config();
 
-// handle crashes
+// ================= CRASH HANDLERS =================
 process.on("uncaughtException", (err) => console.log("CRASH:", err));
 process.on("unhandledRejection", (err) => console.log("PROMISE ERROR:", err));
 
-// load environment
-require("dotenv").config();
-
-// start bot client
+// ================= START BOT =================
 const client = require("./bot/client");
 
-// load RSS system (FIXED: matches rss.js lowercase file)
+// ================= SERVICES =================
 const fetchRSS = require("./bot/rss.js");
-
-// start web server
+const fetchPrices = require("./bot/priceAlert"); // 📈 NEW: price system
 require("./web/server");
 
 console.log("🚀 Ultra3Vault system starting...");
 
-// run RSS every 10 minutes (only after client is ready)
+// ================= READY EVENT =================
 client.once("ready", () => {
     console.log(`🤖 Bot is online as ${client.user.tag}`);
 
-    // run immediately once
+    // ================= RSS SYSTEM =================
+    console.log("📡 Starting RSS engine...");
     fetchRSS(client);
 
-    // run every 10 minutes
     setInterval(() => {
         fetchRSS(client);
-    }, 10 * 60 * 1000);
+    }, 10 * 60 * 1000); // 10 minutes
+
+    // ================= PRICE ALERT SYSTEM =================
+    console.log("📊 Starting price alert system...");
+    fetchPrices(client);
+
+    setInterval(() => {
+        fetchPrices(client);
+    }, 60 * 1000); // 1 minute
+
 });
