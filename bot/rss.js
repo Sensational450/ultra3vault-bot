@@ -27,13 +27,13 @@ const {
     getSentiment
 } = require("./engine/sentimentAI");
 
-// 🧠 VIP ROUTER
+// 🧠 VIP CORE BRAIN
 const { getVIPClass } = require("./engine/vipRouter");
 
 // 📊 ALPHA ENGINE
 const { getAlphaScore } = require("./engine/alphaEngine");
 
-// 💎 MEMBERSHIP TIERS
+// 💎 MEMBERSHIP SYSTEM (CRITICAL FIX)
 const membershipTiers = require("./engine/membershipTiers");
 
 const parser = new Parser();
@@ -119,7 +119,7 @@ function detectType(title = "") {
     return "crypto-news";
 }
 
-// ================= ROUTING ENGINE =================
+// ================= ROUTING ENGINE (FIXED + SAFE) =================
 function routeNews(vipTier, channelMap) {
     return channelMap[vipTier] || "crypto-news";
 }
@@ -176,7 +176,7 @@ async function fetchRSS(client) {
                     ? classifyWhale(title, content)
                     : { type: "NONE", sentiment: "NEUTRAL" };
 
-                // ================= VIP SYSTEM =================
+                // ================= VIP BRAIN =================
                 const vip = getVIPClass({
                     score,
                     sentiment,
@@ -186,10 +186,11 @@ async function fetchRSS(client) {
                     airdrop
                 });
 
-                const tier = vip.tier;
-                const membership = membershipTiers[tier] || membershipTiers.FREE;
+                const tier = vip?.tier || "FREE";
 
-                const allowedChannels = membership.access;
+                // ================= MEMBERSHIP SAFETY LOCK =================
+                const membership = membershipTiers[tier] || membershipTiers.FREE;
+                const allowed = membership.access || ["crypto-news"];
 
                 // ================= ALPHA ENGINE =================
                 const alpha = getAlphaScore({
@@ -212,10 +213,10 @@ async function fetchRSS(client) {
                     NOISE: "crypto-news"
                 };
 
-                let channelName = routeNews(tier, channelMap);
+                const channelName = routeNews(tier, channelMap);
 
-                // ================= MEMBERSHIP ENFORCEMENT =================
-                if (!allowedChannels.includes(channelName)) {
+                // ================= HARD ACCESS ENFORCEMENT =================
+                if (!allowed.includes(channelName)) {
                     console.log(`⛔ BLOCKED (${tier}) → ${channelName}`);
                     continue;
                 }
@@ -241,8 +242,8 @@ async function fetchRSS(client) {
                     )
                     .addFields(
                         { name: "🧠 Tier", value: tier, inline: true },
-                        { name: "💎 Membership", value: membership.name, inline: true },
-                        { name: "🔐 Access", value: allowedChannels.join(", "), inline: true },
+                        { name: "💎 Plan", value: membership.name, inline: true },
+                        { name: "🔐 Allowed", value: allowed.join(", "), inline: true },
 
                         { name: "⚡ Score", value: String(score), inline: true },
                         { name: "📈 Sentiment", value: sentiment, inline: true },
