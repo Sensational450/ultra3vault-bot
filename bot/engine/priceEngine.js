@@ -2,15 +2,15 @@ const axios = require("axios");
 
 let cache = null;
 let lastFetch = 0;
+const CACHE = 120000;
+
 let blockedUntil = 0;
 
 async function fetchPrices(client) {
 
-    const now = Date.now();
+    if (Date.now() < blockedUntil) return;
 
-    if (now < blockedUntil) return;
-
-    if (cache && now - lastFetch < 120000) return cache;
+    if (cache && Date.now() - lastFetch < CACHE) return;
 
     try {
         const res = await axios.get(
@@ -19,18 +19,13 @@ async function fetchPrices(client) {
                 params: {
                     ids: "bitcoin,ethereum",
                     vs_currencies: "usd"
-                }
+                },
+                timeout: 10000
             }
         );
 
         cache = res.data;
-        lastFetch = now;
-
-        const channel = client.channels.cache.find(c => c.name === "price-alerts");
-
-        if (channel) {
-            channel.send(`📊 BTC: $${cache.bitcoin.usd} | ETH: $${cache.ethereum.usd}`);
-        }
+        lastFetch = Date.now();
 
     } catch (err) {
 
