@@ -1,20 +1,4 @@
-const sqlite3 = require("sqlite3").verbose();
-const db = new sqlite3.Database("./database/main.sqlite");
-
-// ================= INIT =================
-db.serialize(() => {
-    db.run(`
-        CREATE TABLE IF NOT EXISTS referrals (
-            userId TEXT PRIMARY KEY,
-            code TEXT UNIQUE,
-            invites INTEGER DEFAULT 0,
-            points INTEGER DEFAULT 0,
-            referred_by TEXT
-        )
-    `);
-
-    console.log("🤝 Referral system ready");
-});
+const db = require("../../database/referrals");
 
 // ================= GENERATE CODE =================
 function generateCode(userId) {
@@ -29,63 +13,86 @@ function getReferral(userId, callback) {
         [userId],
         (err, row) => {
 
-            if (err) return console.log("REFERRAL DB ERROR:", err.message);
-
             if (row) return callback(row);
 
             const code = generateCode(userId);
 
             db.run(
-                `INSERT INTO referrals (userId, code, invites, points)
-                 VALUES (?, ?, 0, 0)`,
-                [userId, code]
+                `INSERT INTO referrals (userId, code, createdAt)
+                 VALUES (?, ?, ?)`,
+                [userId, code, Date.now()]
             );
 
             callback({
                 userId,
                 code,
                 invites: 0,
-                points: 0
+                points: 0,
+                referredBy: null
             });
         }
     );
 }
 
-// ================= ADD REFERRAL (SAFE) =================
-function addReferral(code, newUserId = null) {
+// ================= APPLY REFERRAL =================
+function applyReferral(code, newUserId) {
 
-    // prevent abuse if same user
-    if (newUserId && code.includes(newUserId.slice(-3))) return;
+    db.get(
+        "SELECT userId FROM referrals WHERE code = ?",
+        [code],
+        (err, row) => {
 
-    db.run(
-        `
-        UPDATE referrals
-        SET invites = invites + 1,
-            points = points + 10
-        WHERE code = ?
-        `,
-        [code]
+            if (!row) return;
+
+            const referrerId = row.userId;
+
+            if (referrerId === newUserId) return;
+
+            // update referrer
+            db.run(
+                `UPDATE referrals
+                 SET invites = invites + 1,
+                     points = points + 10
+                 WHERE userId = ?`,
+                [referrerId]
+            );
+
+            // set referred user
+            db.run(
+                `UPDATE referrals
+                 SET referredBy = ?
+                 WHERE userId = ?`,
+                [referrerId, newUserId]
+            );
+
+            // log
+            db.run(
+                `INSERT INTO referral_logs (referrer, referred, code, timestamp)
+                 VALUES (?, ?, ?, ?)`,
+                [referrerId, newUserId, code, Date.now()]
+            );
+
+            console.log(`👥 Referral: ${referrerId} invited ${newUserId}`);
+        }
     );
-
-    console.log(`🤝 Referral added for code: ${code}`);
 }
 
-// ================= LEADERBOARD =================
-function getLeaderboard(callback) {
+// ================= TOP REFERRERS =================
+function getLeaderboard(limit = 10, callback) {
+
     db.all(
-        `
-        SELECT userId, invites, points
-        FROM referrals
-        ORDER BY points DESC
-        LIMIT 10
-        `,
-        [],
-        callback
+        `SELECT * FROM referrals
+         ORDER BY invites DESC, points DESC
+         LIMIT ?`,
+        [limit],
+        (err, rows) => {
+            callback(rows || []);
+        }
     );
 }
 
 module.exports = {
     getReferral,
-    addReferral,
+    applyReferral,
     getLeaderboard
 };
