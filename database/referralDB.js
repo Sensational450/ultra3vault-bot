@@ -1,0 +1,27 @@
+const sqlite3 = require("sqlite3").verbose();
+
+const db = new sqlite3.Database("./database/main.sqlite"); 
+// 👆 IMPORTANT: use ONE main DB file
+
+db.serialize(() => {
+
+    db.run("PRAGMA journal_mode = WAL");
+
+    db.run(`
+        CREATE TABLE IF NOT EXISTS referrals (
+            userId TEXT PRIMARY KEY,
+            code TEXT UNIQUE,
+            invites INTEGER DEFAULT 0,
+            points INTEGER DEFAULT 0,
+            createdAt INTEGER DEFAULT (strftime('%s','now'))
+        )
+    `);
+
+    db.run(`
+        CREATE INDEX IF NOT EXISTS idx_ref_code ON referrals(code)
+    `);
+
+    console.log("💰 Referrals DB ready");
+});
+
+module.exports = db;
