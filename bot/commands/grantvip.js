@@ -19,6 +19,6 @@ module.exports = {
 
         setUserTier(user.id, tier, days);
 
-        message.reply(`✅ Granted ${tier} to ${user.tag} for ${days} days`);
+        message.reply(`✅ ${user.tag} upgraded to ${tier} for ${days} days`);
     }
 };
