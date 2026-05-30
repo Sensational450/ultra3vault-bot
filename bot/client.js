@@ -1,5 +1,5 @@
 const { Client, GatewayIntentBits } = require("discord.js");
-const db = require("../database/premium");
+const fs = require("fs");
 
 // ================= IMPORT SYSTEMS =================
 const fetchRSS = require("./rss");
@@ -7,6 +7,16 @@ const fetchPrices = require("./priceAlert");
 
 console.log("BOT FILE LOADED");
 console.log("TOKEN:", process.env.TOKEN ? "OK" : "MISSING");
+
+// ================= COMMAND SYSTEM =================
+const commands = new Map();
+
+const commandFiles = fs.readdirSync("./commands").filter(f => f.endsWith(".js"));
+
+for (const file of commandFiles) {
+    const cmd = require(`./commands/${file}`);
+    commands.set(cmd.name, cmd);
+}
 
 // ================= CLIENT =================
 const client = new Client({
@@ -21,7 +31,7 @@ const client = new Client({
 let rssRunning = false;
 let priceRunning = false;
 
-// ================= READY EVENT (FIXED) =================
+// ================= READY EVENT =================
 client.once("ready", async () => {
     console.log(`✅ BOT IS ONLINE: ${client.user.tag}`);
 
@@ -51,8 +61,31 @@ client.once("ready", async () => {
             } catch (err) {
                 console.log("❌ PRICE ALERT ERROR:", err.message);
             }
-        }, 60 * 1000); // every 1 min
+        }, 60 * 1000);
     }
 
     console.log("🚀 All systems initialized");
 });
+
+// ================= COMMAND HANDLER =================
+client.on("messageCreate", async (message) => {
+
+    if (!message.content.startsWith("!")) return;
+    if (message.author.bot) return;
+
+    const args = message.content.slice(1).trim().split(/ +/);
+    const cmdName = args.shift().toLowerCase();
+
+    const command = commands.get(cmdName);
+    if (!command) return;
+
+    try {
+        await command.execute(message, args);
+    } catch (err) {
+        console.error("COMMAND ERROR:", err);
+        message.reply("❌ Command failed.");
+    }
+});
+
+// ================= LOGIN =================
+client.login(process.env.TOKEN);
