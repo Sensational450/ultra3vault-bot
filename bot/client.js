@@ -31,6 +31,27 @@ const client = new Client({
 let rssRunning = false;
 let priceRunning = false;
 
+// ================= MESSAGE HANDLER =================
+client.on("messageCreate", async (message) => {
+
+    // IMPORTANT SAFETY ORDER
+    if (message.author.bot) return;
+    if (!message.content.startsWith("!")) return;
+
+    const args = message.content.slice(1).trim().split(/ +/);
+    const cmdName = args.shift().toLowerCase();
+
+    const command = commands.get(cmdName);
+    if (!command) return;
+
+    try {
+        await command.execute(message, args);
+    } catch (err) {
+        console.error("COMMAND ERROR:", err);
+        message.reply("❌ Command failed.");
+    }
+});
+
 // ================= READY EVENT =================
 client.once("ready", async () => {
     console.log(`✅ BOT IS ONLINE: ${client.user.tag}`);
@@ -65,26 +86,6 @@ client.once("ready", async () => {
     }
 
     console.log("🚀 All systems initialized");
-});
-
-// ================= COMMAND HANDLER =================
-client.on("messageCreate", async (message) => {
-
-    if (!message.content.startsWith("!")) return;
-    if (message.author.bot) return;
-
-    const args = message.content.slice(1).trim().split(/ +/);
-    const cmdName = args.shift().toLowerCase();
-
-    const command = commands.get(cmdName);
-    if (!command) return;
-
-    try {
-        await command.execute(message, args);
-    } catch (err) {
-        console.error("COMMAND ERROR:", err);
-        message.reply("❌ Command failed.");
-    }
 });
 
 // ================= LOGIN =================
