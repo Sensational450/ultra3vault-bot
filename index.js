@@ -1,7 +1,6 @@
 const dotenv = require("dotenv");
 dotenv.config();
 
-// ================= CRASH HANDLERS =================
 process.on("uncaughtException", err =>
     console.log("💥 CRASH:", err)
 );
@@ -10,7 +9,6 @@ process.on("unhandledRejection", err =>
     console.log("⚠️ PROMISE ERROR:", err)
 );
 
-// ================= IMPORTS =================
 const client = require("./bot/client");
 const fetchRSS = require("./bot/rss");
 const fetchPrices = require("./bot/priceAlert");
@@ -21,79 +19,51 @@ require("./web/server");
 
 console.log("🚀 Ultra3Vault system starting...");
 
-// ================= SAFETY FLAGS =================
 let started = false;
 
-let rssInterval = null;
-let priceInterval = null;
-let cleanupInterval = null;
+let rssInterval;
+let priceInterval;
+let cleanupInterval;
 
-// ================= READY =================
 client.once("ready", async () => {
 
-    if (started) return; // prevents Render double boot
+    if (started) return;
     started = true;
 
     console.log(`🤖 Bot is online as ${client.user.tag}`);
 
     // ================= WEBHOOK =================
-    try {
-        attachClient?.(client);
-    } catch (e) {
-        console.log("❌ Webhook error:", e.message);
-    }
+    attachClient?.(client);
 
     // ================= RSS ENGINE =================
     console.log("📡 RSS engine starting...");
 
-    // run immediately once
-    try {
-        await fetchRSS(client);
-    } catch (e) {
-        console.log("❌ RSS initial error:", e.message);
-    }
+    await fetchRSS(client).catch(() => {});
 
-    // clear old interval if exists (extra safety)
     if (rssInterval) clearInterval(rssInterval);
 
-    rssInterval = setInterval(async () => {
-        try {
-            await fetchRSS(client);
-        } catch (e) {
-            console.log("❌ RSS ERROR:", e.message);
-        }
-    }, 12 * 60 * 1000); // 🔥 increased to 12 min (reduces overload)
+    rssInterval = setInterval(() => {
+        fetchRSS(client).catch(() => {});
+    }, 15 * 60 * 1000); // 🔥 slower = stable + no spam
 
     // ================= PRICE ENGINE =================
     console.log("📊 Price system starting...");
 
-    try {
-        await fetchPrices(client);
-    } catch (e) {
-        console.log("❌ PRICE initial error:", e.message);
-    }
+    await fetchPrices(client).catch(() => {});
 
     if (priceInterval) clearInterval(priceInterval);
 
-    priceInterval = setInterval(async () => {
-        try {
-            await fetchPrices(client);
-        } catch (e) {
-            console.log("❌ PRICE ERROR:", e.message);
-        }
-    }, 90 * 1000); // 🔥 1.5 min (reduces CoinGecko 429)
+    priceInterval = setInterval(() => {
+        fetchPrices(client).catch(() => {});
+    }, 2 * 60 * 1000); // safer for CoinGecko
 
     // ================= CLEANUP =================
     console.log("🔁 Cleanup loop starting...");
 
     if (cleanupInterval) clearInterval(cleanupInterval);
 
-    cleanupInterval = setInterval(async () => {
-        try {
-            await cleanupExpired(client);
-        } catch (e) {
-            console.log("❌ CLEANUP ERROR:", e.message);
-        }
+    cleanupInterval = setInterval(() => {
+        cleanupExpired(client).catch(() => {});
     }, 60 * 60 * 1000);
 
     console.log("🚀 SYSTEM FULLY STABLE");
