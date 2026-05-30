@@ -1,119 +1,96 @@
+const db = require("../database/db");
 const membershipTiers = require("./membershipTiers");
-
-// ================= MEMORY DB =================
-const userDB = new Map();
-
-// ================= SET USER =================
-function setUserTier(userId, tier = "FREE", durationDays = 30) {
-
-    const expiresAt =
-        tier === "FREE"
-            ? null
-            : Date.now() + durationDays * 24 * 60 * 60 * 1000;
-
-    userDB.set(userId, {
-        tier,
-        updatedAt: Date.now(),
-        expiresAt
-    });
-}
 
 // ================= GET USER =================
 function getUserTier(userId) {
 
-    const data = userDB.get(userId);
-    if (!data) return "FREE";
+    return new Promise((resolve) => {
 
-    if (data.expiresAt && Date.now() > data.expiresAt) {
-        userDB.set(userId, {
-            tier: "FREE",
-            updatedAt: Date.now(),
-            expiresAt: null
-        });
-        return "FREE";
-    }
+        db.get(
+            "SELECT tier, expiresAt FROM users WHERE id = ?",
+            [userId],
+            (err, row) => {
 
-    return data.tier;
+                if (err || !row) return resolve("FREE");
+
+                if (row.expiresAt && Date.now() > row.expiresAt) {
+                    db.run(
+                        "UPDATE users SET tier = 'FREE', expiresAt = NULL WHERE id = ?",
+                        [userId]
+                    );
+                    return resolve("FREE");
+                }
+
+                resolve(row.tier);
+            }
+        );
+    });
 }
 
-// ================= SINGLE SOURCE OF TRUTH =================
-function getUserPlan(userId) {
+// ================= SET USER =================
+function setUserTier(userId, tier, days = 30) {
 
-    const tier = getUserTier(userId);
-    const plan = membershipTiers[tier] || membershipTiers.FREE;
+    const expiresAt =
+        tier === "FREE"
+            ? null
+            : Date.now() + days * 86400000;
 
-    return {
-        tier,
-        access: plan.access || [],
-        role: plan.role || null
-    };
+    db.run(
+        `
+        INSERT INTO users (id, tier, expiresAt)
+        VALUES (?, ?, ?)
+        ON CONFLICT(id)
+        DO UPDATE SET tier = excluded.tier,
+        expiresAt = excluded.expiresAt
+        `,
+        [userId, tier, expiresAt]
+    );
 }
 
-// ================= ACCESS CHECK =================
-function hasAccess(userId, channelName) {
+// ================= ACCESS =================
+function hasAccess(userId, channelName, callback) {
 
-    const { access } = getUserPlan(userId);
-    return access.includes(channelName);
-}
+    db.get(
+        "SELECT tier FROM users WHERE id = ?",
+        [userId],
+        (err, row) => {
 
-// ================= UPGRADE USER =================
-function upgradeUser(userId, tier, member, durationDays = 30) {
+            const tier = row?.tier || "FREE";
+            const plan = membershipTiers[tier] || membershipTiers.FREE;
 
-    if (!membershipTiers[tier]) return false;
-
-    setUserTier(userId, tier, durationDays);
-
-    if (member && membershipTiers[tier]?.role) {
-        member.roles.add(membershipTiers[tier].role).catch(() => {});
-    }
-
-    return true;
+            callback(plan.access.includes(channelName));
+        }
+    );
 }
 
 // ================= CLEANUP =================
-async function cleanupExpired(client) {
+function cleanupExpired(client) {
 
-    for (const [userId, data] of userDB.entries()) {
+    db.all(
+        "SELECT id, tier, expiresAt FROM users",
+        async (err, rows) => {
 
-        if (data.expiresAt && Date.now() > data.expiresAt) {
+            if (err) return;
 
-            try {
-                for (const guild of client.guilds.cache.values()) {
+            for (const user of rows) {
 
-                    const member = await guild.members.fetch(userId).catch(() => null);
-                    if (!member) continue;
+                if (user.expiresAt && Date.now() > user.expiresAt) {
 
-                    const roleId = membershipTiers[data.tier]?.role;
+                    db.run(
+                        "UPDATE users SET tier = 'FREE', expiresAt = NULL WHERE id = ?",
+                        [user.id]
+                    );
 
-                    if (roleId) {
-                        await member.roles.remove(roleId).catch(() => {});
-                        console.log(`⛔ EXPIRED → ${userId}`);
-                    }
+                    console.log(`⛔ EXPIRED USER: ${user.id}`);
                 }
-
-                userDB.set(userId, {
-                    tier: "FREE",
-                    updatedAt: Date.now(),
-                    expiresAt: null
-                });
-
-            } catch (err) {
-                console.log("Cleanup error:", err.message);
             }
         }
-    }
-}
-
-function isPremium(tier) {
-    return tier === "VIP" || tier === "ALPHA";
+    );
 }
 
 module.exports = {
-    setUserTier,
     getUserTier,
-    getUserPlan,
+    setUserTier,
     hasAccess,
-    upgradeUser,
-    cleanupExpired,
-    isPremium
+    cleanupExpired
 };
