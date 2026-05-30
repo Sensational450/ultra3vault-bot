@@ -1,30 +1,29 @@
-const dotenv = require("dotenv");
-dotenv.config();
-
-process.on("uncaughtException", err =>
-    console.log("💥 CRASH:", err)
-);
-
-process.on("unhandledRejection", err =>
-    console.log("⚠️ PROMISE ERROR:", err)
-);
-
-console.log("🚀 Ultra3Vault Booting...");
-
-// ================= IMPORT CORE =================
 const client = require("./bot/client");
-require("./web/server");
+const fetchRSS = require("./bot/engine/rssEngine");
+const fetchPrices = require("./bot/engine/priceEngine");
 
-// ================= JOBS =================
-const { startJobs } = require("./jobs/jobManager");
+const { attachClient } = require("./web/server");
+const { cleanupExpired } = require("./bot/engine/subscriptionManager");
 
-// ================= START SYSTEM =================
+let started = false;
+
 client.once("ready", async () => {
-    console.log(`🤖 Logged in as ${client.user.tag}`);
 
-    startJobs(client);
+    if (started) return;
+    started = true;
 
-    console.log("🚀 SYSTEM FULLY STABLE");
+    console.log("🤖 BOT ONLINE:", client.user.tag);
+
+    attachClient?.(client);
+
+    await fetchRSS(client);
+    await fetchPrices(client);
+
+    setInterval(() => fetchRSS(client), 12 * 60 * 1000);
+    setInterval(() => fetchPrices(client), 90 * 1000);
+    setInterval(() => cleanupExpired(client), 60 * 60 * 1000);
+
+    console.log("🚀 SYSTEM STABLE CORE RUNNING");
 });
 
 client.login(process.env.TOKEN);
