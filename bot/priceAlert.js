@@ -1,20 +1,37 @@
 const axios = require("axios");
 
+// ================= CACHE SYSTEM =================
+let cache = null;
+let lastFetch = 0;
+const CACHE_TIME = 60 * 1000; // 1 minute
+
+// ================= PRICE MEMORY =================
 let lastPrices = {
     bitcoin: null,
     ethereum: null
 };
 
-// % threshold for alerts
+// ================= CONFIG =================
 const THRESHOLD = 2.5;
 
-async function fetchPrices(client) {
+// ================= FETCH FROM COINGECKO =================
+async function getMarketPrices() {
+
+    const now = Date.now();
+
+    // 🔥 RETURN CACHE (prevents rate limit)
+    if (cache && now - lastFetch < CACHE_TIME) {
+        return cache;
+    }
 
     try {
-
         const res = await axios.get(
-            "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd",
+            "https://api.coingecko.com/api/v3/simple/price",
             {
+                params: {
+                    ids: "bitcoin,ethereum",
+                    vs_currencies: "usd"
+                },
                 headers: {
                     "User-Agent": "Ultra3Vault/1.0"
                 },
@@ -22,90 +39,74 @@ async function fetchPrices(client) {
             }
         );
 
-        const data = res.data;
+        cache = res.data;
+        lastFetch = now;
 
-        const btc = data.bitcoin.usd;
-        const eth = data.ethereum.usd;
-
-        // ================= BTC CHECK =================
-        if (lastPrices.bitcoin) {
-
-            const change =
-                ((btc - lastPrices.bitcoin) /
-                    lastPrices.bitcoin) * 100;
-
-            if (Math.abs(change) >= THRESHOLD) {
-
-                sendAlert(
-                    client,
-                    "Bitcoin",
-                    btc,
-                    change
-                );
-            }
-        }
-
-        // ================= ETH CHECK =================
-        if (lastPrices.ethereum) {
-
-            const change =
-                ((eth - lastPrices.ethereum) /
-                    lastPrices.ethereum) * 100;
-
-            if (Math.abs(change) >= THRESHOLD) {
-
-                sendAlert(
-                    client,
-                    "Ethereum",
-                    eth,
-                    change
-                );
-            }
-        }
-
-        lastPrices.bitcoin = btc;
-        lastPrices.ethereum = eth;
+        return cache;
 
     } catch (err) {
+        console.log("❌ CoinGecko fetch error:", err.message);
 
-        if (err.response?.status === 429) {
-
-            console.log(
-                "⚠️ CoinGecko rate limit reached."
-            );
-
-            return;
-        }
-
-        console.error(
-            "PRICE ALERT ERROR:",
-            err.message
-        );
+        // fallback to old cache if available
+        return cache;
     }
 }
 
-function sendAlert(
-    client,
-    coin,
-    price,
-    change
-) {
+// ================= MAIN ENGINE =================
+async function fetchPrices(client) {
 
-    const channel =
-        client.channels.cache.find(
-            ch => ch.name === "price-alerts"
-        );
+    const data = await getMarketPrices();
+
+    if (!data) return;
+
+    const btc = data.bitcoin?.usd;
+    const eth = data.ethereum?.usd;
+
+    if (!btc || !eth) return;
+
+    // ================= BTC =================
+    if (lastPrices.bitcoin) {
+
+        const change =
+            ((btc - lastPrices.bitcoin) /
+                lastPrices.bitcoin) * 100;
+
+        if (Math.abs(change) >= THRESHOLD) {
+            sendAlert(client, "Bitcoin", btc, change);
+        }
+    }
+
+    // ================= ETH =================
+    if (lastPrices.ethereum) {
+
+        const change =
+            ((eth - lastPrices.ethereum) /
+                lastPrices.ethereum) * 100;
+
+        if (Math.abs(change) >= THRESHOLD) {
+            sendAlert(client, "Ethereum", eth, change);
+        }
+    }
+
+    lastPrices.bitcoin = btc;
+    lastPrices.ethereum = eth;
+}
+
+// ================= ALERT SYSTEM =================
+function sendAlert(client, coin, price, change) {
+
+    const channel = client.channels.cache.find(
+        ch => ch.name === "price-alerts"
+    );
 
     if (!channel) return;
 
-    const emoji =
-        change > 0 ? "🚀" : "🔴";
+    const emoji = change > 0 ? "🚀" : "🔴";
 
     channel.send({
         embeds: [{
             title: `${emoji} ${coin} Price Alert`,
-            description:
-                `${coin} moved **${change.toFixed(2)}%**`,
+            description: `${coin} moved **${change.toFixed(2)}%**`,
             fields: [
                 {
                     name: "💰 Price",
@@ -118,17 +119,12 @@ function sendAlert(
                     inline: true
                 }
             ],
-            color:
-                change > 0
-                    ? 0x00ff00
-                    : 0xff0000,
+            color: change > 0 ? 0x00ff00 : 0xff0000,
             timestamp: new Date()
         }]
     });
 
-    console.log(
-        `📊 ALERT: ${coin} ${change.toFixed(2)}%`
-    );
+    console.log(`📊 ALERT: ${coin} ${change.toFixed(2)}%`);
 }
 
 module.exports = fetchPrices;
