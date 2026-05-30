@@ -1,4 +1,4 @@
-const db = require("../../database/referrals.sqlite");
+const db = require("../../database/referralDB");
 
 // ================= ADD REFERRAL =================
 function addReferral(userId) {
@@ -13,6 +13,8 @@ function addReferral(userId) {
 
 // ================= APPLY REFERRAL =================
 function applyReferral(code) {
+
+    if (!code) return;
 
     db.run(
         `UPDATE referrals
@@ -30,6 +32,12 @@ function getReferralUser(userId, callback) {
         `SELECT * FROM referrals WHERE userId = ?`,
         [userId],
         (err, row) => {
+
+            if (err) {
+                console.error("Referral DB error:", err.message);
+                return callback(null);
+            }
+
             if (row) return callback(row);
 
             const code = "ULTRA-" + userId.slice(-5);
