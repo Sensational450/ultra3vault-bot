@@ -1,5 +1,7 @@
 const sqlite3 = require("sqlite3").verbose();
-const db = new sqlite3.Database("./database/referrals.sqlite");
+
+const db = new sqlite3.Database("./database/main.sqlite"); 
+// 👆 IMPORTANT: use ONE main DB file
 
 db.serialize(() => {
 
