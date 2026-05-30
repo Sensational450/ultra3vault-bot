@@ -5,6 +5,9 @@ const path = require("path");
 
 const db = require("../database/premium");
 
+// ================= REFERRAL SYSTEM =================
+const { addReferral } = require("../bot/engine/referralManager");
+
 const app = express();
 
 // ================= RAW BODY (WEBHOOK SECURITY) =================
@@ -14,7 +17,7 @@ app.use(express.json({
     }
 }));
 
-// ================= SERVE FRONTEND (IMPORTANT FIX) =================
+// ================= STATIC FILES =================
 app.use(express.static(path.join(__dirname, "public")));
 
 // ================= HEALTH CHECK =================
@@ -27,7 +30,6 @@ app.get("/api", (req, res) => {
 });
 
 // ================= LANDING PAGE =================
-// Now served as real file instead of inline HTML
 app.get("/", (req, res) => {
     res.sendFile(path.join(__dirname, "public", "index.html"));
 });
@@ -50,9 +52,8 @@ setImmediate(() => {
     }
 });
 
-// ================= SIGNATURE VERIFICATION =================
+// ================= SIGNATURE =================
 function verifySignature(rawBody, signature) {
-
     const secret = process.env.WEBHOOK_SECRET;
     if (!secret || !signature || !rawBody) return false;
 
@@ -75,6 +76,7 @@ const PLANS = {
 app.post("/webhook", async (req, res) => {
 
     try {
+
         const signature = req.headers["x-signature"];
 
         if (!verifySignature(req.rawBody, signature)) {
@@ -82,7 +84,7 @@ app.post("/webhook", async (req, res) => {
             return res.sendStatus(403);
         }
 
-        const { order_id, payment_id } = req.body;
+        const { order_id, payment_id, referral_code } = req.body;
         if (!order_id) return res.sendStatus(400);
 
         const [userId, plan] = order_id.split("_");
@@ -134,6 +136,16 @@ app.post("/webhook", async (req, res) => {
 
         } catch (err) {
             console.log("ROLE ERROR:", err.message);
+        }
+
+        // ================= REFERRAL SYSTEM (PHASE 4) =================
+        try {
+            if (referral_code) {
+                addReferral(referral_code);
+                console.log("🎯 Referral rewarded:", referral_code);
+            }
+        } catch (err) {
+            console.log("REFERRAL ERROR:", err.message);
         }
 
         // ================= SAVE PREMIUM =================
