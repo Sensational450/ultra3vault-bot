@@ -1,34 +1,21 @@
-const db = require("../../database/daily.sqlite");
+const { claimDaily } = require("../engine/dailyRewards");
 
 module.exports = {
     name: "daily",
 
     async execute(message) {
 
-        const userId = message.author.id;
-        const now = Date.now();
+        claimDaily(message.author.id, (success, data) => {
 
-        db.get(
-            "SELECT lastClaim FROM daily_rewards WHERE userId = ?",
-            [userId],
-            (err, row) => {
-
-                const cooldown = 24 * 60 * 60 * 1000;
-
-                if (row && now - row.lastClaim < cooldown) {
-                    return message.reply("⏳ Already claimed today");
-                }
-
-                db.run(
-                    `
-                    INSERT OR REPLACE INTO daily_rewards (userId, lastClaim)
-                    VALUES (?, ?)
-                    `,
-                    [userId, now]
-                );
-
-                message.reply("🎁 Daily reward claimed!");
+            if (!success) {
+                return message.reply(`❌ ${data}`);
             }
-        );
+
+            message.reply(
+                `🎁 Daily Reward Claimed!\n` +
+                `💰 +${data.reward} points\n` +
+                `🔥 Streak: ${data.streak} days`
+            );
+        });
     }
 };
