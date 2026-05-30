@@ -1,6 +1,8 @@
 const Parser = require("rss-parser");
 const { EmbedBuilder } = require("discord.js");
 
+console.log("📡 RSS ENGINE LOADED FROM:", __filename);
+
 // ================= DB =================
 const { hasPosted, savePost } = require("../database/rssDB");
 const { logRSS, logSecurity } = require("../database/analyticsDB");
@@ -29,7 +31,7 @@ const FEEDS = [
     "https://www.theblock.co/rss.xml"
 ];
 
-// ================= MEMORY CONTROL =================
+// ================= MEMORY SAFETY =================
 const seen = new Set();
 const MAX_SEEN = 300;
 
@@ -38,7 +40,7 @@ function safeSeenAdd(link) {
     seen.add(link);
 }
 
-// ================= SCORE =================
+// ================= SCORE ENGINE =================
 async function getNewsScore(title = "", content = "") {
     const text = (title + " " + content).toLowerCase();
 
@@ -72,9 +74,11 @@ async function fetchRSS(client) {
 
                 if (!item?.link) continue;
 
+                // prevent duplicates in runtime
                 if (seen.has(item.link)) continue;
                 safeSeenAdd(item.link);
 
+                // prevent DB duplicates
                 if (await hasPosted(item.link)) continue;
 
                 const title = item.title || "";
@@ -107,20 +111,29 @@ async function fetchRSS(client) {
 
                 try {
                     if (routeIntelligence) {
-                        vip = routeIntelligence({ score, sentiment, whaleAlert, risk }) || vip;
+                        vip = routeIntelligence({
+                            score,
+                            sentiment,
+                            whaleAlert,
+                            risk
+                        }) || vip;
                     }
-                } catch {}
+                } catch (e) {
+                    console.log("⚠️ VIP fallback used");
+                }
 
-                // ================= ACCESS CONTROL (FIXED) =================
-                const allowed = hasAccess("GLOBAL", vip.channel);
+                // ================= ACCESS CONTROL =================
+                const allowed = await hasAccess("GLOBAL", vip.channel);
                 if (!allowed) continue;
 
+                // ================= CHANNEL =================
                 const channel = client.channels.cache.find(
                     ch => ch.name === vip.channel
                 );
 
                 if (!channel) continue;
 
+                // ================= EMBED =================
                 const embed = new EmbedBuilder()
                     .setTitle(title)
                     .setURL(item.link)
@@ -130,9 +143,11 @@ async function fetchRSS(client) {
 
                 await channel.send({ embeds: [embed] });
 
+                // ================= AI LEARNING =================
                 if (score >= 6) learnPositive(fullText);
                 else learnNegative(fullText);
 
+                // ================= SAVE =================
                 await savePost(item.link, title);
             }
 
