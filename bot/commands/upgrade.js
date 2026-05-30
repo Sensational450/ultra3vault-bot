@@ -1,59 +1,32 @@
-const {
-    upgradeUser,
-    getUserTier
-} = require("../engine/subscriptionManager");
+const { upgradeUser } = require("../engine/subscriptionManager");
 
 module.exports = {
     name: "upgrade",
 
     async execute(message, args) {
 
-        const userId = message.author.id;
-        const currentTier = getUserTier(userId);
+        const tier = args[0];
 
-        // ================= HELP MENU =================
-        if (!args[0]) {
-            return message.reply(
-                `💎 **VIP Upgrade System**\n\n` +
-                `Your current plan: **${currentTier}**\n\n` +
-                `Commands:\n` +
-                `👉 !upgrade vip\n` +
-                `👉 !upgrade alpha`
-            );
+        if (!tier) {
+            return message.reply("Usage: !upgrade VIP or VIP_ALPHA");
         }
 
-        const plan = args[0].toLowerCase();
+        const valid = ["VIP", "VIP_ALPHA"];
 
-        // ================= VIP =================
-        if (plan === "vip") {
-
-            if (currentTier === "VIP" || currentTier === "VIP_ALPHA") {
-                return message.reply("⚠️ You already have VIP or higher.");
-            }
-
-            upgradeUser(userId, "VIP");
-
-            return message.reply(
-                "✅ You are now **VIP**!\n" +
-                "Access unlocked: VIP alerts, Airdrops, Breaking news"
-            );
+        if (!valid.includes(tier)) {
+            return message.reply("Invalid tier.");
         }
 
-        // ================= VIP ALPHA =================
-        if (plan === "alpha") {
+        const success = await upgradeUser(
+            message.author.id,
+            tier,
+            message.member   // 🔥 IMPORTANT: sends Discord member
+        );
 
-            if (currentTier === "VIP_ALPHA") {
-                return message.reply("⚠️ You already have VIP_ALPHA.");
-            }
-
-            upgradeUser(userId, "VIP_ALPHA");
-
-            return message.reply(
-                "🔥 You are now **VIP_ALPHA**!\n" +
-                "Access unlocked: Whale alerts, Security signals, Alpha engine"
-            );
+        if (!success) {
+            return message.reply("Upgrade failed.");
         }
 
-        return message.reply("❌ Invalid plan. Use `vip` or `alpha`.");
+        return message.reply(`✅ You are now **${tier}** and role has been assigned.`);
     }
 };
