@@ -1,14 +1,17 @@
-const { claimDaily } = require("../engine/streakManager");
+const { claimDaily } = require("../engine/economyManager");
 
 module.exports = {
     name: "daily",
 
-    execute(message) {
+    async execute(message) {
 
         claimDaily(message.author.id, (data) => {
 
             message.reply(
-                `🔥 Streak: ${data.streak}\n💰 Reward: ${data.points}\n${data.message}`
+                `🎁 Daily Reward Claimed!\n` +
+                `💰 +${data.reward} points\n` +
+                `🔥 Streak: ${data.streak} days\n` +
+                `⭐ Total: ${data.points}`
             );
         });
     }
