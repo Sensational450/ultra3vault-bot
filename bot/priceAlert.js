@@ -3,7 +3,11 @@ const axios = require("axios");
 // ================= CACHE SYSTEM =================
 let cache = null;
 let lastFetch = 0;
-const CACHE_TIME = 60 * 1000; // 1 minute
+const CACHE_TIME = 2 * 60 * 1000; // 2 minutes (better for rate limits)
+
+// ================= CIRCUIT BREAKER =================
+let failCount = 0;
+let blockedUntil = 0;
 
 // ================= PRICE MEMORY =================
 let lastPrices = {
@@ -19,7 +23,12 @@ async function getMarketPrices() {
 
     const now = Date.now();
 
-    // 🔥 RETURN CACHE (prevents rate limit)
+    // ❌ CIRCUIT BREAKER (stop spam after failures)
+    if (now < blockedUntil) {
+        return cache;
+    }
+
+    // 🔥 CACHE HIT (prevents API spam)
     if (cache && now - lastFetch < CACHE_TIME) {
         return cache;
     }
@@ -42,12 +51,29 @@ async function getMarketPrices() {
         cache = res.data;
         lastFetch = now;
 
+        // reset failure counter on success
+        failCount = 0;
+
         return cache;
 
     } catch (err) {
-        console.log("❌ CoinGecko fetch error:", err.message);
 
-        // fallback to old cache if available
+        failCount++;
+
+        console.log("❌ CoinGecko error:", err.response?.status || err.message);
+
+        // 🚨 RATE LIMIT DETECTED
+        if (err.response?.status === 429) {
+            blockedUntil = now + 5 * 60 * 1000; // 5 min cooldown
+            console.log("⛔ CoinGecko cooldown activated (5 min)");
+        }
+
+        // 🔥 TOO MANY FAILURES → BACKOFF
+        if (failCount >= 3) {
+            blockedUntil = now + 10 * 60 * 1000; // 10 min cooldown
+            console.log("⛔ API circuit breaker activated (10 min)");
+        }
+
         return cache;
     }
 }
