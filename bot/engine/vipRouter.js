@@ -1,87 +1,43 @@
-// ================= VIP INTELLIGENCE ROUTER =================
-
-// 🧠 CENTRAL DECISION ENGINE (ALL ROUTING GOES THROUGH HERE)
-
-function routeIntelligence({
+function getVIPClass({
     score,
     sentiment,
     whaleAlert,
-    breaking,
-    airdrop,
     risk,
-    vipAlpha
+    breaking,
+    airdrop
 }) {
 
-    // ================= LAYER 1: SECURITY FIRST =================
+    let tier = "NOISE";
+    let confidence = 50;
+
+    // ================= SECURITY =================
     if (risk === "DANGEROUS") {
-        return {
-            channel: "security-alerts",
-            tier: "BLOCKED",
-            priority: "CRITICAL"
-        };
+        return { tier: "SECURITY_THREAT", confidence: 95 };
     }
 
-    // ================= LAYER 2: ALPHA SYSTEM =================
-    if (vipAlpha) {
-        return {
-            channel: "vip-alpha",
-            tier: "ALPHA",
-            priority: "ELITE"
-        };
-    }
-
-    // ================= LAYER 3: WHALE FLOW =================
+    // ================= WHALE =================
     if (whaleAlert) {
-        return {
-            channel: "whale-alerts",
-            tier: "VIP",
-            priority: "HIGH"
-        };
+        return { tier: "WHALE_MOVE", confidence: 90 };
     }
 
-    // ================= LAYER 4: BREAKING NEWS =================
-    if (breaking && score >= 6) {
-        return {
-            channel: "breaking-news",
-            tier: "VIP",
-            priority: "HIGH"
-        };
+    // ================= ALPHA =================
+    if (score >= 8 && breaking) {
+        return { tier: "VIP_ALPHA", confidence: 85 };
     }
 
-    // ================= LAYER 5: AIRDROP =================
+    // ================= AIRDROP =================
     if (airdrop) {
-        return {
-            channel: "airdrop-alerts",
-            tier: "FREE",
-            priority: "MEDIUM"
-        };
+        return { tier: "VIP_SIGNAL", confidence: 70 };
     }
 
-    // ================= LAYER 6: SENTIMENT ROUTING =================
-    if (sentiment === "VERY BULLISH") {
-        return {
-            channel: "bullish-signals",
-            tier: "VIP",
-            priority: "MEDIUM"
-        };
+    // ================= WATCHLIST =================
+    if (score >= 5) {
+        return { tier: "WATCHLIST", confidence: 60 };
     }
 
-    if (sentiment === "VERY BEARISH") {
-        return {
-            channel: "bearish-alerts",
-            tier: "FREE",
-            priority: "MEDIUM"
-        };
-    }
-
-    // ================= DEFAULT =================
-    return {
-        channel: "crypto-news",
-        tier: "FREE",
-        priority: "LOW"
-    };
+    return { tier, confidence };
 }
 
 module.exports = {
-    routeIntelligence
+    getVIPClass
 };
