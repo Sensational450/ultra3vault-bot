@@ -1,41 +1,31 @@
 const Parser = require("rss-parser");
 const { EmbedBuilder } = require("discord.js");
 
-// ================= DB =================
 const { hasPosted, savePost } = require("../database/rssDB");
 
-// ================= ENGINE =================
 const { getScamScore, getRiskLevel } = require("./engine/antiScamAI");
 const { logRSS, logSecurity } = require("../database/analyticsDB");
 
-// 🧠 LEARNING AI
 const { learnPositive, learnNegative, getLearningScore } =
     require("./engine/learningAI.js");
 
-// 🐋 WHALE ENGINE
 const { isWhaleTransaction, classifyWhale } =
     require("./engine/whaleTracker");
 
-// 📈 SENTIMENT
 const { getSentimentScore, getSentiment } =
     require("./engine/sentimentAI");
 
-// ================= FIXED VIP IMPORT =================
 const vipRouter = require("./engine/vipRouter");
 const routeIntelligence = vipRouter?.routeIntelligence;
 
-// 📊 ALPHA ENGINE
 const { getAlphaScore } = require("./engine/alphaEngine");
 
-// 💎 MEMBERSHIP SYSTEM
 const membershipTiers = require("./engine/membershipTiers");
 
-// 🔐 SUBSCRIPTION SYSTEM
 const { getUserTier } = require("./engine/subscriptionManager");
 
 const parser = new Parser();
 
-// ================= FEEDS =================
 const FEEDS = [
     "https://cointelegraph.com/rss",
     "https://www.coindesk.com/arc/outboundfeeds/rss/",
@@ -44,15 +34,12 @@ const FEEDS = [
     "https://www.theblock.co/rss.xml"
 ];
 
-// ================= MEMORY CONTROL =================
+// ================= MEMORY SAFETY =================
 const seen = new Set();
-const MAX_SEEN = 500;
+const MAX_SEEN = 300;
 
-// ================= HELPERS =================
-function safeSeenAdd(link) {
-    if (seen.size > MAX_SEEN) {
-        seen.clear(); // prevents memory leak
-    }
+function safeAdd(link) {
+    if (seen.size > MAX_SEEN) seen.clear();
     seen.add(link);
 }
 
@@ -62,53 +49,46 @@ async function getNewsScore(title = "", content = "") {
 
     let score = 0;
 
-    const highValue = [
-        "bitcoin","btc","ethereum","eth","sec","etf",
-        "hack","exploit","listing","binance","coinbase",
-        "liquidation","crash","airdrop"
-    ];
+    const high = ["bitcoin","btc","ethereum","eth","sec","hack","listing","airdrop"];
+    const low = ["sponsored","advertisement","click here","price prediction"];
 
-    const lowValue = [
-        "sponsored","giveaway","click here",
-        "subscribe","advertisement",
-        "price prediction","opinion"
-    ];
-
-    highValue.forEach(w => { if (text.includes(w)) score += 3; });
-    lowValue.forEach(w => { if (text.includes(w)) score -= 2; });
+    high.forEach(w => { if (text.includes(w)) score += 3; });
+    low.forEach(w => { if (text.includes(w)) score -= 2; });
 
     if (text.length > 80) score += 1;
 
     return score + await getLearningScore(text);
 }
 
-// ================= ENGINE =================
+// ================= MAIN ENGINE =================
 async function fetchRSS(client) {
+
     if (!client) return;
 
     for (const feed of FEEDS) {
+
         try {
             const parsed = await parser.parseURL(feed);
             logRSS("feed_loaded", feed);
 
-            // LIMIT ITEMS → prevents overload
-            const items = parsed.items.slice(0, 3);
+            // 🔥 LIMIT ITEMS (BIG OVERLOAD FIX)
+            const items = parsed.items.slice(0, 2);
 
             for (const item of items) {
 
                 if (!item?.link) continue;
                 if (seen.has(item.link)) continue;
 
-                safeSeenAdd(item.link);
+                safeAdd(item.link);
 
                 if (await hasPosted(item.link)) continue;
 
                 const title = item.title || "";
                 const content = item.contentSnippet || "";
-                const fullText = title + " " + content;
+                const fullText = title + content;
 
-                const scamScore = getScamScore(title, content, item.link);
-                const risk = getRiskLevel(scamScore);
+                const scam = getScamScore(title, content, item.link);
+                const risk = getRiskLevel(scam);
 
                 if (risk === "DANGEROUS") {
                     logSecurity("SCAM_BLOCKED", title, "DANGEROUS");
@@ -118,8 +98,7 @@ async function fetchRSS(client) {
                 const score = await getNewsScore(title, content);
                 if (score <= 0) continue;
 
-                const sentimentScore = getSentimentScore(title, content);
-                const sentiment = getSentiment(sentimentScore);
+                const sentiment = getSentiment(getSentimentScore(title, content));
 
                 const whaleAlert = isWhaleTransaction(
                     classifyWhale(title, content)
@@ -137,9 +116,7 @@ async function fetchRSS(client) {
                             risk
                         }) || vip;
                     }
-                } catch (e) {
-                    console.log("⚠️ VIP fallback used");
-                }
+                } catch {}
 
                 const channel =
                     client.channels.cache.find(ch => ch.name === vip.channel);
@@ -149,7 +126,7 @@ async function fetchRSS(client) {
                 const embed = new EmbedBuilder()
                     .setTitle(title)
                     .setURL(item.link)
-                    .setDescription(content.slice(0, 200))
+                    .setDescription((content || "").slice(0, 180))
                     .setColor(0x00bfff)
                     .setTimestamp();
 
@@ -159,11 +136,10 @@ async function fetchRSS(client) {
                 else learnNegative(fullText);
 
                 await savePost(item.link, item.title);
-
             }
 
         } catch (err) {
-            console.error(`❌ RSS Error (${feed}):`, err.message);
+            console.log(`❌ RSS Error (${feed}):`, err.message);
         }
     }
 }
