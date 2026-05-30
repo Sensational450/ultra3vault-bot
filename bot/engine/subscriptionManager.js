@@ -2,7 +2,7 @@ const db = require("../../database/db");
 const membershipTiers = require("./membershipTiers");
 
 // ================= GET USER TIER =================
-async function getUserTier(userId) {
+function getUserTier(userId) {
 
     return new Promise((resolve) => {
 
@@ -11,16 +11,13 @@ async function getUserTier(userId) {
             [userId],
             (err, row) => {
 
-                if (err || !row)
-                    return resolve("FREE");
+                if (err || !row) return resolve("FREE");
 
-                if (
-                    row.expiresAt &&
-                    Date.now() > row.expiresAt
-                ) {
+                // expire check
+                if (row.expiresAt && Date.now() > row.expiresAt) {
 
                     db.run(
-                        "UPDATE users SET tier='FREE', expiresAt=NULL WHERE id=?",
+                        "UPDATE users SET tier = 'FREE', expiresAt = NULL WHERE id = ?",
                         [userId]
                     );
 
@@ -34,11 +31,7 @@ async function getUserTier(userId) {
 }
 
 // ================= SET USER TIER =================
-function setUserTier(
-    userId,
-    tier = "FREE",
-    days = 30
-) {
+function setUserTier(userId, tier, days = 30) {
 
     const expiresAt =
         tier === "FREE"
@@ -47,70 +40,55 @@ function setUserTier(
 
     db.run(
         `
-        INSERT INTO users
-        (id,tier,expiresAt)
-        VALUES (?,?,?)
+        INSERT INTO users (id, tier, expiresAt)
+        VALUES (?, ?, ?)
         ON CONFLICT(id)
-        DO UPDATE SET
-        tier=excluded.tier,
-        expiresAt=excluded.expiresAt
+        DO UPDATE SET tier = excluded.tier,
+        expiresAt = excluded.expiresAt
         `,
         [userId, tier, expiresAt]
     );
 }
 
-// ================= ACCESS =================
-async function hasAccess(
-    userId,
-    channelName
-) {
+// ================= ACCESS CHECK (FIXED) =================
+function hasAccess(userId, channelName) {
 
-    const tier = await getUserTier(userId);
+    return new Promise((resolve) => {
 
-    const plan =
-        membershipTiers[tier] ||
-        membershipTiers.FREE;
+        db.get(
+            "SELECT tier FROM users WHERE id = ?",
+            [userId],
+            (err, row) => {
 
-    return plan.access.includes(channelName);
+                const tier = row?.tier || "FREE";
+                const plan = membershipTiers[tier] || membershipTiers.FREE;
+
+                resolve(plan.access.includes(channelName));
+            }
+        );
+    });
 }
 
 // ================= CLEANUP =================
-async function cleanupExpired() {
+function cleanupExpired() {
 
-    db.all(
-        `
-        SELECT id,tier,expiresAt
-        FROM users
-        `,
-        [],
-        (err, rows) => {
+    db.all("SELECT id, tier, expiresAt FROM users", (err, rows) => {
 
-            if (err) return;
+        if (err) return;
 
-            rows.forEach(user => {
+        for (const user of rows) {
 
-                if (
-                    user.expiresAt &&
-                    Date.now() > user.expiresAt
-                ) {
+            if (user.expiresAt && Date.now() > user.expiresAt) {
 
-                    db.run(
-                        `
-                        UPDATE users
-                        SET tier='FREE',
-                        expiresAt=NULL
-                        WHERE id=?
-                        `,
-                        [user.id]
-                    );
+                db.run(
+                    "UPDATE users SET tier = 'FREE', expiresAt = NULL WHERE id = ?",
+                    [user.id]
+                );
 
-                    console.log(
-                        `⛔ Expired: ${user.id}`
-                    );
-                }
-            });
+                console.log(`⛔ EXPIRED USER: ${user.id}`);
+            }
         }
-    );
+    });
 }
 
 module.exports = {
