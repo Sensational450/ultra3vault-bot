@@ -1,18 +1,17 @@
 const Parser = require("rss-parser");
 const { EmbedBuilder } = require("discord.js");
 
-// ================= DB =================
-const { hasPosted, savePost } = require("../database/rssDB");
-const { logRSS, logSecurity } = require("../database/analyticsDB");
+// ================= DB (NEW FIX) =================
+const db = require("../database/db");
 
 // ================= ENGINE =================
 const { getScamScore, getRiskLevel } = require("./engine/antiScamAI");
+const { logRSS, logSecurity } = require("../database/analyticsDB");
 const { learnPositive, learnNegative, getLearningScore } = require("./engine/learningAI");
 const { isWhaleTransaction, classifyWhale } = require("./engine/whaleTracker");
 const { getSentimentScore, getSentiment } = require("./engine/sentimentAI");
-const { getAlphaScore } = require("./engine/alphaEngine");
 
-// ================= VIP ROUTER (SAFE IMPORT) =================
+// ================= VIP ROUTER =================
 const vipRouter = require("./engine/vipRouter");
 const routeIntelligence = vipRouter?.routeIntelligence;
 
@@ -35,12 +34,33 @@ const FEEDS = [
 const seen = new Set();
 const MAX_SEEN = 300;
 
-// prevent CPU + memory overload
 function safeSeenAdd(link) {
-    if (seen.size > MAX_SEEN) {
-        seen.clear();
-    }
+    if (seen.size > MAX_SEEN) seen.clear();
     seen.add(link);
+}
+
+// ================= DATABASE LAYER (NEW) =================
+
+// check if already posted (persistent)
+function hasPosted(link) {
+    return new Promise((resolve) => {
+        db.get(
+            "SELECT link FROM rss_posts WHERE link = ?",
+            [link],
+            (err, row) => {
+                if (err) return resolve(false);
+                resolve(!!row);
+            }
+        );
+    });
+}
+
+// save post (persistent)
+function savePost(link, title) {
+    db.run(
+        "INSERT OR IGNORE INTO rss_posts (link, title, createdAt) VALUES (?, ?, ?)",
+        [link, title, Date.now()]
+    );
 }
 
 // ================= SCORE ENGINE =================
@@ -69,35 +89,40 @@ async function getNewsScore(title = "", content = "") {
     return score + await getLearningScore(text);
 }
 
-// ================= MAIN ENGINE =================
+// ================= ENGINE =================
 async function fetchRSS(client) {
-
     if (!client) return;
 
     for (const feed of FEEDS) {
-
         try {
             const parsed = await parser.parseURL(feed);
-
             logRSS("feed_loaded", feed);
 
-            // LIMIT ITEMS → prevents overload spikes
-            const items = parsed.items.slice(0, 2);
+            const items = parsed.items.slice(0, 2); // overload control
 
             for (const item of items) {
 
                 if (!item?.link) continue;
-                if (seen.has(item.link)) continue;
 
+                // ================= MEMORY CHECK =================
+                if (seen.has(item.link)) continue;
                 safeSeenAdd(item.link);
 
-                if (await hasPosted(item.link)) continue;
+                // ================= DB CHECK (FIX) =================
+                let alreadyPosted = false;
+                try {
+                    alreadyPosted = await hasPosted(item.link);
+                } catch {
+                    alreadyPosted = false;
+                }
+
+                if (alreadyPosted) continue;
 
                 const title = item.title || "";
                 const content = item.contentSnippet || "";
                 const fullText = title + " " + content;
 
-                // ================= SCAM FILTER =================
+                // ================= SCAM CHECK =================
                 const scamScore = getScamScore(title, content, item.link);
                 const risk = getRiskLevel(scamScore);
 
@@ -118,7 +143,7 @@ async function fetchRSS(client) {
                     classifyWhale(title, content)
                 );
 
-                // ================= VIP ROUTING (SAFE) =================
+                // ================= VIP ROUTING =================
                 let vip = { channel: "crypto-news", tier: "FREE" };
 
                 try {
@@ -130,17 +155,18 @@ async function fetchRSS(client) {
                             risk
                         }) || vip;
                     }
-                } catch (e) {
+                } catch {
                     console.log("⚠️ VIP fallback used");
                 }
 
-                // ================= ACCESS CONTROL (IMPORTANT FIX) =================
+                // ================= ACCESS CONTROL (FIX) =================
                 const allowed = hasAccess("GLOBAL", vip.channel);
                 if (!allowed) continue;
 
-                // ================= CHANNEL RESOLVE =================
-                const channel =
-                    client.channels.cache.find(ch => ch.name === vip.channel);
+                // ================= CHANNEL =================
+                const channel = client.channels.cache.find(
+                    ch => ch.name === vip.channel
+                );
 
                 if (!channel) continue;
 
@@ -158,7 +184,8 @@ async function fetchRSS(client) {
                 if (score >= 6) learnPositive(fullText);
                 else learnNegative(fullText);
 
-                await savePost(item.link, item.title);
+                // ================= SAVE =================
+                savePost(item.link, item.title);
 
             }
 
