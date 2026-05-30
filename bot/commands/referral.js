@@ -8,7 +8,7 @@ module.exports = {
         getReferral(message.author.id, (data) => {
 
             message.reply(
-                `🤝 Your Referral Code:\n` +
+                `👥 Your Referral Code:\n` +
                 `\`${data.code}\`\n\n` +
                 `📊 Invites: ${data.invites}\n` +
                 `⭐ Points: ${data.points}`
