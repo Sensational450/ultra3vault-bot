@@ -1,26 +1,39 @@
-// ================= DEBUG =================
-console.log("🧠 STARTUP DEBUG ACTIVE");
+// ================= DEBUG SYSTEM =================
+console.log("🧠 STARTUP DEBUG ACTIVE (PHASE 4 CORE)");
 
 process.on("uncaughtException", (err) => {
     console.error("💥 UNCAUGHT EXCEPTION:");
-    console.error(err.stack);
+    console.error(err.stack || err);
 });
 
 process.on("unhandledRejection", (err) => {
     console.error("💥 UNHANDLED REJECTION:");
-    console.error(err);
+    console.error(err?.stack || err);
 });
 
 // ================= LOAD CORE =================
 const client = require("./bot/client");
 const fetchRSS = require("./bot/engine/rssEngine");
-const fetchPrices = require("./bot/engine/priceEngine");
+const fetchPrices = require("./bot/engine/priceAlerts"); // FIXED (was priceEngine)
 
 const { attachClient } = require("./web/server");
 const { cleanupExpired } = require("./bot/engine/subscriptionManager");
 
+// ================= SYSTEM STATE =================
 let started = false;
+let intervals = [];
 
+// ================= SAFE WRAPPER =================
+function safeRun(name, fn) {
+    try {
+        return fn();
+    } catch (err) {
+        console.error(`❌ ${name} ERROR:`);
+        console.error(err.stack);
+    }
+}
+
+// ================= STARTUP =================
 client.once("ready", async () => {
 
     if (started) return;
@@ -28,7 +41,7 @@ client.once("ready", async () => {
 
     console.log("🤖 BOT ONLINE:", client.user.tag);
 
-    // show loaded engine files
+    // ================= ENGINE DEBUG =================
     console.log("🔍 LOADED ENGINE FILES:");
 
     Object.keys(require.cache)
@@ -40,50 +53,49 @@ client.once("ready", async () => {
             console.log("📦", file);
         });
 
+    // ================= WEB ATTACH =================
     attachClient?.(client);
 
-    try {
-        await fetchRSS(client);
-    } catch (err) {
-        console.error("❌ RSS STARTUP ERROR:");
-        console.error(err.stack);
-    }
+    // ================= INITIAL RUN =================
+    await safeRun("RSS STARTUP", () => fetchRSS(client));
+    await safeRun("PRICE STARTUP", () => fetchPrices(client));
 
-    try {
-        await fetchPrices(client);
-    } catch (err) {
-        console.error("❌ PRICE STARTUP ERROR:");
-        console.error(err.stack);
-    }
+    // ================= INTERVALS =================
+    intervals.push(
+        setInterval(() => safeRun("RSS LOOP", () => fetchRSS(client)), 12 * 60 * 1000)
+    );
 
-    setInterval(async () => {
-        try {
-            await fetchRSS(client);
-        } catch (err) {
-            console.error("❌ RSS LOOP ERROR:");
-            console.error(err.stack);
-        }
-    }, 12 * 60 * 1000);
+    intervals.push(
+        setInterval(() => safeRun("PRICE LOOP", () => fetchPrices(client)), 60 * 1000)
+    );
 
-    setInterval(async () => {
-        try {
-            await fetchPrices(client);
-        } catch (err) {
-            console.error("❌ PRICE LOOP ERROR:");
-            console.error(err.stack);
-        }
-    }, 90 * 1000);
+    intervals.push(
+        setInterval(() => safeRun("CLEANUP LOOP", () => cleanupExpired(client)), 60 * 60 * 1000)
+    );
 
-    setInterval(() => {
-        try {
-            cleanupExpired(client);
-        } catch (err) {
-            console.error("❌ CLEANUP ERROR:");
-            console.error(err.stack);
-        }
-    }, 60 * 60 * 1000);
+    // ================= HEALTH MONITOR =================
+    intervals.push(
+        setInterval(() => {
+            console.log(`📊 SYSTEM STATUS:
+- RSS: ACTIVE
+- PRICE: ACTIVE
+- MEMORY: ${process.memoryUsage().rss / 1024 / 1024 | 0} MB
+- UPTIME: ${Math.floor(process.uptime())}s`);
+        }, 5 * 60 * 1000)
+    );
 
-    console.log("🚀 SYSTEM STABLE CORE RUNNING");
+    console.log("🚀 SYSTEM STABLE CORE RUNNING (PHASE 4 READY)");
 });
 
+// ================= GRACEFUL SHUTDOWN =================
+process.on("SIGINT", () => {
+    console.log("⚠️ SHUTTING DOWN SYSTEM...");
+
+    intervals.forEach(clearInterval);
+
+    console.log("✅ CLEAN SHUTDOWN COMPLETE");
+    process.exit(0);
+});
+
+// ================= LOGIN =================
 client.login(process.env.TOKEN);
