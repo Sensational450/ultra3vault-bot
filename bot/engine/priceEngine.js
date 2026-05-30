@@ -2,7 +2,7 @@ const axios = require("axios");
 
 let cache = null;
 let lastFetch = 0;
-const CACHE_TIME = 120000; // 2 min
+const CACHE_TIME = 120000;
 
 let cooldownUntil = 0;
 
@@ -10,13 +10,17 @@ async function fetchPrices(client) {
 
     const now = Date.now();
 
-    // ================= COOLDOWN =================
-    if (now < cooldownUntil) {
-        console.log("⏳ Price engine cooldown active");
-        return;
+    // ================= GLOBAL PROTECTION =================
+    if (!client) {
+        console.log("❌ Price engine: No client");
+        return cache;
     }
 
-    // ================= CACHE =================
+    if (now < cooldownUntil) {
+        console.log("⏳ Price engine cooldown active");
+        return cache;
+    }
+
     if (cache && now - lastFetch < CACHE_TIME) {
         return cache;
     }
