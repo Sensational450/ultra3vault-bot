@@ -31,16 +31,19 @@ const FEEDS = [
     "https://www.theblock.co/rss.xml"
 ];
 
-// ================= MEMORY SAFETY =================
+// ================= MEMORY =================
 const seen = new Set();
 const MAX_SEEN = 300;
 
 function safeSeenAdd(link) {
-    if (seen.size > MAX_SEEN) seen.clear();
+    if (seen.size > MAX_SEEN) {
+        console.log("🧠 Memory reset (seen cache cleared)");
+        seen.clear();
+    }
     seen.add(link);
 }
 
-// ================= SCORE ENGINE =================
+// ================= SCORE =================
 async function getNewsScore(title = "", content = "") {
     const text = (title + " " + content).toLowerCase();
 
@@ -60,7 +63,12 @@ async function getNewsScore(title = "", content = "") {
 // ================= MAIN ENGINE =================
 async function fetchRSS(client) {
 
-    if (!client) return;
+    if (!client) {
+        console.log("❌ RSS: No client provided");
+        return;
+    }
+
+    console.log("📡 RSS cycle started...");
 
     for (const feed of FEEDS) {
 
@@ -74,11 +82,9 @@ async function fetchRSS(client) {
 
                 if (!item?.link) continue;
 
-                // prevent duplicates in runtime
                 if (seen.has(item.link)) continue;
                 safeSeenAdd(item.link);
 
-                // prevent DB duplicates
                 if (await hasPosted(item.link)) continue;
 
                 const title = item.title || "";
@@ -90,6 +96,7 @@ async function fetchRSS(client) {
                 const risk = getRiskLevel(scamScore);
 
                 if (risk === "DANGEROUS") {
+                    console.log("⛔ BLOCKED SCAM:", title);
                     logSecurity("SCAM_BLOCKED", title, "DANGEROUS");
                     continue;
                 }
@@ -119,7 +126,7 @@ async function fetchRSS(client) {
                         }) || vip;
                     }
                 } catch (e) {
-                    console.log("⚠️ VIP fallback used");
+                    console.log("⚠️ VIP fallback used:", e.message);
                 }
 
                 // ================= ACCESS CONTROL =================
@@ -143,18 +150,22 @@ async function fetchRSS(client) {
 
                 await channel.send({ embeds: [embed] });
 
-                // ================= AI LEARNING =================
+                // ================= LEARNING =================
                 if (score >= 6) learnPositive(fullText);
                 else learnNegative(fullText);
 
                 // ================= SAVE =================
                 await savePost(item.link, title);
+
+                console.log("✅ Posted:", title);
             }
 
         } catch (err) {
             console.log(`❌ RSS Error (${feed}):`, err.message);
         }
     }
+
+    console.log("📡 RSS cycle finished");
 }
 
 module.exports = fetchRSS;
