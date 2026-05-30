@@ -3,15 +3,12 @@ const { getReferral } = require("../engine/referralManager");
 module.exports = {
     name: "referral",
 
-    async execute(message) {
+    execute(message) {
 
         getReferral(message.author.id, (data) => {
 
             message.reply(
-                `👥 Your Referral Code:\n` +
-                `\`${data.code}\`\n\n` +
-                `📊 Invites: ${data.invites}\n` +
-                `⭐ Points: ${data.points}`
+                `🔗 Your referral code:\n\`${data.code}\`\n\nInvites: ${data.invites}\nPoints: ${data.points}`
             );
         });
     }
