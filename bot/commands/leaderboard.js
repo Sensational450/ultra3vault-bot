@@ -1,23 +1,19 @@
-const { getLeaderboard } = require("../engine/leaderboardEngine");
+const { getLeaderboard } = require("../engine/referralManager");
 
 module.exports = {
     name: "leaderboard",
 
     async execute(message) {
 
-        getLeaderboard(10, (err, rows) => {
+        getLeaderboard(10, (rows) => {
 
-            if (err) {
-                return message.reply("❌ Error loading leaderboard");
-            }
+            const text = rows.map((u, i) => {
+                return `#${i + 1} <@${u.userId}> - ${u.invites} invites (${u.points} pts)`;
+            }).join("\n");
 
-            let text = "🏆 **TOP USERS LEADERBOARD**\n\n";
-
-            rows.forEach((u, i) => {
-                text += `#${i + 1} <@${u.id}> — ${u.points || 0} pts\n`;
-            });
-
-            message.channel.send(text);
+            message.channel.send(
+                "🏆 **Referral Leaderboard**\n\n" + text
+            );
         });
     }
 };
