@@ -27,8 +27,9 @@ const {
     getSentiment
 } = require("./engine/sentimentAI");
 
-// 🧠 VIP ROUTER
-const { routeIntelligence } = require("./engine/vipRouter");
+// ================= FIXED VIP IMPORT =================
+const vipRouter = require("./engine/vipRouter");
+const routeIntelligence = vipRouter.routeIntelligence;
 
 // 📊 ALPHA ENGINE
 const { getAlphaScore } = require("./engine/alphaEngine");
@@ -55,22 +56,12 @@ const seen = new Set();
 
 // ================= SCORE ENGINE =================
 async function getNewsScore(title = "", content = "") {
-    const text = (title + " " + content).toLowerCase();
 
+    const text = (title + " " + content).toLowerCase();
     let score = 0;
 
-    const highValue = [
-        "bitcoin","btc","ethereum","eth",
-        "sec","etf","hack","exploit",
-        "listing","binance","coinbase",
-        "liquidation","crash","airdrop"
-    ];
-
-    const lowValue = [
-        "sponsored","giveaway","click here",
-        "subscribe","advertisement",
-        "price prediction","opinion"
-    ];
+    const highValue = ["bitcoin","btc","ethereum","eth","sec","etf","hack","exploit","listing","binance","coinbase","liquidation","crash","airdrop"];
+    const lowValue = ["sponsored","giveaway","click here","subscribe","advertisement","price prediction","opinion"];
 
     highValue.forEach(w => { if (text.includes(w)) score += 3; });
     lowValue.forEach(w => { if (text.includes(w)) score -= 2; });
@@ -80,7 +71,7 @@ async function getNewsScore(title = "", content = "") {
     return score + await getLearningScore(text);
 }
 
-// ================= DETECTORS =================
+// ================= FLAGS =================
 function isBreakingNews(title = "") {
     return ["bitcoin","btc","ethereum","eth","hack","exploit","liquidation","crash","sec","etf"]
         .some(w => title.toLowerCase().includes(w));
@@ -123,8 +114,7 @@ async function fetchRSS(client) {
 
             for (const item of parsed.items.slice(0, 5)) {
 
-                if (!item.link) continue;
-                if (seen.has(item.link)) continue;
+                if (!item.link || seen.has(item.link)) continue;
                 seen.add(item.link);
 
                 if (await hasPosted(item.link)) continue;
@@ -133,7 +123,6 @@ async function fetchRSS(client) {
                 const content = item.contentSnippet || "";
                 const fullText = title + " " + content;
 
-                // ================= SCAM CHECK =================
                 const scamScore = getScamScore(title, content, item.link);
                 const risk = getRiskLevel(scamScore);
 
@@ -142,27 +131,18 @@ async function fetchRSS(client) {
                     continue;
                 }
 
-                // ================= SCORE =================
                 const score = await getNewsScore(title, content);
                 if (score <= 0) continue;
 
-                // ================= FLAGS =================
                 const airdrop = isAirdrop(title, content);
                 const breaking = isBreakingNews(title);
 
-                // ================= SENTIMENT =================
                 const sentimentScore = getSentimentScore(title, content);
                 const sentiment = getSentiment(sentimentScore);
 
-                // ================= WHALE =================
                 const whaleAmount = detectWhaleAmount(fullText);
                 const whaleAlert = isWhaleTransaction(whaleAmount);
 
-                const whaleData = whaleAlert
-                    ? classifyWhale(title, content)
-                    : { type: "NONE", sentiment: "NEUTRAL" };
-
-                // ================= VIP ROUTER =================
                 const vip = routeIntelligence({
                     score,
                     sentiment,
@@ -176,30 +156,15 @@ async function fetchRSS(client) {
                 const channelName = vip?.channel || "crypto-news";
                 const tier = vip?.tier || "FREE";
 
-                // ================= MONETIZATION =================
                 const userTier = getUserTier("GLOBAL");
                 const membership = membershipTiers[userTier] || membershipTiers.FREE;
                 const allowed = membership.access || ["crypto-news"];
 
-                // ================= ACCESS CONTROL =================
-                if (!allowed.includes(channelName)) {
-                    console.log(`⛔ BLOCKED (${userTier}) → ${channelName}`);
-                    continue;
-                }
+                if (!allowed.includes(channelName)) continue;
 
-                // ================= CHANNEL FETCH (SAFE) =================
-                const channel =
-                    client.channels.cache.find(ch => ch.name === channelName) ||
-                    await client.channels.fetch().then(() =>
-                        client.channels.cache.find(ch => ch.name === channelName)
-                    );
+                const channel = client.channels.cache.find(ch => ch.name === channelName);
+                if (!channel) continue;
 
-                if (!channel) {
-                    console.log(`❌ Missing channel: ${channelName}`);
-                    continue;
-                }
-
-                // ================= ALPHA ENGINE =================
                 const alpha = getAlphaScore({
                     score,
                     sentiment,
@@ -209,7 +174,6 @@ async function fetchRSS(client) {
                     airdrop
                 });
 
-                // ================= EMBED =================
                 const embed = new EmbedBuilder()
                     .setTitle(title)
                     .setURL(item.link)
@@ -225,21 +189,12 @@ async function fetchRSS(client) {
                     .addFields(
                         { name: "🧠 Tier", value: tier, inline: true },
                         { name: "📡 Channel", value: channelName, inline: true },
-                        { name: "💎 Membership", value: userTier, inline: true },
-
-                        { name: "⚡ Score", value: String(score), inline: true },
-                        { name: "📈 Sentiment", value: sentiment, inline: true },
-                        { name: "🐋 Whale", value: whaleAlert ? "YES" : "NO", inline: true },
-
-                        { name: "📊 Pump", value: alpha.pump + "%", inline: true },
-                        { name: "📉 Dump", value: alpha.dump + "%", inline: true },
-                        { name: "🎯 Action", value: alpha.action, inline: true }
+                        { name: "💎 Membership", value: userTier, inline: true }
                     )
                     .setTimestamp(new Date(item.pubDate || Date.now()));
 
                 await channel.send({ embeds: [embed] });
 
-                // ================= LEARNING =================
                 if (score >= 6) learnPositive(fullText);
                 else learnNegative(fullText);
 
