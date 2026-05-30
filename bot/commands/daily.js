@@ -9,7 +9,7 @@ module.exports = {
         const now = Date.now();
 
         db.get(
-            "SELECT lastClaim FROM daily WHERE userId = ?",
+            "SELECT lastClaim FROM daily_rewards WHERE userId = ?",
             [userId],
             (err, row) => {
 
@@ -21,13 +21,13 @@ module.exports = {
 
                 db.run(
                     `
-                    INSERT OR REPLACE INTO daily (userId, lastClaim)
+                    INSERT OR REPLACE INTO daily_rewards (userId, lastClaim)
                     VALUES (?, ?)
                     `,
                     [userId, now]
                 );
 
-                message.reply("🎁 You claimed your daily reward!");
+                message.reply("🎁 Daily reward claimed!");
             }
         );
     }
