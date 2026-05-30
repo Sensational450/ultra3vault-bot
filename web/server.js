@@ -14,7 +14,7 @@ app.use(express.json({
 }));
 
 // ================= HEALTH CHECK =================
-app.get("/", (req, res) => {
+app.get("/api", (req, res) => {
     res.status(200).json({
         status: "OK",
         service: "Ultra3Vault API",
@@ -22,7 +22,101 @@ app.get("/", (req, res) => {
     });
 });
 
-// ================= DB INIT (NON-BLOCKING FIX) =================
+// ================= LANDING PAGE =================
+app.get("/", (req, res) => {
+    res.redirect("/landing");
+});
+
+app.get("/landing", (req, res) => {
+
+    res.send(`
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Ultra3Vault</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <style>
+        body {
+            margin: 0;
+            font-family: Arial;
+            background: #0b0f1a;
+            color: white;
+            text-align: center;
+        }
+
+        .container {
+            padding: 60px 20px;
+        }
+
+        h1 {
+            font-size: 42px;
+            color: #00bfff;
+        }
+
+        p {
+            color: #aaa;
+            max-width: 600px;
+            margin: auto;
+        }
+
+        .btn {
+            display: inline-block;
+            margin-top: 20px;
+            padding: 12px 25px;
+            background: #00bfff;
+            color: black;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: bold;
+        }
+
+        .grid {
+            margin-top: 40px;
+            display: grid;
+            gap: 12px;
+            max-width: 700px;
+            margin: auto;
+        }
+
+        .card {
+            background: #111827;
+            padding: 15px;
+            border-radius: 10px;
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="container">
+
+    <h1>🚀 Ultra3Vault</h1>
+
+    <p>
+        AI-powered crypto intelligence system:
+        news filtering, whale tracking, scam detection,
+        and VIP alpha signals in real time.
+    </p>
+
+    <a class="btn" href="/api">System Status</a>
+
+    <div class="grid">
+        <div class="card">⚡ Real-time Crypto News Engine</div>
+        <div class="card">🐋 Whale Transaction Tracker</div>
+        <div class="card">🛡 Anti-Scam AI Protection</div>
+        <div class="card">📊 Alpha & VIP Signals</div>
+        <div class="card">💎 Premium Subscription System</div>
+    </div>
+
+</div>
+
+</body>
+</html>
+    `);
+});
+
+// ================= DB INIT =================
 setImmediate(() => {
     try {
         db.serialize(() => {
@@ -79,7 +173,7 @@ app.post("/webhook", async (req, res) => {
         const [userId, plan] = order_id.split("_");
         const days = PLANS[plan] || 7;
 
-        // payment verify
+        // ================= PAYMENT VERIFY =================
         if (payment_id && process.env.NOWPAYMENTS_API_KEY) {
             try {
                 const verify = await axios.get(
@@ -103,12 +197,12 @@ app.post("/webhook", async (req, res) => {
 
         console.log(`💰 PAYMENT OK → ${userId} (${plan})`);
 
-        // IMPORTANT: avoid crashing bot dependency
+        // ================= DISCORD CLIENT =================
         let client;
         try {
             client = require("../bot/client");
         } catch {
-            console.log("⚠️ Client not ready yet");
+            console.log("⚠️ Bot not ready");
             return res.sendStatus(200);
         }
 
@@ -126,8 +220,8 @@ app.post("/webhook", async (req, res) => {
             console.log("ROLE ERROR:", err.message);
         }
 
-        // DB save
-        const expiresAt = Date.now() + days * 24 * 60 * 60 * 1000;
+        // ================= SAVE PREMIUM =================
+        const expiresAt = Date.now() + days * 86400000;
 
         try {
             db.run(
@@ -137,7 +231,7 @@ app.post("/webhook", async (req, res) => {
             );
         } catch {}
 
-        // DM user (safe)
+        // ================= DM USER =================
         try {
             const user = await client.users.fetch(userId).catch(() => null);
 
@@ -157,7 +251,7 @@ app.post("/webhook", async (req, res) => {
     }
 });
 
-// ================= START SERVER (CRITICAL FIX) =================
+// ================= START SERVER =================
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, "0.0.0.0", () => {
