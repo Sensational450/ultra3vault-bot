@@ -4,7 +4,7 @@ const db = new sqlite3.Database("./database/daily.sqlite");
 db.serialize(() => {
 
     db.run(`
-        CREATE TABLE IF NOT EXISTS daily (
+        CREATE TABLE IF NOT EXISTS daily_rewards (
             userId TEXT PRIMARY KEY,
             lastClaim INTEGER
         )
