@@ -2,7 +2,6 @@ const { Client, GatewayIntentBits } = require("discord.js");
 const fs = require("fs");
 const path = require("path");
 
-// ================= CLIENT =================
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -11,93 +10,40 @@ const client = new Client({
     ]
 });
 
-// ================= SAFE MAPS =================
-const commands = new Map();
-const events = new Map();
+// ================= COMMAND LOADER =================
+client.commands = new Map();
 
-// ================= SAFE LOADER =================
-function safeLoadCommands(dir) {
-    if (!fs.existsSync(dir)) {
-        console.log("⚠️ Commands folder missing:", dir);
-        return;
-    }
+const commandPath = path.join(__dirname, "commands");
 
-    const files = fs.readdirSync(dir).filter(f => f.endsWith(".js"));
+if (fs.existsSync(commandPath)) {
+    for (const file of fs.readdirSync(commandPath)) {
+        const cmd = require(path.join(commandPath, file));
 
-    for (const file of files) {
-        try {
-            const cmd = require(path.join(dir, file));
-
-            if (!cmd?.name || typeof cmd.execute !== "function") {
-                console.log(`⚠️ Invalid command skipped: ${file}`);
-                continue;
-            }
-
-            commands.set(cmd.name.toLowerCase(), cmd);
+        if (cmd.name && cmd.execute) {
+            client.commands.set(cmd.name, cmd);
             console.log(`✅ Loaded command: ${cmd.name}`);
-
-        } catch (err) {
-            console.log(`❌ Command error (${file}):`, err.message);
-        }
-    }
-
-    console.log(`📦 Total Commands: ${commands.size}`);
-}
-
-// ================= SAFE EVENT LOADER =================
-function safeLoadEvents(dir) {
-    if (!fs.existsSync(dir)) {
-        console.log("⚠️ Events folder missing:", dir);
-        return;
-    }
-
-    const files = fs.readdirSync(dir).filter(f => f.endsWith(".js"));
-
-    for (const file of files) {
-        try {
-            const event = require(path.join(dir, file));
-
-            if (!event?.name || typeof event.execute !== "function") {
-                console.log(`⚠️ Invalid event skipped: ${file}`);
-                continue;
-            }
-
-            if (event.once) {
-                client.once(event.name, (...args) =>
-                    event.execute(...args, client, commands)
-                );
-            } else {
-                client.on(event.name, (...args) =>
-                    event.execute(...args, client, commands)
-                );
-            }
-
-            console.log(`📡 Loaded event: ${event.name}`);
-
-        } catch (err) {
-            console.log(`❌ Event error (${file}):`, err.message);
         }
     }
 }
 
-// ================= BOOT SEQUENCE =================
-(function init() {
+// ================= MESSAGE HANDLER =================
+client.on("messageCreate", async (message) => {
+
+    if (!message.content.startsWith("!")) return;
+    if (message.author.bot) return;
+
+    const args = message.content.slice(1).trim().split(/\s+/);
+    const name = args.shift().toLowerCase();
+
+    const command = client.commands.get(name);
+    if (!command) return;
+
     try {
-        console.log("🚀 Starting Ultra3Vault client...");
-
-        safeLoadCommands(path.join(__dirname, "commands"));
-        safeLoadEvents(path.join(__dirname, "events"));
-
-        console.log("✅ Client system initialized");
-
+        await command.execute(message, args, client);
     } catch (err) {
-        console.log("💥 CRITICAL CLIENT ERROR:", err);
+        console.log("COMMAND ERROR:", err);
+        message.reply("❌ Command failed");
     }
-})();
-
-// ================= LOGIN =================
-client.login(process.env.TOKEN)
-    .then(() => console.log("🔐 Login successful"))
-    .catch(err => console.log("❌ Login failed:", err.message));
+});
 
 module.exports = client;
