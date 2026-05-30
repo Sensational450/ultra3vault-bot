@@ -1,43 +1,29 @@
-function routeIntelligence({
-    score,
-    sentiment,
-    whaleAlert,
-    breaking,
-    airdrop,
-    risk,
-    vipAlpha
-}) {
+function routeIntelligence(data) {
+
+    const {
+        score = 0,
+        sentiment = "NEUTRAL",
+        whaleAlert = false,
+        risk = "SAFE"
+    } = data;
 
     if (risk === "DANGEROUS") {
         return { channel: "security-alerts", tier: "BLOCKED" };
     }
 
-    if (vipAlpha) {
-        return { channel: "vip-alpha", tier: "ALPHA" };
-    }
-
-    if (whaleAlert) {
+    if (whaleAlert && score > 5) {
         return { channel: "whale-alerts", tier: "VIP" };
     }
 
-    if (breaking && score >= 6) {
-        return { channel: "breaking-news", tier: "VIP" };
+    if (score > 8) {
+        return { channel: "alpha-news", tier: "VIP" };
     }
 
-    if (airdrop) {
-        return { channel: "airdrop-alerts", tier: "FREE" };
-    }
-
-    if (sentiment === "VERY BULLISH") {
-        return { channel: "bullish-signals", tier: "VIP" };
-    }
-
-    if (sentiment === "VERY BEARISH") {
-        return { channel: "bearish-alerts", tier: "FREE" };
+    if (sentiment === "BULLISH") {
+        return { channel: "crypto-news", tier: "FREE" };
     }
 
     return { channel: "crypto-news", tier: "FREE" };
 }
 
-// ✅ IMPORTANT EXPORT FIX
 module.exports = { routeIntelligence };
