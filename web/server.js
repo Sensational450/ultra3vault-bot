@@ -1,17 +1,21 @@
 const express = require("express");
 const axios = require("axios");
 const crypto = require("crypto");
+const path = require("path");
 
 const db = require("../database/premium");
 
 const app = express();
 
-// ================= RAW BODY =================
+// ================= RAW BODY (WEBHOOK SECURITY) =================
 app.use(express.json({
     verify: (req, res, buf) => {
         req.rawBody = buf;
     }
 }));
+
+// ================= SERVE FRONTEND (IMPORTANT FIX) =================
+app.use(express.static(path.join(__dirname, "public")));
 
 // ================= HEALTH CHECK =================
 app.get("/api", (req, res) => {
@@ -23,97 +27,9 @@ app.get("/api", (req, res) => {
 });
 
 // ================= LANDING PAGE =================
+// Now served as real file instead of inline HTML
 app.get("/", (req, res) => {
-    res.redirect("/landing");
-});
-
-app.get("/landing", (req, res) => {
-
-    res.send(`
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Ultra3Vault</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-    <style>
-        body {
-            margin: 0;
-            font-family: Arial;
-            background: #0b0f1a;
-            color: white;
-            text-align: center;
-        }
-
-        .container {
-            padding: 60px 20px;
-        }
-
-        h1 {
-            font-size: 42px;
-            color: #00bfff;
-        }
-
-        p {
-            color: #aaa;
-            max-width: 600px;
-            margin: auto;
-        }
-
-        .btn {
-            display: inline-block;
-            margin-top: 20px;
-            padding: 12px 25px;
-            background: #00bfff;
-            color: black;
-            text-decoration: none;
-            border-radius: 8px;
-            font-weight: bold;
-        }
-
-        .grid {
-            margin-top: 40px;
-            display: grid;
-            gap: 12px;
-            max-width: 700px;
-            margin: auto;
-        }
-
-        .card {
-            background: #111827;
-            padding: 15px;
-            border-radius: 10px;
-        }
-    </style>
-</head>
-
-<body>
-
-<div class="container">
-
-    <h1>🚀 Ultra3Vault</h1>
-
-    <p>
-        AI-powered crypto intelligence system:
-        news filtering, whale tracking, scam detection,
-        and VIP alpha signals in real time.
-    </p>
-
-    <a class="btn" href="/api">System Status</a>
-
-    <div class="grid">
-        <div class="card">⚡ Real-time Crypto News Engine</div>
-        <div class="card">🐋 Whale Transaction Tracker</div>
-        <div class="card">🛡 Anti-Scam AI Protection</div>
-        <div class="card">📊 Alpha & VIP Signals</div>
-        <div class="card">💎 Premium Subscription System</div>
-    </div>
-
-</div>
-
-</body>
-</html>
-    `);
+    res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
 // ================= DB INIT =================
@@ -134,7 +50,7 @@ setImmediate(() => {
     }
 });
 
-// ================= SIGNATURE =================
+// ================= SIGNATURE VERIFICATION =================
 function verifySignature(rawBody, signature) {
 
     const secret = process.env.WEBHOOK_SECRET;
@@ -159,7 +75,6 @@ const PLANS = {
 app.post("/webhook", async (req, res) => {
 
     try {
-
         const signature = req.headers["x-signature"];
 
         if (!verifySignature(req.rawBody, signature)) {
@@ -206,6 +121,7 @@ app.post("/webhook", async (req, res) => {
             return res.sendStatus(200);
         }
 
+        // ================= GIVE ROLE =================
         try {
             const guild = client.guilds.cache.first();
             if (!guild) return res.sendStatus(200);
