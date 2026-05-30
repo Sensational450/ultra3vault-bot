@@ -1,21 +1,28 @@
 const axios = require("axios");
 
+// ================= CACHE =================
 let cache = null;
 let lastFetch = 0;
+const CACHE_TIME = 120000;
 
-const CACHE_TIME = 120000; // 2 minutes (IMPORTANT FIX)
-const THRESHOLD = 2.5;
+// ================= BACKOFF =================
+let blockedUntil = 0;
 
+// ================= PRICE MEMORY =================
 let lastPrices = {
     bitcoin: null,
     ethereum: null
 };
 
+const THRESHOLD = 2.5;
+
+// ================= FETCH PRICES =================
 async function getPrices() {
 
     const now = Date.now();
 
-    // ✅ GLOBAL CACHE (PREVENT 429)
+    if (now < blockedUntil) return cache;
+
     if (cache && now - lastFetch < CACHE_TIME) {
         return cache;
     }
@@ -41,11 +48,19 @@ async function getPrices() {
         return cache;
 
     } catch (err) {
-        console.log("❌ CoinGecko error:", err.message);
+
+        if (err.response?.status === 429) {
+            console.log("⚠️ CoinGecko cooldown (2 min)");
+            blockedUntil = Date.now() + 120000;
+        } else {
+            console.log("❌ CoinGecko error:", err.message);
+        }
+
         return cache;
     }
 }
 
+// ================= MAIN ENGINE =================
 async function fetchPrices(client) {
 
     const data = await getPrices();
@@ -76,6 +91,7 @@ async function fetchPrices(client) {
     lastPrices.ethereum = eth;
 }
 
+// ================= ALERT =================
 function sendAlert(client, coin, price, change) {
 
     const channel = client.channels.cache.find(ch => ch.name === "price-alerts");
