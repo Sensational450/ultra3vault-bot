@@ -7,7 +7,12 @@ const db = require("../database/premium");
 
 const app = express();
 
-app.use(express.json());
+// ================= RAW BODY FIX (IMPORTANT FOR SIGNATURES) =================
+app.use(express.json({
+    verify: (req, res, buf) => {
+        req.rawBody = buf;
+    }
+}));
 
 // ================= HEALTH CHECK =================
 app.get("/", (req, res) => {
@@ -35,15 +40,15 @@ try {
     console.log("DB INIT ERROR:", err.message);
 }
 
-// ================= VERIFY SIGNATURE =================
-function verifySignature(body, signature) {
+// ================= SIGNATURE VERIFY (FIXED) =================
+function verifySignature(rawBody, signature) {
 
     const secret = process.env.WEBHOOK_SECRET;
-    if (!secret || !signature) return false;
+    if (!secret || !signature || !rawBody) return false;
 
     const hash = crypto
         .createHmac("sha256", secret)
-        .update(JSON.stringify(body))
+        .update(rawBody)
         .digest("hex");
 
     return hash === signature;
@@ -63,7 +68,7 @@ app.post("/webhook", async (req, res) => {
 
         const signature = req.headers["x-signature"];
 
-        if (!verifySignature(req.body, signature)) {
+        if (!verifySignature(req.rawBody, signature)) {
             console.log("❌ INVALID SIGNATURE");
             return res.sendStatus(403);
         }
@@ -86,7 +91,8 @@ app.post("/webhook", async (req, res) => {
                     {
                         headers: {
                             "x-api-key": process.env.NOWPAYMENTS_API_KEY
-                        }
+                        },
+                        timeout: 10000
                     }
                 );
 
@@ -103,12 +109,12 @@ app.post("/webhook", async (req, res) => {
 
         console.log(`💰 PAYMENT OK → ${userId} (${plan})`);
 
-        // ================= DISCORD ROLE SAFE ADD =================
+        // ================= DISCORD ROLE SYSTEM =================
         try {
             const guild = client.guilds.cache.first();
             if (!guild) return res.sendStatus(200);
 
-            let member = await guild.members.fetch(userId).catch(() => null);
+            const member = await guild.members.fetch(userId).catch(() => null);
 
             if (!member) {
                 console.log("⚠️ Member not found");
@@ -119,7 +125,7 @@ app.post("/webhook", async (req, res) => {
 
             if (role) {
                 await member.roles.add(role).catch(err => {
-                    console.log("ROLE ADD ERROR:", err.message);
+                    console.log("ROLE ERROR:", err.message);
                 });
             }
 
