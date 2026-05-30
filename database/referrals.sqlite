@@ -6,7 +6,7 @@ db.serialize(() => {
     db.run(`
         CREATE TABLE IF NOT EXISTS referrals (
             userId TEXT PRIMARY KEY,
-            refCode TEXT,
+            code TEXT,
             invites INTEGER DEFAULT 0,
             points INTEGER DEFAULT 0
         )
