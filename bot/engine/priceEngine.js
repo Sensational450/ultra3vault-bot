@@ -2,15 +2,24 @@ const axios = require("axios");
 
 let cache = null;
 let lastFetch = 0;
-const CACHE = 120000;
+const CACHE_TIME = 120000; // 2 min
 
-let blockedUntil = 0;
+let cooldownUntil = 0;
 
 async function fetchPrices(client) {
 
-    if (Date.now() < blockedUntil) return;
+    const now = Date.now();
 
-    if (cache && Date.now() - lastFetch < CACHE) return;
+    // ================= COOLDOWN =================
+    if (now < cooldownUntil) {
+        console.log("⏳ Price engine cooldown active");
+        return;
+    }
+
+    // ================= CACHE =================
+    if (cache && now - lastFetch < CACHE_TIME) {
+        return cache;
+    }
 
     try {
         const res = await axios.get(
@@ -25,14 +34,20 @@ async function fetchPrices(client) {
         );
 
         cache = res.data;
-        lastFetch = Date.now();
+        lastFetch = now;
+
+        return cache;
 
     } catch (err) {
 
         if (err.response?.status === 429) {
-            blockedUntil = Date.now() + 120000;
-            console.log("⚠️ CoinGecko cooldown activated");
+            cooldownUntil = now + 120000;
+            console.log("⚠️ CoinGecko rate limit → cooldown 2 min");
+        } else {
+            console.log("❌ Price API error:", err.message);
         }
+
+        return cache;
     }
 }
 
