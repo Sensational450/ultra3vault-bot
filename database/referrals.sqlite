@@ -3,14 +3,48 @@ const db = new sqlite3.Database("./database/referrals.sqlite");
 
 db.serialize(() => {
 
+    // ================= REFERRALS =================
     db.run(`
         CREATE TABLE IF NOT EXISTS referrals (
             userId TEXT PRIMARY KEY,
-            code TEXT,
+            code TEXT UNIQUE,
             invites INTEGER DEFAULT 0,
-            points INTEGER DEFAULT 0
+            points INTEGER DEFAULT 0,
+            createdAt INTEGER DEFAULT (strftime('%s','now'))
         )
     `);
+
+    // ================= DAILY CHECK-IN / STREAKS =================
+    db.run(`
+        CREATE TABLE IF NOT EXISTS user_streaks (
+            userId TEXT PRIMARY KEY,
+            streak INTEGER DEFAULT 0,
+            lastClaim INTEGER DEFAULT 0,
+            totalClaims INTEGER DEFAULT 0
+        )
+    `);
+
+    // ================= DAILY REWARDS LOG =================
+    db.run(`
+        CREATE TABLE IF NOT EXISTS daily_rewards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            userId TEXT,
+            reward INTEGER,
+            streak INTEGER,
+            timestamp INTEGER
+        )
+    `);
+
+    // ================= LEADERBOARD CACHE =================
+    db.run(`
+        CREATE TABLE IF NOT EXISTS leaderboard_cache (
+            userId TEXT PRIMARY KEY,
+            points INTEGER DEFAULT 0,
+            updatedAt INTEGER
+        )
+    `);
+
+    console.log("📊 Referrals + Streaks DB upgraded (Phase 4 Ready)");
 });
 
 module.exports = db;
