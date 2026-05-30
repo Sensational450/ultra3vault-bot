@@ -1,43 +1,59 @@
-const db = require("../database/premium");
+// /engine/subscriptionManager.js
 
-const PLANS = {
-    VIP: {
-        days: 7,
-        roleId: "VIP_ROLE_ID"
-    },
-    VIP_ALPHA: {
-        days: 7,
-        roleId: "VIP_ALPHA_ROLE_ID"
-    }
-};
+const membershipTiers = require("./membershipTiers");
 
-// 👉 activate subscription
-function activateUser(userId, plan) {
-    const expiresAt = Date.now() + PLANS[plan].days * 24 * 60 * 60 * 1000;
+// Example DB (replace with MongoDB / SQLite later)
+const userDB = new Map();
 
-    db.run(
-        `INSERT OR REPLACE INTO premium_users (user_id, plan, expires_at)
-         VALUES (?, ?, ?)`,
-        [userId, plan, expiresAt]
-    );
-
-    return expiresAt;
+/**
+ * Set user subscription
+ */
+function setUserTier(userId, tier = "FREE") {
+    userDB.set(userId, {
+        tier,
+        updatedAt: Date.now()
+    });
 }
 
-// 👉 check active subscription
-function hasAccess(userRow, plan) {
-    if (!userRow) return false;
-    return userRow.plan === plan && userRow.expires_at > Date.now();
+/**
+ * Get user tier
+ */
+function getUserTier(userId) {
+    return userDB.get(userId)?.tier || "FREE";
 }
 
-// 👉 expire cleanup
-function isExpired(userRow) {
-    return !userRow || userRow.expires_at < Date.now();
+/**
+ * Check if user has access to a channel
+ */
+function hasAccess(userId, channelName) {
+
+    const tier = getUserTier(userId);
+    const plan = membershipTiers[tier] || membershipTiers.FREE;
+
+    return plan.access.includes(channelName);
+}
+
+/**
+ * Upgrade user (future payment hook)
+ */
+function upgradeUser(userId, tier) {
+    if (!membershipTiers[tier]) return false;
+
+    setUserTier(userId, tier);
+    return true;
+}
+
+/**
+ * Check if tier is VIP level
+ */
+function isPremium(tier) {
+    return tier === "VIP" || tier === "VIP_ALPHA";
 }
 
 module.exports = {
-    PLANS,
-    activateUser,
+    setUserTier,
+    getUserTier,
     hasAccess,
-    isExpired
+    upgradeUser,
+    isPremium
 };
