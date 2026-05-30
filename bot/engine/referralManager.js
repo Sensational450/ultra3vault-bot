@@ -1,11 +1,10 @@
-const db = require("../../database/referrals");
+const db = require("../../database/rewards.sqlite");
 
-// ================= GENERATE CODE =================
 function generateCode(userId) {
-    return "ULTRA-" + userId.slice(-6);
+    return "ULTRA-" + userId.slice(-5);
 }
 
-// ================= GET OR CREATE USER =================
+// ================= GET REFERRAL =================
 function getReferral(userId, callback) {
 
     db.get(
@@ -18,81 +17,43 @@ function getReferral(userId, callback) {
             const code = generateCode(userId);
 
             db.run(
-                `INSERT INTO referrals (userId, code, createdAt)
-                 VALUES (?, ?, ?)`,
-                [userId, code, Date.now()]
+                "INSERT INTO referrals (userId, code, invites, points) VALUES (?, ?, 0, 0)",
+                [userId, code]
             );
 
             callback({
                 userId,
                 code,
                 invites: 0,
-                points: 0,
-                referredBy: null
+                points: 0
             });
         }
     );
 }
 
-// ================= APPLY REFERRAL =================
-function applyReferral(code, newUserId) {
+// ================= ADD REFERRAL =================
+function addReferral(code) {
 
-    db.get(
-        "SELECT userId FROM referrals WHERE code = ?",
-        [code],
-        (err, row) => {
-
-            if (!row) return;
-
-            const referrerId = row.userId;
-
-            if (referrerId === newUserId) return;
-
-            // update referrer
-            db.run(
-                `UPDATE referrals
-                 SET invites = invites + 1,
-                     points = points + 10
-                 WHERE userId = ?`,
-                [referrerId]
-            );
-
-            // set referred user
-            db.run(
-                `UPDATE referrals
-                 SET referredBy = ?
-                 WHERE userId = ?`,
-                [referrerId, newUserId]
-            );
-
-            // log
-            db.run(
-                `INSERT INTO referral_logs (referrer, referred, code, timestamp)
-                 VALUES (?, ?, ?, ?)`,
-                [referrerId, newUserId, code, Date.now()]
-            );
-
-            console.log(`👥 Referral: ${referrerId} invited ${newUserId}`);
-        }
-    );
+    db.run(`
+        UPDATE referrals
+        SET invites = invites + 1,
+            points = points + 10
+        WHERE code = ?
+    `, [code]);
 }
 
-// ================= TOP REFERRERS =================
-function getLeaderboard(limit = 10, callback) {
+// ================= REWARD REFERRER =================
+function rewardReferral(userId, points = 5) {
 
-    db.all(
-        `SELECT * FROM referrals
-         ORDER BY invites DESC, points DESC
-         LIMIT ?`,
-        [limit],
-        (err, rows) => {
-            callback(rows || []);
-        }
-    );
+    db.run(`
+        UPDATE referrals
+        SET points = points + ?
+        WHERE userId = ?
+    `, [points, userId]);
 }
 
 module.exports = {
     getReferral,
-    applyReferral,
-    getLeaderboard
+    addReferral,
+    rewardReferral
 };
