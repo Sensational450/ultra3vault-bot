@@ -2,37 +2,79 @@ const dotenv = require("dotenv");
 dotenv.config();
 
 // ================= CRASH HANDLERS =================
-process.on("uncaughtException", (err) => console.log("CRASH:", err));
-process.on("unhandledRejection", (err) => console.log("PROMISE ERROR:", err));
+process.on("uncaughtException", (err) => {
+    console.log("💥 CRASH:", err);
+});
 
-// ================= START BOT =================
+process.on("unhandledRejection", (err) => {
+    console.log("⚠️ PROMISE ERROR:", err);
+});
+
+// ================= IMPORTS =================
 const client = require("./bot/client");
 
-// ================= SERVICES =================
 const fetchRSS = require("./bot/rss.js");
-const fetchPrices = require("./bot/priceAlert"); // 📈 NEW: price system
+const fetchPrices = require("./bot/priceAlert");
+
+const { attachClient: attachNowPay } = require("./bot/routes/nowpayWebhook");
 require("./web/server");
 
 console.log("🚀 Ultra3Vault system starting...");
 
+// ================= SYSTEM FLAGS =================
+let rssStarted = false;
+let priceStarted = false;
+
 // ================= READY EVENT =================
-client.once("ready", () => {
+client.once("ready", async () => {
+
     console.log(`🤖 Bot is online as ${client.user.tag}`);
 
-    // ================= RSS SYSTEM =================
-    console.log("📡 Starting RSS engine...");
-    fetchRSS(client);
+    // ================= CONNECT WEBHOOK SYSTEM =================
+    attachNowPay(client);
+    console.log("💳 NOWPayments webhook connected");
 
-    setInterval(() => {
-        fetchRSS(client);
-    }, 10 * 60 * 1000); // 10 minutes
+    // ================= RSS ENGINE =================
+    if (!rssStarted) {
+        rssStarted = true;
 
-    // ================= PRICE ALERT SYSTEM =================
-    console.log("📊 Starting price alert system...");
-    fetchPrices(client);
+        console.log("📡 Starting RSS engine...");
 
-    setInterval(() => {
-        fetchPrices(client);
-    }, 60 * 1000); // 1 minute
+        try {
+            await fetchRSS(client);
+        } catch (err) {
+            console.log("❌ RSS initial error:", err.message);
+        }
 
+        setInterval(async () => {
+            try {
+                await fetchRSS(client);
+            } catch (err) {
+                console.log("❌ RSS ERROR:", err.message);
+            }
+        }, 10 * 60 * 1000);
+    }
+
+    // ================= PRICE ENGINE =================
+    if (!priceStarted) {
+        priceStarted = true;
+
+        console.log("📊 Starting price alert system...");
+
+        try {
+            await fetchPrices(client);
+        } catch (err) {
+            console.log("❌ PRICE initial error:", err.message);
+        }
+
+        setInterval(async () => {
+            try {
+                await fetchPrices(client);
+            } catch (err) {
+                console.log("❌ PRICE ERROR:", err.message);
+            }
+        }, 60 * 1000);
+    }
+
+    console.log("🚀 All systems initialized successfully");
 });
