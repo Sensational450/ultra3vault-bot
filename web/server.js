@@ -2,12 +2,11 @@ const express = require("express");
 const axios = require("axios");
 const crypto = require("crypto");
 
-const client = require("../bot/client");
 const db = require("../database/premium");
 
 const app = express();
 
-// ================= RAW BODY FIX (IMPORTANT FOR SIGNATURES) =================
+// ================= RAW BODY =================
 app.use(express.json({
     verify: (req, res, buf) => {
         req.rawBody = buf;
@@ -23,24 +22,25 @@ app.get("/", (req, res) => {
     });
 });
 
-// ================= SAFE DB INIT =================
-try {
-    db.serialize(() => {
-
-        db.run(`
-            CREATE TABLE IF NOT EXISTS premium_users (
-                user_id TEXT PRIMARY KEY,
-                expires_at INTEGER
-            )
-        `);
+// ================= DB INIT (NON-BLOCKING FIX) =================
+setImmediate(() => {
+    try {
+        db.serialize(() => {
+            db.run(`
+                CREATE TABLE IF NOT EXISTS premium_users (
+                    user_id TEXT PRIMARY KEY,
+                    expires_at INTEGER
+                )
+            `);
+        });
 
         console.log("🧠 Database ready");
-    });
-} catch (err) {
-    console.log("DB INIT ERROR:", err.message);
-}
+    } catch (err) {
+        console.log("DB INIT ERROR:", err.message);
+    }
+});
 
-// ================= SIGNATURE VERIFY (FIXED) =================
+// ================= SIGNATURE =================
 function verifySignature(rawBody, signature) {
 
     const secret = process.env.WEBHOOK_SECRET;
@@ -74,16 +74,12 @@ app.post("/webhook", async (req, res) => {
         }
 
         const { order_id, payment_id } = req.body;
-
         if (!order_id) return res.sendStatus(400);
 
-        const parts = order_id.split("_");
-
-        const userId = parts[0];
-        const plan = parts[1] || "7d";
+        const [userId, plan] = order_id.split("_");
         const days = PLANS[plan] || 7;
 
-        // ================= PAYMENT VERIFY =================
+        // payment verify
         if (payment_id && process.env.NOWPAYMENTS_API_KEY) {
             try {
                 const verify = await axios.get(
@@ -97,43 +93,40 @@ app.post("/webhook", async (req, res) => {
                 );
 
                 if (verify.data.payment_status !== "finished") {
-                    console.log("❌ Payment not finished");
                     return res.sendStatus(200);
                 }
 
-            } catch (err) {
-                console.log("VERIFY ERROR:", err.message);
+            } catch {
                 return res.sendStatus(200);
             }
         }
 
         console.log(`💰 PAYMENT OK → ${userId} (${plan})`);
 
-        // ================= DISCORD ROLE SYSTEM =================
+        // IMPORTANT: avoid crashing bot dependency
+        let client;
+        try {
+            client = require("../bot/client");
+        } catch {
+            console.log("⚠️ Client not ready yet");
+            return res.sendStatus(200);
+        }
+
         try {
             const guild = client.guilds.cache.first();
             if (!guild) return res.sendStatus(200);
 
             const member = await guild.members.fetch(userId).catch(() => null);
-
-            if (!member) {
-                console.log("⚠️ Member not found");
-                return res.sendStatus(200);
-            }
+            if (!member) return res.sendStatus(200);
 
             const role = guild.roles.cache.get("1509191517909024950");
-
-            if (role) {
-                await member.roles.add(role).catch(err => {
-                    console.log("ROLE ERROR:", err.message);
-                });
-            }
+            if (role) await member.roles.add(role).catch(() => {});
 
         } catch (err) {
-            console.log("ROLE SYSTEM ERROR:", err.message);
+            console.log("ROLE ERROR:", err.message);
         }
 
-        // ================= SAVE PREMIUM =================
+        // DB save
         const expiresAt = Date.now() + days * 24 * 60 * 60 * 1000;
 
         try {
@@ -142,29 +135,19 @@ app.post("/webhook", async (req, res) => {
                  VALUES (?, ?)`,
                 [userId, expiresAt]
             );
-        } catch (err) {
-            console.log("DB SAVE ERROR:", err.message);
-        }
+        } catch {}
 
-        console.log("💾 PREMIUM SAVED:", userId);
-
-        // ================= AUTO DM =================
+        // DM user (safe)
         try {
             const user = await client.users.fetch(userId).catch(() => null);
 
             if (user) {
                 await user.send(
-                    `💎 **Ultra3Vault Activated!**\n\n` +
-                    `📦 Plan: ${plan.toUpperCase()}\n` +
-                    `⏳ Duration: ${days} days\n` +
-                    `🔥 Status: ACTIVE\n\n` +
-                    `🚀 Enjoy your premium access!`
+                    `💎 Ultra3Vault Activated!\nPlan: ${plan}\nDuration: ${days} days`
                 );
             }
 
-        } catch (err) {
-            console.log("DM ERROR:", err.message);
-        }
+        } catch {}
 
         res.sendStatus(200);
 
@@ -174,9 +157,10 @@ app.post("/webhook", async (req, res) => {
     }
 });
 
-// ================= START SERVER =================
+// ================= START SERVER (CRITICAL FIX) =================
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, "0.0.0.0", () => {
     console.log(`🌐 Server running on port ${PORT}`);
+    console.log("🚀 Render port binding ACTIVE");
 });
