@@ -1,43 +1,43 @@
-function getVIPClass({
+function routeIntelligence({
     score,
     sentiment,
     whaleAlert,
-    risk,
     breaking,
-    airdrop
+    airdrop,
+    risk,
+    vipAlpha
 }) {
 
-    let tier = "NOISE";
-    let confidence = 50;
-
-    // ================= SECURITY =================
     if (risk === "DANGEROUS") {
-        return { tier: "SECURITY_THREAT", confidence: 95 };
+        return { channel: "security-alerts", tier: "BLOCKED" };
     }
 
-    // ================= WHALE =================
+    if (vipAlpha) {
+        return { channel: "vip-alpha", tier: "ALPHA" };
+    }
+
     if (whaleAlert) {
-        return { tier: "WHALE_MOVE", confidence: 90 };
+        return { channel: "whale-alerts", tier: "VIP" };
     }
 
-    // ================= ALPHA =================
-    if (score >= 8 && breaking) {
-        return { tier: "VIP_ALPHA", confidence: 85 };
+    if (breaking && score >= 6) {
+        return { channel: "breaking-news", tier: "VIP" };
     }
 
-    // ================= AIRDROP =================
     if (airdrop) {
-        return { tier: "VIP_SIGNAL", confidence: 70 };
+        return { channel: "airdrop-alerts", tier: "FREE" };
     }
 
-    // ================= WATCHLIST =================
-    if (score >= 5) {
-        return { tier: "WATCHLIST", confidence: 60 };
+    if (sentiment === "VERY BULLISH") {
+        return { channel: "bullish-signals", tier: "VIP" };
     }
 
-    return { tier, confidence };
+    if (sentiment === "VERY BEARISH") {
+        return { channel: "bearish-alerts", tier: "FREE" };
+    }
+
+    return { channel: "crypto-news", tier: "FREE" };
 }
 
-module.exports = {
-    getVIPClass
-};
+// ✅ IMPORTANT EXPORT FIX
+module.exports = { routeIntelligence };
