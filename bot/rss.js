@@ -9,27 +9,20 @@ const { getScamScore, getRiskLevel } = require("./engine/antiScamAI");
 const { logRSS, logSecurity } = require("../database/analyticsDB");
 
 // 🧠 LEARNING AI
-const {
-    learnPositive,
-    learnNegative,
-    getLearningScore
-} = require("./engine/learningAI.js");
+const { learnPositive, learnNegative, getLearningScore } =
+    require("./engine/learningAI.js");
 
 // 🐋 WHALE ENGINE
-const {
-    isWhaleTransaction,
-    classifyWhale
-} = require("./engine/whaleTracker");
+const { isWhaleTransaction, classifyWhale } =
+    require("./engine/whaleTracker");
 
 // 📈 SENTIMENT
-const {
-    getSentimentScore,
-    getSentiment
-} = require("./engine/sentimentAI");
+const { getSentimentScore, getSentiment } =
+    require("./engine/sentimentAI");
 
 // ================= FIXED VIP IMPORT =================
 const vipRouter = require("./engine/vipRouter");
-const routeIntelligence = vipRouter.routeIntelligence;
+const routeIntelligence = vipRouter?.routeIntelligence;
 
 // 📊 ALPHA ENGINE
 const { getAlphaScore } = require("./engine/alphaEngine");
@@ -51,17 +44,35 @@ const FEEDS = [
     "https://www.theblock.co/rss.xml"
 ];
 
-// ================= CACHE =================
+// ================= MEMORY CONTROL =================
 const seen = new Set();
+const MAX_SEEN = 500;
 
-// ================= SCORE ENGINE =================
+// ================= HELPERS =================
+function safeSeenAdd(link) {
+    if (seen.size > MAX_SEEN) {
+        seen.clear(); // prevents memory leak
+    }
+    seen.add(link);
+}
+
+// ================= SCORE =================
 async function getNewsScore(title = "", content = "") {
-
     const text = (title + " " + content).toLowerCase();
+
     let score = 0;
 
-    const highValue = ["bitcoin","btc","ethereum","eth","sec","etf","hack","exploit","listing","binance","coinbase","liquidation","crash","airdrop"];
-    const lowValue = ["sponsored","giveaway","click here","subscribe","advertisement","price prediction","opinion"];
+    const highValue = [
+        "bitcoin","btc","ethereum","eth","sec","etf",
+        "hack","exploit","listing","binance","coinbase",
+        "liquidation","crash","airdrop"
+    ];
+
+    const lowValue = [
+        "sponsored","giveaway","click here",
+        "subscribe","advertisement",
+        "price prediction","opinion"
+    ];
 
     highValue.forEach(w => { if (text.includes(w)) score += 3; });
     lowValue.forEach(w => { if (text.includes(w)) score -= 2; });
@@ -71,51 +82,24 @@ async function getNewsScore(title = "", content = "") {
     return score + await getLearningScore(text);
 }
 
-// ================= FLAGS =================
-function isBreakingNews(title = "") {
-    return ["bitcoin","btc","ethereum","eth","hack","exploit","liquidation","crash","sec","etf"]
-        .some(w => title.toLowerCase().includes(w));
-}
-
-function isAirdrop(title = "", content = "") {
-    return ["airdrop","testnet","retroactive","quest","whitelist","beta"]
-        .some(w => (title + " " + content).toLowerCase().includes(w));
-}
-
-// ================= WHALE =================
-function detectWhaleAmount(text = "") {
-    const regex = /\$?([\d,.]+)\s?(million|billion|m|b)?/gi;
-
-    let match;
-
-    while ((match = regex.exec(text)) !== null) {
-        let amount = parseFloat(match[1].replace(/,/g, ""));
-        const unit = (match[2] || "").toLowerCase();
-
-        if (unit === "billion" || unit === "b") amount *= 1e9;
-        else if (unit === "million" || unit === "m") amount *= 1e6;
-
-        if (amount >= 100000) return amount;
-    }
-
-    return 0;
-}
-
-// ================= MAIN ENGINE =================
+// ================= ENGINE =================
 async function fetchRSS(client) {
-
     if (!client) return;
 
     for (const feed of FEEDS) {
-
         try {
             const parsed = await parser.parseURL(feed);
             logRSS("feed_loaded", feed);
 
-            for (const item of parsed.items.slice(0, 5)) {
+            // LIMIT ITEMS → prevents overload
+            const items = parsed.items.slice(0, 3);
 
-                if (!item.link || seen.has(item.link)) continue;
-                seen.add(item.link);
+            for (const item of items) {
+
+                if (!item?.link) continue;
+                if (seen.has(item.link)) continue;
+
+                safeSeenAdd(item.link);
 
                 if (await hasPosted(item.link)) continue;
 
@@ -134,64 +118,40 @@ async function fetchRSS(client) {
                 const score = await getNewsScore(title, content);
                 if (score <= 0) continue;
 
-                const airdrop = isAirdrop(title, content);
-                const breaking = isBreakingNews(title);
-
                 const sentimentScore = getSentimentScore(title, content);
                 const sentiment = getSentiment(sentimentScore);
 
-                const whaleAmount = detectWhaleAmount(fullText);
-                const whaleAlert = isWhaleTransaction(whaleAmount);
+                const whaleAlert = isWhaleTransaction(
+                    classifyWhale(title, content)
+                );
 
-                const vip = routeIntelligence({
-                    score,
-                    sentiment,
-                    whaleAlert,
-                    risk,
-                    breaking,
-                    airdrop,
-                    vipAlpha: false
-                });
+                // ================= SAFE VIP =================
+                let vip = { channel: "crypto-news", tier: "FREE" };
 
-                const channelName = vip?.channel || "crypto-news";
-                const tier = vip?.tier || "FREE";
+                try {
+                    if (routeIntelligence) {
+                        vip = routeIntelligence({
+                            score,
+                            sentiment,
+                            whaleAlert,
+                            risk
+                        }) || vip;
+                    }
+                } catch (e) {
+                    console.log("⚠️ VIP fallback used");
+                }
 
-                const userTier = getUserTier("GLOBAL");
-                const membership = membershipTiers[userTier] || membershipTiers.FREE;
-                const allowed = membership.access || ["crypto-news"];
+                const channel =
+                    client.channels.cache.find(ch => ch.name === vip.channel);
 
-                if (!allowed.includes(channelName)) continue;
-
-                const channel = client.channels.cache.find(ch => ch.name === channelName);
                 if (!channel) continue;
-
-                const alpha = getAlphaScore({
-                    score,
-                    sentiment,
-                    whaleAlert,
-                    vipTier: tier,
-                    breaking,
-                    airdrop
-                });
 
                 const embed = new EmbedBuilder()
                     .setTitle(title)
                     .setURL(item.link)
-                    .setDescription((content || "Latest update").slice(0, 220))
-                    .setColor(
-                        tier === "ALPHA" ? 0xff00ff :
-                        tier === "VIP" ? 0xffcc00 :
-                        whaleAlert ? 0x8A2BE2 :
-                        sentiment === "BULLISH" ? 0x00ff00 :
-                        sentiment === "BEARISH" ? 0xff0000 :
-                        0x00BFFF
-                    )
-                    .addFields(
-                        { name: "🧠 Tier", value: tier, inline: true },
-                        { name: "📡 Channel", value: channelName, inline: true },
-                        { name: "💎 Membership", value: userTier, inline: true }
-                    )
-                    .setTimestamp(new Date(item.pubDate || Date.now()));
+                    .setDescription(content.slice(0, 200))
+                    .setColor(0x00bfff)
+                    .setTimestamp();
 
                 await channel.send({ embeds: [embed] });
 
@@ -200,7 +160,6 @@ async function fetchRSS(client) {
 
                 await savePost(item.link, item.title);
 
-                console.log(`🚀 [${tier}] → ${channelName}: ${title}`);
             }
 
         } catch (err) {
