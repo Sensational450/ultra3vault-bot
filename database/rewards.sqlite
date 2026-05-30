@@ -1,0 +1,28 @@
+const sqlite3 = require("sqlite3").verbose();
+
+const db = new sqlite3.Database("./database/rewards.sqlite");
+
+db.serialize(() => {
+
+    db.run(`
+        CREATE TABLE IF NOT EXISTS users (
+            userId TEXT PRIMARY KEY,
+            streak INTEGER DEFAULT 0,
+            lastClaim INTEGER,
+            points INTEGER DEFAULT 0
+        )
+    `);
+
+    db.run(`
+        CREATE TABLE IF NOT EXISTS referrals (
+            userId TEXT PRIMARY KEY,
+            code TEXT UNIQUE,
+            invites INTEGER DEFAULT 0,
+            points INTEGER DEFAULT 0
+        )
+    `);
+
+    console.log("💰 Rewards DB ready");
+});
+
+module.exports = db;
