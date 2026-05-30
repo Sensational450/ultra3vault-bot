@@ -2,10 +2,6 @@ const { Client, GatewayIntentBits } = require("discord.js");
 const fs = require("fs");
 const path = require("path");
 
-console.log("BOT FILE LOADED");
-console.log("TOKEN:", process.env.TOKEN ? "OK" : "MISSING");
-
-// ================= CLIENT =================
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -14,107 +10,33 @@ const client = new Client({
     ]
 });
 
-// ================= COMMAND SYSTEM =================
+// ================= COMMANDS =================
 const commands = new Map();
 
 const commandPath = path.join(__dirname, "commands");
 
-if (fs.existsSync(commandPath)) {
-
-    const commandFiles = fs
-        .readdirSync(commandPath)
-        .filter(file => file.endsWith(".js"));
-
-    for (const file of commandFiles) {
-
-        try {
-
-            const cmd = require(path.join(commandPath, file));
-
-            if (cmd?.name && typeof cmd.execute === "function") {
-
-                commands.set(cmd.name.toLowerCase(), cmd);
-
-                console.log(`✅ Loaded command: ${cmd.name}`);
-
-            } else {
-
-                console.log(`⚠️ Invalid command skipped: ${file}`);
-
-            }
-
-        } catch (err) {
-
-            console.log(`❌ Command load error (${file}):`, err.message);
-
-        }
-    }
-
-} else {
-    console.log("⚠️ Commands folder not found:", commandPath);
+for (const file of fs.readdirSync(commandPath)) {
+    const cmd = require(path.join(commandPath, file));
+    commands.set(cmd.name, cmd);
 }
 
-// FIXED STRING BUG
-console.log(`📦 Total Commands: ${commands.size}`);
-console.log("📦 Commands:", [...commands.keys()]);
+// ================= EVENTS =================
+const eventPath = path.join(__dirname, "events");
 
-// ================= MESSAGE HANDLER =================
-client.on("messageCreate", async (message) => {
+for (const file of fs.readdirSync(eventPath)) {
+    const event = require(path.join(eventPath, file));
 
-    try {
-
-        if (!message?.content) return;
-        if (message.author?.bot) return;
-
-        console.log(`📨 Message: ${message.content}`);
-
-        const prefix = "!";
-
-        if (!message.content.startsWith(prefix)) return;
-
-        const args = message.content
-            .slice(prefix.length)
-            .trim()
-            .split(/\s+/);
-
-        const cmdName = args.shift()?.toLowerCase();
-
-        if (!cmdName) return;
-
-        const command = commands.get(cmdName);
-
-        if (!command) {
-            console.log(`❌ Unknown command: ${cmdName}`);
-            return;
-        }
-
-        console.log(`⚡ Executing command: ${cmdName}`);
-
-        await command.execute(message, args);
-
-    } catch (err) {
-
-        console.error("❌ COMMAND ERROR:", err);
-
-        try {
-            await message.reply("❌ Command failed.");
-        } catch {}
+    if (event.once) {
+        client.once(event.name, (...args) =>
+            event.execute(...args, commands)
+        );
+    } else {
+        client.on(event.name, (...args) =>
+            event.execute(...args, commands)
+        );
     }
-});
+}
 
-// ================= READY =================
-client.once("ready", () => {
-
-    console.log(`✅ BOT ONLINE: ${client.user.tag}`);
-    console.log(`📦 Commands Loaded: ${commands.size}`);
-
-});
-
-// ================= EXPORT =================
 module.exports = client;
 
-// ================= LOGIN =================
-client.login(process.env.TOKEN)
-    .catch(err => {
-        console.log("❌ LOGIN FAILED:", err.message);
-    });
+client.login(process.env.TOKEN);
