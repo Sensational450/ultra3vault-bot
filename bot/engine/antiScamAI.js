@@ -1,5 +1,3 @@
-// ================= ANTI-SCAM AI 2.0 =================
-
 const SUSPICIOUS_KEYWORDS = [
     "connect wallet",
     "claim now",
@@ -27,8 +25,9 @@ const BAD_DOMAINS = [
     "short.link"
 ];
 
-// detect suspicious intent
+// ================= SCAM SCORE =================
 function getScamScore(title = "", content = "", url = "") {
+
     const text = (title + " " + content).toLowerCase();
 
     let score = 0;
@@ -41,7 +40,6 @@ function getScamScore(title = "", content = "", url = "") {
         if (text.includes(word)) score += 5;
     });
 
-    // URL checks
     if (url) {
         const lowerUrl = url.toLowerCase();
 
@@ -49,7 +47,6 @@ function getScamScore(title = "", content = "", url = "") {
             if (lowerUrl.includes(domain)) score += 3;
         });
 
-        // fake crypto lookalikes
         if (
             lowerUrl.includes("binannce") ||
             lowerUrl.includes("coinbse") ||
@@ -62,14 +59,23 @@ function getScamScore(title = "", content = "", url = "") {
     return score;
 }
 
-// classify risk
+// ================= RISK LEVEL =================
 function getRiskLevel(score) {
     if (score >= 7) return "DANGEROUS";
     if (score >= 3) return "SUSPICIOUS";
     return "SAFE";
 }
 
+// ================= FIX FOR YOUR ERROR =================
+// THIS FIXES: "getRiskScore is not defined"
+function getRiskScore(title = "", content = "", url = "") {
+    const score = getScamScore(title, content, url);
+    return getRiskLevel(score);
+}
+
+// ================= EXPORTS =================
 module.exports = {
     getScamScore,
-    getRiskLevel
+    getRiskLevel,
+    getRiskScore
 };
