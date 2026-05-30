@@ -162,6 +162,10 @@ async function fetchRSS(client) {
 
         } catch (err) {
             console.log(`❌ RSS Error (${feed}):`, err.message);
+
+            // 🔥 NEW: FULL STACK TRACE DEBUG (THIS IS THE FIX)
+            console.log("📍 FULL STACK TRACE:");
+            console.log(err.stack);
         }
     }
 
