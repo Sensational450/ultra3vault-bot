@@ -1,0 +1,16 @@
+const sqlite3 = require("sqlite3").verbose();
+const db = new sqlite3.Database("./database/referrals.sqlite");
+
+db.serialize(() => {
+
+    db.run(`
+        CREATE TABLE IF NOT EXISTS referrals (
+            userId TEXT PRIMARY KEY,
+            refCode TEXT,
+            invites INTEGER DEFAULT 0,
+            points INTEGER DEFAULT 0
+        )
+    `);
+});
+
+module.exports = db;
