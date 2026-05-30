@@ -11,18 +11,16 @@ async function getUserTier(userId) {
             [userId],
             (err, row) => {
 
-                if (err || !row) {
+                if (err || !row)
                     return resolve("FREE");
-                }
 
-                // Auto-expire
                 if (
                     row.expiresAt &&
                     Date.now() > row.expiresAt
                 ) {
 
                     db.run(
-                        "UPDATE users SET tier = 'FREE', expiresAt = NULL WHERE id = ?",
+                        "UPDATE users SET tier='FREE', expiresAt=NULL WHERE id=?",
                         [userId]
                     );
 
@@ -32,13 +30,11 @@ async function getUserTier(userId) {
                 resolve(row.tier || "FREE");
             }
         );
-
     });
-
 }
 
 // ================= SET USER TIER =================
-async function setUserTier(
+function setUserTier(
     userId,
     tier = "FREE",
     days = 30
@@ -49,152 +45,77 @@ async function setUserTier(
             ? null
             : Date.now() + days * 86400000;
 
-    return new Promise((resolve, reject) => {
-
-        db.run(
-            `
-            INSERT INTO users (
-                id,
-                tier,
-                expiresAt
-            )
-            VALUES (?, ?, ?)
-
-            ON CONFLICT(id)
-            DO UPDATE SET
-                tier = excluded.tier,
-                expiresAt = excluded.expiresAt
-            `,
-            [
-                userId,
-                tier,
-                expiresAt
-            ],
-            (err) => {
-
-                if (err) return reject(err);
-
-                resolve(true);
-            }
-        );
-
-    });
-
+    db.run(
+        `
+        INSERT INTO users
+        (id,tier,expiresAt)
+        VALUES (?,?,?)
+        ON CONFLICT(id)
+        DO UPDATE SET
+        tier=excluded.tier,
+        expiresAt=excluded.expiresAt
+        `,
+        [userId, tier, expiresAt]
+    );
 }
 
-// ================= GET SUB INFO =================
-async function getUserSubscription(userId) {
-
-    return new Promise((resolve) => {
-
-        db.get(
-            `
-            SELECT *
-            FROM users
-            WHERE id = ?
-            `,
-            [userId],
-            (err, row) => {
-
-                if (err || !row) {
-                    return resolve({
-                        tier: "FREE"
-                    });
-                }
-
-                resolve(row);
-            }
-        );
-
-    });
-
-}
-
-// ================= ACCESS CHECK =================
+// ================= ACCESS =================
 async function hasAccess(
     userId,
     channelName
 ) {
 
-    const tier =
-        await getUserTier(userId);
+    const tier = await getUserTier(userId);
 
     const plan =
         membershipTiers[tier] ||
         membershipTiers.FREE;
 
-    return (
-        plan.access || []
-    ).includes(channelName);
-
+    return plan.access.includes(channelName);
 }
 
 // ================= CLEANUP =================
 async function cleanupExpired() {
 
-    return new Promise((resolve) => {
+    db.all(
+        `
+        SELECT id,tier,expiresAt
+        FROM users
+        `,
+        [],
+        (err, rows) => {
 
-        db.all(
-            `
-            SELECT id,
-                   tier,
-                   expiresAt
-            FROM users
-            `,
-            async (err, rows) => {
+            if (err) return;
 
-                if (err) {
-                    return resolve();
+            rows.forEach(user => {
+
+                if (
+                    user.expiresAt &&
+                    Date.now() > user.expiresAt
+                ) {
+
+                    db.run(
+                        `
+                        UPDATE users
+                        SET tier='FREE',
+                        expiresAt=NULL
+                        WHERE id=?
+                        `,
+                        [user.id]
+                    );
+
+                    console.log(
+                        `⛔ Expired: ${user.id}`
+                    );
                 }
-
-                const now = Date.now();
-
-                for (const user of rows) {
-
-                    if (
-                        user.expiresAt &&
-                        now > user.expiresAt
-                    ) {
-
-                        db.run(
-                            `
-                            UPDATE users
-                            SET tier = 'FREE',
-                                expiresAt = NULL
-                            WHERE id = ?
-                            `,
-                            [user.id]
-                        );
-
-                        console.log(
-                            `⛔ EXPIRED USER: ${user.id}`
-                        );
-                    }
-                }
-
-                resolve();
-            }
-        );
-
-    });
-
-}
-
-// ================= PREMIUM CHECK =================
-function isPremium(tier) {
-
-    return (
-        tier === "VIP" ||
-        tier === "VIP_ALPHA"
+            });
+        }
     );
-
 }
 
 module.exports = {
     getUserTier,
     setUserTier,
-    getUserSubscription,
     hasAccess,
-    cleanupExpired,
-    isPremium
+    cleanupExpired
 };
