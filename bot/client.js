@@ -1,5 +1,6 @@
 const { Client, GatewayIntentBits } = require("discord.js");
 const fs = require("fs");
+const path = require("path");
 
 // ================= IMPORT SYSTEMS =================
 const fetchRSS = require("./rss");
@@ -11,11 +12,18 @@ console.log("TOKEN:", process.env.TOKEN ? "OK" : "MISSING");
 // ================= COMMAND SYSTEM =================
 const commands = new Map();
 
-const commandFiles = fs.readdirSync("./commands").filter(f => f.endsWith(".js"));
+// ✅ FIXED PATH (IMPORTANT)
+const commandPath = path.join(__dirname, "commands");
 
-for (const file of commandFiles) {
-    const cmd = require(`./commands/${file}`);
-    commands.set(cmd.name, cmd);
+if (fs.existsSync(commandPath)) {
+    const commandFiles = fs.readdirSync(commandPath).filter(f => f.endsWith(".js"));
+
+    for (const file of commandFiles) {
+        const cmd = require(path.join(commandPath, file));
+        commands.set(cmd.name, cmd);
+    }
+} else {
+    console.log("⚠️ Commands folder not found:", commandPath);
 }
 
 // ================= CLIENT =================
