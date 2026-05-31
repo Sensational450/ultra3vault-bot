@@ -1,28 +1,4 @@
-// ================= STARTUP =================
 console.log("🧠 STARTUP DEBUG ACTIVE (PHASE 4 CORE)");
-
-// ================= DB DUPLICATE DETECTOR =================
-const sqlite3 = require("sqlite3").verbose();
-
-const activeDBs = new Map();
-const OriginalDB = sqlite3.Database;
-
-sqlite3.Database = function (...args) {
-
-    const dbPath = args[0];
-
-    console.log("🧠 DB OPEN ATTEMPT:", dbPath);
-
-    if (activeDBs.has(dbPath)) {
-        console.error("🚨 DUPLICATE DB DETECTED:", dbPath);
-        console.trace("📍 SECOND CONNECTION CREATED HERE:");
-    } else {
-        activeDBs.set(dbPath, true);
-        console.trace("📍 FIRST CONNECTION CREATED HERE:");
-    }
-
-    return new OriginalDB(...args);
-};
 
 // ================= ERROR HANDLERS =================
 process.on("uncaughtException", (err) => {
@@ -42,13 +18,6 @@ const fetchPrices = require("./bot/engine/priceEngine");
 const { attachClient } = require("./web/server");
 const { cleanupExpired } = require("./bot/engine/subscriptionManager");
 
-// ================= ENGINE DEBUG =================
-console.log("📦 ENGINE LOAD CHECK:");
-
-Object.keys(require.cache)
-    .filter(f => f.includes("/engine/"))
-    .forEach(f => console.log("✔", f));
-
 // ================= STATE =================
 let started = false;
 let intervals = [];
@@ -65,7 +34,7 @@ async function safeRun(name, fn) {
 }
 
 // ================= READY EVENT =================
-client.once("clientReady", async () => {
+client.once("ready", async () => {
 
     if (started) return;
     started = true;
@@ -75,9 +44,11 @@ client.once("clientReady", async () => {
 
     attachClient?.(client);
 
+    // ================= ENGINE START =================
     await safeRun("RSS STARTUP", () => fetchRSS(client));
     await safeRun("PRICE STARTUP", () => fetchPrices(client));
 
+    // ================= LOOPS =================
     intervals.push(setInterval(() =>
         safeRun("RSS LOOP", () => fetchRSS(client)),
         12 * 60 * 1000
@@ -93,11 +64,12 @@ client.once("clientReady", async () => {
         60 * 60 * 1000
     ));
 
+    // ================= HEALTH CHECK =================
     intervals.push(setInterval(() => {
         console.log(`📊 HEALTH CHECK:
 Memory: ${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB
 Uptime: ${Math.floor(process.uptime())}s
-DB Status: ACTIVE`);
+Status: ACTIVE`);
     }, 5 * 60 * 1000));
 
     console.log("🚀 SYSTEM STABLE CORE RUNNING (PHASE 4 READY)");
