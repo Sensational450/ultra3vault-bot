@@ -3,54 +3,36 @@ const sqlite3 = require("sqlite3").verbose();
 console.log("📂 Opening DB: ./database/main.sqlite");
 
 const db = new sqlite3.Database("./database/main.sqlite", (err) => {
-    if (err) {
-        console.error("❌ MAIN DB OPEN ERROR:", err.message);
-    } else {
-        console.log("✅ MAIN DB OPENED");
-    }
+    if (err) console.error(err.message);
+    else console.log("🧠 MAIN DB OPENED");
 });
 
 db.serialize(() => {
 
     db.run("PRAGMA journal_mode = WAL");
+    db.run("PRAGMA busy_timeout = 5000");
 
-    // USERS
+    // USERS (economy + streak)
     db.run(`
         CREATE TABLE IF NOT EXISTS users (
-            id TEXT PRIMARY KEY,
-            tier TEXT DEFAULT 'FREE',
-            expiresAt INTEGER DEFAULT 0
-        )
-    `);
-
-    // RSS POSTS
-    db.run(`
-        CREATE TABLE IF NOT EXISTS rss_posts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            link TEXT UNIQUE,
-            title TEXT,
-            created_at INTEGER DEFAULT (strftime('%s','now'))
-        )
-    `);
-
-    // DAILY STREAKS
-    db.run(`
-        CREATE TABLE IF NOT EXISTS daily_streaks (
             userId TEXT PRIMARY KEY,
+            points INTEGER DEFAULT 0,
             streak INTEGER DEFAULT 0,
             lastClaim INTEGER DEFAULT 0
         )
     `);
 
-    // ECONOMY
+    // REFERRALS
     db.run(`
-        CREATE TABLE IF NOT EXISTS economy (
+        CREATE TABLE IF NOT EXISTS referrals (
             userId TEXT PRIMARY KEY,
-            balance INTEGER DEFAULT 0
+            code TEXT UNIQUE,
+            invites INTEGER DEFAULT 0,
+            points INTEGER DEFAULT 0
         )
     `);
 
-    console.log("🧠 MAIN DATABASE READY (PHASE 4 UPGRADED)");
+    console.log("💰 MAIN ECONOMY READY");
 });
 
 module.exports = db;
