@@ -65,7 +65,7 @@ async function safeRun(name, fn) {
 }
 
 // ================= READY EVENT =================
-client.once("ready", async () => {
+client.once("clientReady", async () => {
 
     if (started) return;
     started = true;
