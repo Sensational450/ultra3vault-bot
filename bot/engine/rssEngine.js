@@ -53,10 +53,11 @@ function getFallbackImage(title = "") {
     return "https://cryptologos.cc/logos/bitcoin-btc-logo.png";
 }
 
-// ================= INTELLIGENCE CLASSIFICATION =================
-function getIntelLabel(score, risk, whaleAlert) {
+// ================= INTELLIGENCE LABEL =================
+function getIntelLabel(score, risk, whale, isAirdrop) {
     if (risk === "DANGEROUS") return "🚨 CRITICAL ALERT";
-    if (whaleAlert && score >= 5) return "🐋 WHALE INTEL";
+    if (isAirdrop) return "🪂 AIRDROP INTEL";
+    if (whale && score >= 5) return "🐋 WHALE MOVEMENT";
     if (score >= 8) return "🔥 BREAKING INTEL";
     if (score >= 5) return "📊 HIGH IMPACT";
     if (score <= -3) return "⚠️ NEGATIVE PRESSURE";
@@ -111,17 +112,18 @@ async function fetchRSS(client) {
                 const score = getSentimentScore(title, content);
                 const sentiment = getSentiment(score);
 
-                const scamScore = getScamScore(
-                    title,
-                    content,
-                    item.link
-                );
-
+                const scamScore = getScamScore(title, content, item.link);
                 const risk = getRiskLevel(scamScore);
 
                 const whaleAlert =
                     title.toLowerCase().includes("whale") ||
                     content.toLowerCase().includes("whale");
+
+                const isAirdrop =
+                    title.toLowerCase().includes("airdrop") ||
+                    title.toLowerCase().includes("claim") ||
+                    content.toLowerCase().includes("airdrop") ||
+                    content.toLowerCase().includes("reward");
 
                 const vip = routeIntelligence({
                     score,
@@ -130,13 +132,13 @@ async function fetchRSS(client) {
                     risk
                 });
 
-                const intelLabel = getIntelLabel(score, risk, whaleAlert);
+                const intelLabel = getIntelLabel(score, risk, whaleAlert, isAirdrop);
 
                 console.log(
-                    `🧠 AI → Score:${score} Sentiment:${sentiment} Risk:${risk} Whale:${whaleAlert}`
+                    `🧠 AI → Score:${score} Sentiment:${sentiment} Risk:${risk} Whale:${whaleAlert} Airdrop:${isAirdrop}`
                 );
 
-                // ================= BLOOMBERG STYLE EMBED =================
+                // ================= EMBED =================
                 const embed = new EmbedBuilder()
                     .setTitle(`ULTRA3 INTEL: ${title.substring(0, 200)}`)
                     .setURL(item.link)
@@ -170,12 +172,12 @@ async function fetchRSS(client) {
                     .setTimestamp();
 
                 // ================= ROUTING =================
-                const channel = client.channels.cache.find(
-                    c => c.name === vip.channel
-                );
+                const channel =
+                    client.channels.cache.find(c => c.name === vip.channel)
+                    || client.channels.cache.find(c => c.name === "crypto-news");
 
                 if (!channel) {
-                    console.log(`⚠️ Channel not found: ${vip.channel}`);
+                    console.log(`⚠️ NO CHANNEL FOUND (even fallback): ${vip.channel}`);
                     continue;
                 }
 
@@ -183,9 +185,7 @@ async function fetchRSS(client) {
 
                 savePost(item.link, title);
 
-                console.log(
-                    `✅ RSS (${vip.tier}) → ${vip.channel}: ${title}`
-                );
+                console.log(`✅ RSS (${vip.tier}) → ${channel.name}: ${title}`);
             }
 
         } catch (err) {
