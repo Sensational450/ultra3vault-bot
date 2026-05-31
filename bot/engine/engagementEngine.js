@@ -1,5 +1,4 @@
-const db = require("../../database/db");
-const { addXP } = require("./economyEngine");
+const { addXP } = require("./levelingEngine");
 
 // ================= MESSAGE COOLDOWN =================
 const cooldown = new Map();
@@ -23,15 +22,22 @@ function handleMessage(message) {
     // random XP reward
     const xp = Math.floor(Math.random() * 5) + 1;
 
-    addXP(userId, xp);
+    addXP(userId, xp, (levelUp) => {
+
+        if (levelUp) {
+            message.channel.send(
+                `🎉 <@${userId}> reached **Level ${levelUp.newLevel}**!`
+            );
+        }
+    });
 }
 
 // ================= INVITE BONUS =================
 function handleInvite(userId) {
+
     addXP(userId, 25);
 }
 
-// ================= EXPORTS =================
 module.exports = {
     handleMessage,
     handleInvite
