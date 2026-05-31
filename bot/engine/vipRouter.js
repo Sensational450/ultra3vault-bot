@@ -1,4 +1,4 @@
-function routeIntelligence(data) {
+function routeIntelligence(data = {}) {
 
     const {
         score = 0,
@@ -7,7 +7,6 @@ function routeIntelligence(data) {
         risk = "SAFE"
     } = data;
 
-    // ================= SECURITY LAYER =================
     if (risk === "DANGEROUS") {
         return {
             channel: "security-alerts",
@@ -15,66 +14,53 @@ function routeIntelligence(data) {
         };
     }
 
-    // ================= WHALE DETECTION (HIGHEST PRIORITY) =================
     if (whaleAlert) {
-
-        if (score >= 7) {
-            return {
-                channel: "whale-alerts",
-                tier: "VIP"
-            };
-        }
-
         return {
-            channel: "market-signals",
+            channel: "whale-alerts",
             tier: "VIP"
         };
     }
 
-    // ================= HIGH VALUE ALPHA =================
-    if (score >= 9) {
+    if (score >= 6) {
         return {
             channel: "alpha-news",
             tier: "ELITE"
         };
     }
 
-    // ================= VIP CONTENT =================
-    if (score >= 6) {
+    if (score >= 3) {
         return {
             channel: "vip-news",
             tier: "VIP"
         };
     }
 
-    // ================= SENTIMENT BOOST =================
-    if (sentiment === "BULLISH") {
-
-        if (score >= 4) {
-            return {
-                channel: "crypto-news",
-                tier: "FREE"
-            };
-        }
-
-        return {
-            channel: "market-watch",
-            tier: "FREE"
-        };
-    }
-
-    if (sentiment === "BEARISH") {
+    if (
+        sentiment === "BEARISH" ||
+        sentiment === "VERY BEARISH"
+    ) {
         return {
             channel: "risk-watch",
             tier: "FREE"
         };
     }
 
-    // ================= DEFAULT =================
+    if (
+        sentiment === "BULLISH" ||
+        sentiment === "VERY BULLISH"
+    ) {
+        return {
+            channel: "market-watch",
+            tier: "FREE"
+        };
+    }
+
     return {
         channel: "crypto-news",
         tier: "FREE"
     };
 }
 
-module.exports = { routeIntelligence };
+module.exports = {
+    routeIntelligence
+};
