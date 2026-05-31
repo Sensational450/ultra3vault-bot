@@ -2,17 +2,21 @@ const db = require("../../database/db");
 
 // ================= XP CURVE =================
 function xpForLevel(level) {
-    return 100 * level * level; // quadratic scaling
+    return 100 * level * level;
 }
 
-// ================= GET USER =================
+// ================= GET OR CREATE USER =================
 function getUser(userId, callback) {
+
     db.get(
         "SELECT * FROM users WHERE id = ?",
         [userId],
         (err, row) => {
+
             if (err) return callback(null);
+
             if (!row) {
+
                 db.run(
                     "INSERT INTO users (id, xp, level, messages, invites) VALUES (?, 0, 1, 0, 0)",
                     [userId]
@@ -32,7 +36,7 @@ function getUser(userId, callback) {
     );
 }
 
-// ================= ADD XP =================
+// ================= ADD XP (CORE ENGINE) =================
 function addXP(userId, amount, callback) {
 
     getUser(userId, (user) => {
@@ -41,11 +45,11 @@ function addXP(userId, amount, callback) {
 
         let xp = user.xp + amount;
         let level = user.level;
-
         let leveledUp = false;
 
-        // ================= LEVEL UP LOOP =================
+        // ================= LEVEL CHECK LOOP =================
         while (xp >= xpForLevel(level)) {
+
             xp -= xpForLevel(level);
             level += 1;
             leveledUp = true;
@@ -57,6 +61,7 @@ function addXP(userId, amount, callback) {
         );
 
         if (leveledUp && callback) {
+
             callback({
                 userId,
                 newLevel: level
