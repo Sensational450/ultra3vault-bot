@@ -7,6 +7,37 @@ const { getSentimentScore, getSentiment } = require("./sentimentAI");
 const { getScamScore, getRiskLevel } = require("./antiScamAI");
 const { routeIntelligence } = require("./vipRouter");
 
+// ================= AIRDROP DETECTOR =================
+const AIRDROP_KEYWORDS = [
+    "airdrop",
+    "claim",
+    "eligibility",
+    "snapshot",
+    "retroactive",
+    "testnet",
+    "points",
+    "reward",
+    "distribution",
+    "checker",
+    "whitelist",
+    "allocation"
+];
+
+function detectAirdrop(title = "", content = "") {
+    const text = (title + " " + content).toLowerCase();
+
+    let score = 0;
+    AIRDROP_KEYWORDS.forEach(k => {
+        if (text.includes(k)) score += 2;
+    });
+
+    return {
+        isAirdrop: score >= 4,
+        score
+    };
+}
+
+// ================= RSS =================
 const parser = new Parser();
 
 const FEEDS = [
@@ -25,6 +56,7 @@ const CHANNEL_POOL = [
     "security-alerts"
 ];
 
+// ================= CACHE =================
 const seen = new Set();
 const MAX_SEEN = 200;
 
@@ -33,7 +65,7 @@ function safeAdd(link) {
     seen.add(link);
 }
 
-// ================= PROFESSIONAL IMAGE SYSTEM =================
+// ================= IMAGE SYSTEM =================
 function getIntelImage(title = "") {
     const t = title.toLowerCase();
 
@@ -41,19 +73,15 @@ function getIntelImage(title = "") {
         return "https://images.unsplash.com/photo-1550751827-4bd374c3f58b";
     }
 
-    if (t.includes("sec") || t.includes("regulation") || t.includes("lawsuit")) {
+    if (t.includes("sec") || t.includes("lawsuit")) {
         return "https://images.unsplash.com/photo-1454165804606-c3d57bc86b40";
     }
 
-    if (t.includes("bitcoin") || t.includes("btc") || t.includes("crypto")) {
+    if (t.includes("bitcoin") || t.includes("btc")) {
         return "https://images.unsplash.com/photo-1621761191319-c6fb62004040";
     }
 
-    if (t.includes("ai") || t.includes("artificial intelligence")) {
-        return "https://images.unsplash.com/photo-1677442136019-21780ecad995";
-    }
-
-    return "https://images.unsplash.com/photo-1551288049-bebda4e38f71"; // finance newsroom
+    return "https://images.unsplash.com/photo-1551288049-bebda4e38f71";
 }
 
 // ================= DB =================
@@ -97,7 +125,7 @@ async function fetchRSS(client) {
                 const title = item.title || "Untitled";
                 const content = item.contentSnippet || "";
 
-                // ================= AI LAYER =================
+                // ================= AI =================
                 const score = getSentimentScore(title, content);
                 const sentiment = getSentiment(score);
                 const scamScore = getScamScore(title, content, item.link);
@@ -107,43 +135,59 @@ async function fetchRSS(client) {
                     title.toLowerCase().includes("whale") ||
                     content.toLowerCase().includes("whale");
 
-                const vip = routeIntelligence({
+                // ================= AIRDROP DETECTION =================
+                const airdrop = detectAirdrop(title, content);
+
+                // ================= ROUTING =================
+                let vip = routeIntelligence({
                     score,
                     sentiment,
                     whaleAlert,
                     risk
                 });
 
+                // 🔥 FORCE AIRDROP ROUTE
+                if (airdrop.isAirdrop) {
+                    vip = {
+                        channel: "airdrop-news",
+                        tier: "AIRDROP"
+                    };
+                }
+
                 activity.set(vip.channel, (activity.get(vip.channel) || 0) + 1);
 
                 console.log(`🧠 INTEL → ${score} | ${sentiment} | ${risk} → ${vip.channel}`);
 
-                // ================= BLOOMBERG STYLE EMBED =================
+                // ================= EMBED =================
                 const embed = new EmbedBuilder()
-                    .setTitle(`ULTRA3 INTELLIGENCE: ${title.slice(0, 200)}`)
+                    .setTitle(
+                        airdrop.isAirdrop
+                            ? `🎁 AIRDROP ALERT: ${title.slice(0, 180)}`
+                            : `ULTRA3 INTELLIGENCE: ${title.slice(0, 180)}`
+                    )
                     .setURL(item.link)
                     .setDescription(
-                        `🧠 **MARKET INTELLIGENCE REPORT**\n\n` +
-                        `📌 ${content?.slice(0, 350) || "No summary available"}\n\n` +
+                        `🧠 **INTELLIGENCE REPORT**\n\n` +
+                        `📌 ${content?.slice(0, 350) || "No summary"}\n\n` +
                         `━━━━━━━━━━━━━━━━━━\n` +
                         `📊 Sentiment: ${sentiment}\n` +
-                        `⚠️ Risk Level: ${risk}\n` +
+                        `⚠️ Risk: ${risk}\n` +
                         `📈 Score: ${score}\n` +
-                        `🐋 Whale Activity: ${whaleAlert ? "Detected" : "None"}\n` +
+                        `🎁 Airdrop: ${airdrop.isAirdrop ? "YES" : "NO"}\n` +
                         `━━━━━━━━━━━━━━━━━━`
                     )
                     .setColor(
-                        risk === "DANGEROUS"
+                        airdrop.isAirdrop
+                            ? 0xffd700
+                            : risk === "DANGEROUS"
                             ? 0xff0000
                             : score >= 6
                             ? 0x00ff88
-                            : score <= -3
-                            ? 0xff4444
                             : 0x0099ff
                     )
                     .setImage(getIntelImage(title))
                     .setFooter({
-                        text: `ULTRA3 INTELLIGENCE FEED • ${vip.channel.toUpperCase()}`
+                        text: `ULTRA3 INTELLIGENCE • ${vip.channel.toUpperCase()}`
                     })
                     .setTimestamp();
 
@@ -151,15 +195,6 @@ async function fetchRSS(client) {
                 let channel =
                     client.channels.cache.find(c => c.name === vip.channel) ||
                     client.channels.cache.find(c => c.name === "crypto-news");
-
-                if (!channel) {
-                    const fallback =
-                        CHANNEL_POOL[Math.floor(Math.random() * CHANNEL_POOL.length)];
-
-                    channel = client.channels.cache.find(c => c.name === fallback);
-
-                    console.log(`🔁 FALLBACK ROUTE → ${fallback}`);
-                }
 
                 if (!channel) continue;
 
@@ -175,13 +210,12 @@ async function fetchRSS(client) {
         }
     }
 
-    // ================= SILENT COVERAGE (NO SPAM) =================
+    // ================= COVERAGE =================
     for (const ch of CHANNEL_POOL) {
-        if ((activity.get(ch) || 0) === 0) {
+        if (!activity.get(ch)) {
             const channel = client.channels.cache.find(c => c.name === ch);
-
             if (channel) {
-                await channel.send("🧠 Feed active — awaiting intelligence signals");
+                await channel.send("🧠 Feed active — monitoring intelligence streams");
             }
         }
     }
