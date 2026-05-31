@@ -1,4 +1,6 @@
 const { addXP, getUser } = require("./levelingEngine");
+const { getVIP } = require("./vipEngine");
+const { getBooster } = require("./boosterEngine");
 
 // ================= CORE STATE =================
 const cooldown = new Map();
@@ -11,31 +13,6 @@ const BASE_MAX_XP = 5;
 
 const AFK_THRESHOLD = 60 * 1000; // 1 min
 const COOLDOWN_TIME = 5000;
-
-// ================= VIP SYSTEM (MONETIZATION HOOK) =================
-// later you will connect DB subscription table here
-function getVIPMultiplier(userId) {
-
-    const vipUsers = new Set([
-        // example VIP IDs (replace with DB later)
-        // "123456789"
-    ]);
-
-    if (vipUsers.has(userId)) return 2.0; // VIP BOOST x2
-
-    return 1.0;
-}
-
-// ================= LEVEL BONUS SYSTEM =================
-function getLevelBonus(level) {
-
-    if (level >= 50) return 5;
-    if (level >= 30) return 4;
-    if (level >= 20) return 3;
-    if (level >= 10) return 2;
-
-    return 1;
-}
 
 // ================= MESSAGE QUALITY ENGINE =================
 function getMessageQuality(message) {
@@ -54,7 +31,7 @@ function getMessageQuality(message) {
     return Math.min(score, 4);
 }
 
-// ================= MAIN ENGINE =================
+// ================= MAIN XP ENGINE =================
 function handleMessage(message) {
 
     if (message.author.bot) return;
@@ -62,15 +39,14 @@ function handleMessage(message) {
     const userId = message.author.id;
     const now = Date.now();
 
-    // ================= COOLDOWN (ANTI SPAM) =================
+    // ================= COOLDOWN =================
     if (cooldown.has(userId)) {
         const last = cooldown.get(userId);
         if (now - last < COOLDOWN_TIME) return;
     }
-
     cooldown.set(userId, now);
 
-    // ================= USER ACTIVITY =================
+    // ================= ACTIVITY TRACKING =================
     const lastSeen = lastActive.get(userId) || 0;
     const isActive = (now - lastSeen) < AFK_THRESHOLD;
 
@@ -88,34 +64,55 @@ function handleMessage(message) {
     // ================= QUALITY BONUS =================
     xp += getMessageQuality(message);
 
-    // ================= ACTIVE USER BONUS =================
+    // ================= ACTIVE BONUS =================
     if (isActive) xp += 2;
 
-    // ================= MESSAGE MILESTONES =================
+    // ================= MILESTONE BONUSES =================
     if (totalMessages % 10 === 0) xp += 3;
     if (totalMessages % 50 === 0) xp += 10;
     if (totalMessages % 100 === 0) xp += 25;
 
-    // ================= GET USER LEVEL =================
+    // ================= USER DATA FETCH =================
     getUser(userId, (user) => {
 
         if (!user) return;
 
-        const levelBonus = getLevelBonus(user.level);
+        // ================= VIP SYSTEM =================
+        getVIP(userId, (vip) => {
 
-        // ================= VIP MULTIPLIER =================
-        const vipMultiplier = getVIPMultiplier(userId);
+            const vipMultiplier = vip?.multiplier || 1;
 
-        xp = Math.floor(xp * levelBonus * vipMultiplier);
+            // ================= BOOSTER SYSTEM =================
+            getBooster(userId, (booster) => {
 
-        // ================= FINAL XP PUSH =================
-        addXP(userId, xp, (levelUp) => {
+                const boosterMultiplier = booster?.multiplier || 1;
 
-            if (levelUp) {
-                message.channel.send(
-                    `🎉 <@${userId}> just reached **Level ${levelUp.newLevel}** 🚀`
-                );
-            }
+                // ================= LEVEL BONUS =================
+                let levelBonus = 1;
+
+                if (user.level >= 50) levelBonus = 5;
+                else if (user.level >= 30) levelBonus = 4;
+                else if (user.level >= 20) levelBonus = 3;
+                else if (user.level >= 10) levelBonus = 2;
+
+                // ================= FINAL MULTIPLIER =================
+                const finalMultiplier =
+                    vipMultiplier *
+                    boosterMultiplier *
+                    levelBonus;
+
+                xp = Math.floor(xp * finalMultiplier);
+
+                // ================= ADD XP =================
+                addXP(userId, xp, (levelUp) => {
+
+                    if (levelUp) {
+                        message.channel.send(
+                            `🎉 <@${userId}> just reached **Level ${levelUp.newLevel}** 🚀`
+                        );
+                    }
+                });
+            });
         });
     });
 }
@@ -125,12 +122,11 @@ function handleInvite(userId) {
     addXP(userId, 35);
 }
 
-// ================= DAILY BONUS + STREAK READY =================
+// ================= DAILY BONUS SYSTEM =================
 function applyDailyBonus(userId, streak = 0) {
 
     let bonus = 50 + (streak * 12);
 
-    // streak multipliers
     if (streak >= 7) bonus *= 1.5;
     if (streak >= 14) bonus *= 2;
     if (streak >= 30) bonus *= 3;
