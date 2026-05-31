@@ -1,4 +1,12 @@
 const db = require("../../database/db");
+const { xpForLevel } = require("../engine/levelingEngine");
+
+function progressBar(current, max) {
+
+    const percent = Math.floor((current / max) * 10);
+
+    return "█".repeat(percent) + "░".repeat(10 - percent);
+}
 
 module.exports = {
     name: "rank",
@@ -18,10 +26,14 @@ module.exports = {
                     return message.reply("📊 No data found. Start chatting first.");
                 }
 
+                const requiredXP = xpForLevel(row.level);
+                const bar = progressBar(row.xp, requiredXP);
+
                 message.reply(
                     `📊 **YOUR PROFILE**\n\n` +
                     `⭐ Level: ${row.level}\n` +
-                    `🔥 XP: ${row.xp}\n` +
+                    `🔥 XP: ${row.xp} / ${requiredXP}\n` +
+                    `📈 Progress: ${bar}\n\n` +
                     `💬 Messages: ${row.messages}\n` +
                     `👥 Invites: ${row.invites}`
                 );
