@@ -1,19 +1,35 @@
-const { getLeaderboard } = require("../engine/economyManager");
+const db = require("../../database/db");
 
 module.exports = {
     name: "leaderboard",
 
-    execute(message) {
+    async execute(message) {
 
-        getLeaderboard((rows) => {
+        db.all(
+            "SELECT id, level, xp FROM users ORDER BY level DESC, xp DESC LIMIT 10",
+            [],
+            (err, rows) => {
 
-            let text = "🏆 **TOP USERS**\n\n";
+                if (err) {
+                    return message.reply("❌ DB error");
+                }
 
-            rows.forEach((u, i) => {
-                text += `${i + 1}. <@${u.userId}> — ${u.points} pts 🔥\n`;
-            });
+                if (!rows || rows.length === 0) {
+                    return message.reply("📊 No data yet.");
+                }
 
-            message.reply(text);
-        });
+                let text = "🏆 **GLOBAL LEADERBOARD**\n\n";
+
+                rows.forEach((user, index) => {
+
+                    text +=
+                        `#${index + 1} <@${user.id}>` +
+                        ` • Level ${user.level}` +
+                        ` • XP ${user.xp}\n`;
+                });
+
+                message.reply(text);
+            }
+        );
     }
 };
