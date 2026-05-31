@@ -1,16 +1,15 @@
 const sqlite3 = require("sqlite3").verbose();
 
-console.log("📂 Opening DB: ./database/economy.sqlite");
-
 const db = new sqlite3.Database("./database/economy.sqlite", (err) => {
-    if (err) {
-        console.error("❌ ECONOMY DB ERROR:", err.message);
-    } else {
-        console.log("✅ ECONOMY DB OPENED");
-    }
+    if (err) console.error(err.message);
+    else console.log("✅ ECONOMY DB OPENED");
 });
 
 db.serialize(() => {
+
+    // ✅ IMPORTANT FIX (prevents SQLITE_BUSY)
+    db.run("PRAGMA journal_mode = WAL");
+    db.run("PRAGMA busy_timeout = 5000");
 
     db.run(`
         CREATE TABLE IF NOT EXISTS users (
