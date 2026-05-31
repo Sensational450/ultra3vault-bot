@@ -3,14 +3,15 @@ const fs = require("fs");
 const path = require("path");
 
 // ================= ENGINES =================
-const { handleMessage } = require("./bot/engine/engagementEngine");
+// FIXED PATH
+const { handleMessage } = require("./engine/engagementEngine");
 
 const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent
-    ]
+intents: [
+GatewayIntentBits.Guilds,
+GatewayIntentBits.GuildMessages,
+GatewayIntentBits.MessageContent
+]
 });
 
 // ================= SYSTEM STATE =================
@@ -21,29 +22,33 @@ const commandPath = path.join(__dirname, "commands");
 
 // ================= LOAD COMMANDS =================
 function loadCommands() {
-    if (!fs.existsSync(commandPath)) {
-        console.log("⚠️ No commands folder found");
-        return;
-    }
 
-    const files = fs.readdirSync(commandPath);
+if (!fs.existsSync(commandPath)) {
+    console.log("⚠️ No commands folder found");
+    return;
+}
 
-    for (const file of files) {
-        try {
-            const cmd = require(path.join(commandPath, file));
+const files = fs.readdirSync(commandPath);
 
-            if (!cmd?.name || typeof cmd.execute !== "function") {
-                console.log(`⚠️ Invalid command skipped: ${file}`);
-                continue;
-            }
+for (const file of files) {
 
-            client.commands.set(cmd.name, cmd);
-            console.log(`✅ Loaded command: ${cmd.name}`);
+    try {
 
-        } catch (err) {
-            console.log(`❌ Failed loading ${file}:`, err.message);
+        const cmd = require(path.join(commandPath, file));
+
+        if (!cmd?.name || typeof cmd.execute !== "function") {
+            console.log(`⚠️ Invalid command skipped: ${file}`);
+            continue;
         }
+
+        client.commands.set(cmd.name, cmd);
+        console.log(`✅ Loaded command: ${cmd.name}`);
+
+    } catch (err) {
+        console.log(`❌ Failed loading ${file}:`, err.message);
     }
+}
+
 }
 
 loadCommands();
@@ -51,65 +56,84 @@ loadCommands();
 // ================= MESSAGE SYSTEM =================
 client.on("messageCreate", async (message) => {
 
-    try {
+try {
 
-        // ================= IGNORE BOTS =================
-        if (message.author.bot) return;
+    if (message.author.bot) return;
 
-        // ================= ENGAGEMENT ENGINE HOOK =================
-        handleMessage(message); // 🔥 XP SYSTEM ACTIVE
+    // ================= ENGAGEMENT XP =================
+    handleMessage(message);
 
-        // ================= COMMAND CHECK =================
-        if (!message.content.startsWith("!")) return;
+    if (!message.content.startsWith("!")) return;
 
-        const args = message.content.slice(1).trim().split(/\s+/);
-        const commandName = args.shift().toLowerCase();
+    const args = message.content.slice(1).trim().split(/\s+/);
+    const commandName = args.shift().toLowerCase();
 
-        const command = client.commands.get(commandName);
-        if (!command) return;
+    const command = client.commands.get(commandName);
 
-        // ================= COOLDOWN SYSTEM =================
-        const now = Date.now();
-        const key = `${message.author.id}_${commandName}`;
-        const cooldownTime = 3000;
+    if (!command) return;
 
-        if (client.cooldowns.has(key)) {
-            const last = client.cooldowns.get(key);
+    // ================= COOLDOWN =================
+    const now = Date.now();
+    const key = `${message.author.id}_${commandName}`;
+    const cooldownTime = 3000;
 
-            if (now - last < cooldownTime) {
-                return message.reply("⏳ Slow down! Try again shortly.");
-            }
+    if (client.cooldowns.has(key)) {
+
+        const last = client.cooldowns.get(key);
+
+        if (now - last < cooldownTime) {
+            return message.reply(
+                "⏳ Slow down! Try again shortly."
+            );
         }
-
-        client.cooldowns.set(key, now);
-
-        // ================= EXECUTION SAFETY =================
-        try {
-            await command.execute(message, args, client);
-        } catch (err) {
-            console.log(`❌ COMMAND ERROR (${commandName}):`, err.message);
-            return message.reply("❌ Command failed safely.");
-        }
-
-    } catch (err) {
-        console.log("❌ MESSAGE HANDLER ERROR:", err.message);
     }
+
+    client.cooldowns.set(key, now);
+
+    await command.execute(
+        message,
+        args,
+        client
+    );
+
+} catch (err) {
+
+    console.log(
+        "❌ MESSAGE HANDLER ERROR:",
+        err?.stack || err
+    );
+
+    try {
+        await message.reply(
+            "❌ Command failed safely."
+        );
+    } catch {}
+}
+
 });
 
 // ================= READY EVENT =================
 client.once("clientReady", () => {
-    console.log("🤖 BOT ONLINE:", client.user.tag);
-    console.log("🚀 CORE SYSTEM v3.0 ACTIVE");
-    console.log("📡 ENGAGEMENT ENGINE ENABLED");
+
+console.log("🤖 BOT ONLINE:", client.user.tag);
+console.log("🚀 CORE SYSTEM v3.0 ACTIVE");
+console.log("📡 ENGAGEMENT ENGINE ENABLED");
+
 });
 
 // ================= GLOBAL SAFETY =================
 process.on("uncaughtException", (err) => {
-    console.log("💥 UNCAUGHT EXCEPTION:", err.message);
+console.log(
+"💥 UNCAUGHT EXCEPTION:",
+err?.stack || err
+);
 });
 
 process.on("unhandledRejection", (err) => {
-    console.log("💥 UNHANDLED REJECTION:", err.message);
+console.log(
+"💥 UNHANDLED REJECTION:",
+err?.stack || err
+);
 });
 
 module.exports = client;
