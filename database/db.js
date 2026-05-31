@@ -3,26 +3,25 @@ const path = require("path");
 
 const dbPath = path.join(__dirname, "main.sqlite");
 
-console.log("📂 Opening DB:", dbPath);
+console.log("📂 Opening MAIN DB:", dbPath);
 
-const db = new sqlite3.Database(
-    dbPath,
-    sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE,
-    (err) => {
-        if (err) console.error("❌ MAIN DB ERROR:", err.message);
-        else console.log("🧠 MAIN DB OPENED");
+const db = new sqlite3.Database(dbPath, (err) => {
+    if (err) {
+        console.error("❌ MAIN DB ERROR:", err.message);
+    } else {
+        console.log("🧠 MAIN DB OPENED");
     }
-);
+});
 
-// ================= GLOBAL SAFETY =================
+// ================= PERFORMANCE + LOCK FIX =================
 db.serialize(() => {
 
+    // 🔥 IMPORTANT: prevents SQLITE_BUSY on Render
     db.run("PRAGMA journal_mode = WAL");
+    db.run("PRAGMA busy_timeout = 5000");
     db.run("PRAGMA synchronous = NORMAL");
-    db.run("PRAGMA busy_timeout = 8000");
-    db.run("PRAGMA cache_size = 10000");
 
-    // USERS
+    // ================= USERS =================
     db.run(`
         CREATE TABLE IF NOT EXISTS users (
             id TEXT PRIMARY KEY,
@@ -31,27 +30,7 @@ db.serialize(() => {
         )
     `);
 
-    // RSS POSTS
-    db.run(`
-        CREATE TABLE IF NOT EXISTS rss_posts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            link TEXT UNIQUE,
-            title TEXT,
-            created_at INTEGER DEFAULT (strftime('%s','now'))
-        )
-    `);
-
-    // DAILY STREAKS
-    db.run(`
-        CREATE TABLE IF NOT EXISTS daily_streaks (
-            userId TEXT PRIMARY KEY,
-            streak INTEGER DEFAULT 0,
-            lastClaim INTEGER DEFAULT 0,
-            points INTEGER DEFAULT 0
-        )
-    `);
-
-    // ECONOMY
+    // ================= ECONOMY =================
     db.run(`
         CREATE TABLE IF NOT EXISTS economy (
             userId TEXT PRIMARY KEY,
@@ -59,7 +38,7 @@ db.serialize(() => {
         )
     `);
 
-    // REFERRALS
+    // ================= REFERRALS =================
     db.run(`
         CREATE TABLE IF NOT EXISTS referrals (
             userId TEXT PRIMARY KEY,
@@ -69,7 +48,27 @@ db.serialize(() => {
         )
     `);
 
-    console.log("💰 MAIN DATABASE READY (PHASE 4 STABLE + SAFE)");
+    // ================= DAILY =================
+    db.run(`
+        CREATE TABLE IF NOT EXISTS daily_streaks (
+            userId TEXT PRIMARY KEY,
+            streak INTEGER DEFAULT 0,
+            lastClaim INTEGER DEFAULT 0,
+            points INTEGER DEFAULT 0
+        )
+    `);
+
+    // ================= RSS POSTS =================
+    db.run(`
+        CREATE TABLE IF NOT EXISTS rss_posts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            link TEXT UNIQUE,
+            title TEXT,
+            created_at INTEGER DEFAULT (strftime('%s','now'))
+        )
+    `);
+
+    console.log("💰 MAIN DATABASE READY (CLEAN PHASE 4)");
 });
 
 module.exports = db;
