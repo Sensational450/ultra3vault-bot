@@ -2,6 +2,9 @@ const { Client, GatewayIntentBits, Collection } = require("discord.js");
 const fs = require("fs");
 const path = require("path");
 
+// ================= ENGINES =================
+const { handleMessage } = require("./bot/engine/engagementEngine");
+
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -10,7 +13,7 @@ const client = new Client({
     ]
 });
 
-// ================= COMMAND SYSTEM =================
+// ================= SYSTEM STATE =================
 client.commands = new Collection();
 client.cooldowns = new Map();
 
@@ -45,10 +48,18 @@ function loadCommands() {
 
 loadCommands();
 
-// ================= COMMAND HANDLER =================
+// ================= MESSAGE SYSTEM =================
 client.on("messageCreate", async (message) => {
+
     try {
+
+        // ================= IGNORE BOTS =================
         if (message.author.bot) return;
+
+        // ================= ENGAGEMENT ENGINE HOOK =================
+        handleMessage(message); // 🔥 XP SYSTEM ACTIVE
+
+        // ================= COMMAND CHECK =================
         if (!message.content.startsWith("!")) return;
 
         const args = message.content.slice(1).trim().split(/\s+/);
@@ -57,32 +68,39 @@ client.on("messageCreate", async (message) => {
         const command = client.commands.get(commandName);
         if (!command) return;
 
-        // ================= BASIC COOLDOWN =================
+        // ================= COOLDOWN SYSTEM =================
         const now = Date.now();
-        const cooldownKey = `${message.author.id}_${commandName}`;
-        const cooldownTime = 3000; // 3 seconds
+        const key = `${message.author.id}_${commandName}`;
+        const cooldownTime = 3000;
 
-        if (client.cooldowns.has(cooldownKey)) {
-            const lastUsed = client.cooldowns.get(cooldownKey);
+        if (client.cooldowns.has(key)) {
+            const last = client.cooldowns.get(key);
 
-            if (now - lastUsed < cooldownTime) {
+            if (now - last < cooldownTime) {
                 return message.reply("⏳ Slow down! Try again shortly.");
             }
         }
 
-        client.cooldowns.set(cooldownKey, now);
+        client.cooldowns.set(key, now);
 
-        // ================= SAFE EXECUTION =================
+        // ================= EXECUTION SAFETY =================
         try {
             await command.execute(message, args, client);
-        } catch (cmdErr) {
-            console.log(`❌ COMMAND ERROR (${commandName}):`, cmdErr.message);
+        } catch (err) {
+            console.log(`❌ COMMAND ERROR (${commandName}):`, err.message);
             return message.reply("❌ Command failed safely.");
         }
 
     } catch (err) {
-        console.log("❌ GLOBAL HANDLER ERROR:", err.message);
+        console.log("❌ MESSAGE HANDLER ERROR:", err.message);
     }
+});
+
+// ================= READY EVENT =================
+client.once("clientReady", () => {
+    console.log("🤖 BOT ONLINE:", client.user.tag);
+    console.log("🚀 CORE SYSTEM v3.0 ACTIVE");
+    console.log("📡 ENGAGEMENT ENGINE ENABLED");
 });
 
 // ================= GLOBAL SAFETY =================
