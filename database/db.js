@@ -3,22 +3,21 @@ const path = require("path");
 
 const dbPath = path.join(__dirname, "main.sqlite");
 
-console.log("📂 Opening MAIN DB:", dbPath);
+console.log("📂 OPENING MAIN DATABASE:", dbPath);
 
 const db = new sqlite3.Database(dbPath, (err) => {
     if (err) {
-        console.error("❌ MAIN DB ERROR:", err.message);
+        console.error("❌ DB ERROR:", err.message);
     } else {
-        console.log("🧠 MAIN DB OPENED");
+        console.log("🧠 MAIN DB CONNECTED");
     }
 });
 
+// ================= SAFE GLOBAL MODE =================
 db.serialize(() => {
 
-    // 🔥 IMPORTANT SAFETY SETTINGS
     db.run("PRAGMA journal_mode = WAL");
-    db.run("PRAGMA busy_timeout = 8000");
-    db.run("PRAGMA synchronous = NORMAL");
+    db.run("PRAGMA busy_timeout = 5000");
 
     // USERS
     db.run(`
@@ -26,26 +25,6 @@ db.serialize(() => {
             id TEXT PRIMARY KEY,
             tier TEXT DEFAULT 'FREE',
             expiresAt INTEGER DEFAULT 0
-        )
-    `);
-
-    // RSS POSTS
-    db.run(`
-        CREATE TABLE IF NOT EXISTS rss_posts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            link TEXT UNIQUE,
-            title TEXT,
-            created_at INTEGER DEFAULT (strftime('%s','now'))
-        )
-    `);
-
-    // DAILY STREAKS
-    db.run(`
-        CREATE TABLE IF NOT EXISTS daily_streaks (
-            userId TEXT PRIMARY KEY,
-            streak INTEGER DEFAULT 0,
-            lastClaim INTEGER DEFAULT 0,
-            points INTEGER DEFAULT 0
         )
     `);
 
@@ -57,6 +36,16 @@ db.serialize(() => {
         )
     `);
 
+    // DAILY
+    db.run(`
+        CREATE TABLE IF NOT EXISTS daily_streaks (
+            userId TEXT PRIMARY KEY,
+            streak INTEGER DEFAULT 0,
+            lastClaim INTEGER DEFAULT 0,
+            points INTEGER DEFAULT 0
+        )
+    `);
+
     // REFERRALS
     db.run(`
         CREATE TABLE IF NOT EXISTS referrals (
@@ -64,6 +53,16 @@ db.serialize(() => {
             code TEXT UNIQUE,
             invites INTEGER DEFAULT 0,
             points INTEGER DEFAULT 0
+        )
+    `);
+
+    // RSS POSTS
+    db.run(`
+        CREATE TABLE IF NOT EXISTS rss_posts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            link TEXT UNIQUE,
+            title TEXT,
+            created_at INTEGER DEFAULT (strftime('%s','now'))
         )
     `);
 
