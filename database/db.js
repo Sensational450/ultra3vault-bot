@@ -5,15 +5,22 @@ const dbPath = path.join(__dirname, "main.sqlite");
 
 console.log("📂 Opening DB:", dbPath);
 
-const db = new sqlite3.Database(dbPath, (err) => {
-    if (err) console.error("❌ MAIN DB ERROR:", err.message);
-    else console.log("🧠 MAIN DB OPENED");
-});
+const db = new sqlite3.Database(
+    dbPath,
+    sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE,
+    (err) => {
+        if (err) console.error("❌ MAIN DB ERROR:", err.message);
+        else console.log("🧠 MAIN DB OPENED");
+    }
+);
 
 // ================= GLOBAL SAFETY =================
 db.serialize(() => {
+
     db.run("PRAGMA journal_mode = WAL");
-    db.run("PRAGMA busy_timeout = 5000");
+    db.run("PRAGMA synchronous = NORMAL");
+    db.run("PRAGMA busy_timeout = 8000");
+    db.run("PRAGMA cache_size = 10000");
 
     // USERS
     db.run(`
@@ -52,7 +59,7 @@ db.serialize(() => {
         )
     `);
 
-    // REFERRALS (SINGLE SYSTEM ONLY)
+    // REFERRALS
     db.run(`
         CREATE TABLE IF NOT EXISTS referrals (
             userId TEXT PRIMARY KEY,
