@@ -2,13 +2,25 @@ const Parser = require("rss-parser");
 const { EmbedBuilder } = require("discord.js");
 
 const { hasPosted, savePost } = require("../../database/rssDB");
-const { logRSS, logSecurity } = require("../../database/analyticsDB");
 
+// ================= SAFE ANALYTICS IMPORT =================
+let logRSS = () => {};
+let logSecurity = () => {};
+
+try {
+    const analytics = require("../../database/analyticsDB");
+
+    logRSS = analytics.logRSS || (() => {});
+    logSecurity = analytics.logSecurity || (() => {});
+} catch (err) {
+    console.log("⚠️ Analytics DB not loaded, RSS logging disabled");
+}
+
+// ================= AI MODULES =================
 const { getScamScore, getRiskLevel } = require("./antiScamAI");
 const { learnPositive, learnNegative, getLearningScore } = require("./learningAI");
 const { getSentimentScore, getSentiment } = require("./sentimentAI");
-
-const { isWhaleTransaction, classifyWhale } = require("./whaleTracker");
+const { classifyWhale } = require("./whaleTracker");
 const vipRouter = require("./vipRouter");
 
 const parser = new Parser();
@@ -24,9 +36,7 @@ const seen = new Set();
 const MAX_SEEN = 200;
 
 function safeAdd(link) {
-    if (seen.size > MAX_SEEN) {
-        seen.clear();
-    }
+    if (seen.size > MAX_SEEN) seen.clear();
     seen.add(link);
 }
 
@@ -35,7 +45,7 @@ async function getScore(text) {
     return await getLearningScore(text);
 }
 
-// ================= MAIN =================
+// ================= MAIN ENGINE =================
 async function fetchRSS(client) {
 
     if (!client) return;
@@ -43,7 +53,6 @@ async function fetchRSS(client) {
     for (const feed of FEEDS) {
 
         try {
-
             const parsed = await parser.parseURL(feed);
 
             logRSS("feed_loaded", feed);
@@ -53,73 +62,50 @@ async function fetchRSS(client) {
             for (const item of items) {
 
                 if (!item?.link) continue;
-
                 if (seen.has(item.link)) continue;
+                if (await hasPosted(item.link)) continue;
 
                 safeAdd(item.link);
-
-                if (await hasPosted(item.link)) continue;
 
                 const title = item.title || "";
                 const content = item.contentSnippet || "";
                 const text = `${title} ${content}`;
 
                 // ================= SCAM CHECK =================
-                const scamScore = getScamScore(
-                    title,
-                    content,
-                    item.link
-                );
-
+                const scamScore = getScamScore(title, content, item.link);
                 const risk = getRiskLevel(scamScore);
 
                 if (risk === "DANGEROUS") {
-
-                    logSecurity(
-                        "SCAM_BLOCKED",
-                        title,
-                        risk
-                    );
-
+                    logSecurity("SCAM_BLOCKED", title, risk);
                     continue;
                 }
 
-                // ================= SCORE =================
+                // ================= AI SCORE =================
                 const score = await getScore(text);
-
                 if (score <= 0) continue;
 
                 // ================= SENTIMENT =================
-                const sentiment = getSentiment(
-                    getSentimentScore(title, content)
-                );
+                const sentiment = getSentiment(getSentimentScore(title, content));
 
-                // ================= WHALE =================
-                const whaleInfo = classifyWhale(
-                    title,
-                    content
-                );
-
-                const whaleAlert =
-                    whaleInfo?.type === "WHALE_TRANSFER";
+                // ================= WHALE CHECK =================
+                const whaleInfo = classifyWhale(title, content);
+                const whaleAlert = whaleInfo?.type === "WHALE_TRANSFER";
 
                 // ================= VIP ROUTING =================
-                const vip =
-                    vipRouter.routeIntelligence?.({
-                        score,
-                        sentiment,
-                        whaleAlert,
-                        risk
-                    }) || {
-                        channel: "crypto-news",
-                        tier: "FREE"
-                    };
+                const vip = vipRouter.routeIntelligence?.({
+                    score,
+                    sentiment,
+                    whaleAlert,
+                    risk
+                }) || {
+                    channel: "crypto-news",
+                    tier: "FREE"
+                };
 
                 // ================= CHANNEL =================
-                const channel =
-                    client.channels.cache.find(
-                        c => c.name === vip.channel
-                    );
+                const channel = client.channels.cache.find(
+                    c => c?.name === vip.channel
+                );
 
                 if (!channel) continue;
 
@@ -127,17 +113,12 @@ async function fetchRSS(client) {
                 const embed = new EmbedBuilder()
                     .setTitle(title)
                     .setURL(item.link)
-                    .setDescription(
-                        (content || "").slice(0, 180)
-                    )
+                    .setDescription((content || "").slice(0, 180))
                     .setColor(0x00bfff)
                     .setTimestamp();
 
-                await channel.send({
-                    embeds: [embed]
-                });
+                await channel.send({ embeds: [embed] });
 
-                // ================= SAVE =================
                 await savePost(item.link, title);
 
                 // ================= LEARNING =================
@@ -147,17 +128,11 @@ async function fetchRSS(client) {
                     learnNegative(text);
                 }
 
-                console.log(
-                    `✅ RSS Posted: ${title}`
-                );
+                console.log(`✅ RSS Posted: ${title}`);
             }
 
         } catch (err) {
-
-            console.log(
-                `❌ RSS Error (${feed}):`,
-                err.stack || err.message
-            );
+            console.log(`❌ RSS Error (${feed}):`, err.message || err);
         }
     }
 }
