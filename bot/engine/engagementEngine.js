@@ -1,18 +1,41 @@
 const { addXP } = require("./levelingEngine");
 
-// ================= MESSAGE COOLDOWN =================
+// ================= CORE SYSTEM STATE =================
 const cooldown = new Map();
+const lastActive = new Map();
+const messageCount = new Map();
 
-// ================= XP CONFIG =================
+// ================= CONFIG =================
 const BASE_MIN_XP = 1;
 const BASE_MAX_XP = 5;
 
-const AFK_THRESHOLD = 60000; // 1 min anti-AFK protection
+const AFK_THRESHOLD = 60000; // 1 min
+const COOLDOWN_TIME = 5000;
 
-// ================= ACTIVE USERS TRACKING =================
-const lastActive = new Map();
+// ================= XP MULTIPLIER SYSTEM (VIP READY) =================
+function getMultiplier(userId) {
 
-// ================= MESSAGE XP SYSTEM =================
+    // placeholder for future VIP system
+    // later: check DB for VIP status
+
+    return 1; // default normal user
+}
+
+// ================= MESSAGE QUALITY SCORE =================
+function getMessageQuality(message) {
+
+    const text = message.content || "";
+    let score = 0;
+
+    if (text.length > 20) score += 1;
+    if (text.length > 80) score += 2;
+    if (text.includes("?")) score += 1;
+    if (text.split(" ").length > 10) score += 1;
+
+    return Math.min(score, 3);
+}
+
+// ================= MAIN HANDLER =================
 function handleMessage(message) {
 
     if (message.author.bot) return;
@@ -20,40 +43,52 @@ function handleMessage(message) {
     const userId = message.author.id;
     const now = Date.now();
 
-    // ================= COOLDOWN (ANTI-SPAM) =================
+    // ================= ANTI-SPAM COOLDOWN =================
     if (cooldown.has(userId)) {
         const last = cooldown.get(userId);
-        if (now - last < 5000) return;
+
+        if (now - last < COOLDOWN_TIME) return;
     }
+
     cooldown.set(userId, now);
 
-    // ================= AFK / FARM CHECK =================
+    // ================= ACTIVITY TRACKING =================
     const lastSeen = lastActive.get(userId) || 0;
-    const isActiveUser = (now - lastSeen) < AFK_THRESHOLD;
+    const isActive = (now - lastSeen) < AFK_THRESHOLD;
 
-    // ================= XP VARIATION =================
-    let xp = Math.floor(Math.random() * (BASE_MAX_XP - BASE_MIN_XP + 1)) + BASE_MIN_XP;
-
-    // bonus for active chatting (not AFK farming)
-    if (isActiveUser) {
-        xp += 2;
-    }
-
-    // slight bonus for engagement variety (reduces spam farming)
-    const wordCount = message.content?.split(" ").length || 0;
-    if (wordCount > 10) {
-        xp += 1;
-    }
-
-    // ================= UPDATE ACTIVITY =================
     lastActive.set(userId, now);
+
+    // ================= MESSAGE COUNT =================
+    messageCount.set(userId, (messageCount.get(userId) || 0) + 1);
+
+    // ================= BASE XP =================
+    let xp =
+        Math.floor(Math.random() * (BASE_MAX_XP - BASE_MIN_XP + 1)) +
+        BASE_MIN_XP;
+
+    // ================= QUALITY BONUS =================
+    const quality = getMessageQuality(message);
+    xp += quality;
+
+    // ================= ACTIVE USER BONUS =================
+    if (isActive) xp += 2;
+
+    // ================= MESSAGE VOLUME BONUS =================
+    const count = messageCount.get(userId);
+    if (count % 20 === 0) {
+        xp += 5; // engagement milestone bonus
+    }
+
+    // ================= VIP MULTIPLIER HOOK =================
+    xp = Math.floor(xp * getMultiplier(userId));
 
     // ================= ADD XP =================
     addXP(userId, xp, (levelUp) => {
 
         if (levelUp) {
+
             message.channel.send(
-                `🎉 <@${userId}> reached **Level ${levelUp.newLevel}**!`
+                `🎉 <@${userId}> leveled up to **Level ${levelUp.newLevel}**!`
             );
         }
     });
@@ -62,16 +97,15 @@ function handleMessage(message) {
 // ================= INVITE BONUS =================
 function handleInvite(userId) {
 
-    // invite XP boost (slightly higher in v2.2)
     addXP(userId, 30);
 }
 
-// ================= DAILY BONUS HOOK (FOR FUTURE STREAK ENGINE) =================
-function applyDailyBonus(userId, streak) {
+// ================= DAILY BONUS SYSTEM =================
+function applyDailyBonus(userId, streak = 0) {
 
     let bonus = 50 + (streak * 10);
 
-    // streak multiplier (reward loyalty)
+    // streak multipliers
     if (streak >= 7) bonus *= 1.5;
     if (streak >= 14) bonus *= 2;
 
