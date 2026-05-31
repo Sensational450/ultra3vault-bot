@@ -15,14 +15,14 @@ const {
 
 const { routeIntelligence } = require("./vipRouter");
 
+const parser = new Parser();
+
 // ================= FEEDS =================
 const FEEDS = [
     "https://cointelegraph.com/rss",
     "https://www.coindesk.com/arc/outboundfeeds/rss/",
     "https://decrypt.co/feed"
 ];
-
-const parser = new Parser();
 
 // ================= MEMORY CACHE =================
 const seen = new Set();
@@ -51,6 +51,16 @@ function getFallbackImage(title = "") {
     }
 
     return "https://cryptologos.cc/logos/bitcoin-btc-logo.png";
+}
+
+// ================= INTELLIGENCE CLASSIFICATION =================
+function getIntelLabel(score, risk, whaleAlert) {
+    if (risk === "DANGEROUS") return "🚨 CRITICAL ALERT";
+    if (whaleAlert && score >= 5) return "🐋 WHALE INTEL";
+    if (score >= 8) return "🔥 BREAKING INTEL";
+    if (score >= 5) return "📊 HIGH IMPACT";
+    if (score <= -3) return "⚠️ NEGATIVE PRESSURE";
+    return "📰 MARKET UPDATE";
 }
 
 // ================= DB HELPERS =================
@@ -120,38 +130,44 @@ async function fetchRSS(client) {
                     risk
                 });
 
+                const intelLabel = getIntelLabel(score, risk, whaleAlert);
+
                 console.log(
                     `🧠 AI → Score:${score} Sentiment:${sentiment} Risk:${risk} Whale:${whaleAlert}`
                 );
 
-                // ================= EMBED =================
+                // ================= BLOOMBERG STYLE EMBED =================
                 const embed = new EmbedBuilder()
-                    .setTitle(title.substring(0, 256))
+                    .setTitle(`ULTRA3 INTEL: ${title.substring(0, 200)}`)
                     .setURL(item.link)
                     .setDescription(
-                        (content || "No summary available.").substring(0, 500)
+                        `**${intelLabel}**\n\n` +
+                        `📌 ${content || "No summary available."}\n\n` +
+                        `━━━━━━━━━━━━━━━━━━\n` +
+                        `📊 SENTIMENT: ${sentiment}\n` +
+                        `⚠️ RISK: ${risk}\n` +
+                        `📈 SCORE: ${score}\n` +
+                        `🐋 WHALE: ${whaleAlert ? "YES" : "NO"}\n` +
+                        `━━━━━━━━━━━━━━━━━━`
                     )
                     .setColor(
-                        sentiment.includes("BULLISH")
+                        risk === "DANGEROUS"
+                            ? 0xff0000
+                            : score >= 6
                             ? 0x00ff88
-                            : sentiment.includes("BEARISH")
+                            : score <= -3
                             ? 0xff4444
                             : 0x00bfff
                     )
+                    .setImage(
+                        item.enclosure?.url ||
+                        item.thumbnail ||
+                        getFallbackImage(title)
+                    )
                     .setFooter({
-                        text: `${vip.tier} • ${sentiment} • Risk: ${risk}`
+                        text: `ULTRA3 INTELLIGENCE • ${vip.channel.toUpperCase()}`
                     })
                     .setTimestamp();
-
-                // ================= IMAGE SYSTEM =================
-                const image =
-                    item.enclosure?.url ||
-                    item.thumbnail ||
-                    getFallbackImage(title);
-
-                if (image) {
-                    embed.setImage(image);
-                }
 
                 // ================= ROUTING =================
                 const channel = client.channels.cache.find(
