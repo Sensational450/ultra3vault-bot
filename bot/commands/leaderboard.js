@@ -1,4 +1,5 @@
 const db = require("../../database/db");
+const { EmbedBuilder } = require("discord.js");
 
 module.exports = {
     name: "leaderboard",
@@ -10,25 +11,22 @@ module.exports = {
             [],
             (err, rows) => {
 
-                if (err) {
-                    return message.reply("❌ DB error");
-                }
+                if (err) return message.reply("❌ DB error");
 
-                if (!rows || rows.length === 0) {
-                    return message.reply("📊 No data yet.");
-                }
+                const embed = new EmbedBuilder()
+                    .setTitle("🏆 ULTRA3 LEADERBOARD")
+                    .setColor(0x00bfff)
+                    .setTimestamp();
 
-                let text = "🏆 **GLOBAL LEADERBOARD**\n\n";
+                let desc = "";
 
-                rows.forEach((user, index) => {
-
-                    text +=
-                        `#${index + 1} <@${user.id}>` +
-                        ` • Level ${user.level}` +
-                        ` • XP ${user.xp}\n`;
+                rows.forEach((u, i) => {
+                    desc += `**#${i + 1}** <@${u.id}> — Level ${u.level} (${u.xp} XP)\n`;
                 });
 
-                message.reply(text);
+                embed.setDescription(desc);
+
+                message.reply({ embeds: [embed] });
             }
         );
     }
