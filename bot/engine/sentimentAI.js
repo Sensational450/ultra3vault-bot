@@ -13,7 +13,36 @@ const bullishWords = [
     "etf",
     "partnership",
     "moon",
-    "whale buy"
+    "whale buy",
+
+    // Crypto-specific
+    "bitcoin",
+    "btc",
+    "ethereum",
+    "eth",
+    "solana",
+    "xrp",
+    "dogecoin",
+
+    // Market signals
+    "record high",
+    "all-time high",
+    "new high",
+    "price target",
+    "price targets",
+    "institutional adoption",
+    "institutional investment",
+    "inflow",
+    "spot etf",
+    "launch",
+    "growth",
+    "expansion",
+    "integration",
+    "upgrade",
+    "staking",
+    "approved",
+    "green candle",
+    "recovery"
 ];
 
 // ================= BEARISH KEYWORDS =================
@@ -30,7 +59,31 @@ const bearishWords = [
     "panic",
     "lawsuit",
     "ban",
-    "scam"
+    "scam",
+
+    // Crypto-specific
+    "attack",
+    "stolen",
+    "fraud",
+    "breach",
+    "shutdown",
+    "bankruptcy",
+    "bankrupt",
+    "collapse",
+    "investigation",
+    "charges",
+    "arrest",
+    "sec sues",
+    "warning",
+    "risk",
+    "vulnerability",
+    "flash loan attack",
+    "drain",
+    "sanction",
+    "rejected",
+    "sell pressure",
+    "outflow",
+    "red candle"
 ];
 
 // ================= FOMO KEYWORDS =================
@@ -42,7 +95,11 @@ const fomoWords = [
     "buy now",
     "exploding",
     "next bitcoin",
-    "skyrocket"
+    "skyrocket",
+    "don't miss",
+    "huge opportunity",
+    "life changing",
+    "massive rally"
 ];
 
 // ================= PANIC KEYWORDS =================
@@ -54,24 +111,28 @@ const panicWords = [
     "collapse",
     "liquidation",
     "bankrupt",
-    "bloodbath"
+    "bloodbath",
+    "exploit",
+    "hack",
+    "rug pull"
 ];
 
 // ================= SENTIMENT SCORE =================
 function getSentimentScore(title = "", content = "") {
 
-    const text = (
-        title + " " + content
-    ).toLowerCase();
+    const titleText = title.toLowerCase();
+    const text = (title + " " + content).toLowerCase();
 
     let score = 0;
 
     bullishWords.forEach(word => {
         if (text.includes(word)) score += 2;
+        if (titleText.includes(word)) score += 1;
     });
 
     bearishWords.forEach(word => {
         if (text.includes(word)) score -= 2;
+        if (titleText.includes(word)) score -= 1;
     });
 
     return score;
@@ -80,8 +141,11 @@ function getSentimentScore(title = "", content = "") {
 // ================= MARKET SENTIMENT =================
 function getSentiment(score = 0) {
 
+    if (score >= 8) return "EXTREMELY BULLISH";
     if (score >= 5) return "VERY BULLISH";
     if (score >= 2) return "BULLISH";
+
+    if (score <= -8) return "EXTREMELY BEARISH";
     if (score <= -5) return "VERY BEARISH";
     if (score <= -2) return "BEARISH";
 
@@ -91,10 +155,11 @@ function getSentiment(score = 0) {
 // ================= FEAR/GREED INDEX =================
 function getFearGreedIndex(score = 0) {
 
-    if (score >= 6) return "EXTREME GREED";
-    if (score >= 3) return "GREED";
-    if (score <= -6) return "EXTREME FEAR";
-    if (score <= -3) return "FEAR";
+    if (score >= 8) return "EXTREME GREED";
+    if (score >= 4) return "GREED";
+
+    if (score <= -8) return "EXTREME FEAR";
+    if (score <= -4) return "FEAR";
 
     return "NEUTRAL";
 }
@@ -128,8 +193,8 @@ function getTrendStrength(score = 0) {
 
     const abs = Math.abs(score);
 
-    if (abs >= 8) return "EXTREME";
-    if (abs >= 5) return "STRONG";
+    if (abs >= 10) return "EXTREME";
+    if (abs >= 6) return "STRONG";
     if (abs >= 3) return "MEDIUM";
 
     return "WEAK";
@@ -138,9 +203,10 @@ function getTrendStrength(score = 0) {
 // ================= TRADING SIGNAL =================
 function getTradingSignal(score = 0) {
 
-    if (score >= 6) return "STRONG BUY";
+    if (score >= 8) return "STRONG BUY";
     if (score >= 3) return "BUY";
-    if (score <= -6) return "STRONG SELL";
+
+    if (score <= -8) return "STRONG SELL";
     if (score <= -3) return "SELL";
 
     return "HOLD";
@@ -151,7 +217,7 @@ function getConfidenceLevel(score = 0) {
 
     const confidence = Math.min(
         100,
-        Math.abs(score) * 12
+        40 + Math.abs(score) * 8
     );
 
     return `${confidence}%`;
