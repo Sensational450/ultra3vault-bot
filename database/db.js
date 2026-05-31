@@ -13,15 +13,14 @@ const db = new sqlite3.Database(dbPath, (err) => {
     }
 });
 
-// ================= PERFORMANCE + LOCK FIX =================
 db.serialize(() => {
 
-    // 🔥 IMPORTANT: prevents SQLITE_BUSY on Render
+    // 🔥 IMPORTANT SAFETY SETTINGS
     db.run("PRAGMA journal_mode = WAL");
-    db.run("PRAGMA busy_timeout = 5000");
+    db.run("PRAGMA busy_timeout = 8000");
     db.run("PRAGMA synchronous = NORMAL");
 
-    // ================= USERS =================
+    // USERS
     db.run(`
         CREATE TABLE IF NOT EXISTS users (
             id TEXT PRIMARY KEY,
@@ -30,35 +29,7 @@ db.serialize(() => {
         )
     `);
 
-    // ================= ECONOMY =================
-    db.run(`
-        CREATE TABLE IF NOT EXISTS economy (
-            userId TEXT PRIMARY KEY,
-            balance INTEGER DEFAULT 0
-        )
-    `);
-
-    // ================= REFERRALS =================
-    db.run(`
-        CREATE TABLE IF NOT EXISTS referrals (
-            userId TEXT PRIMARY KEY,
-            code TEXT UNIQUE,
-            invites INTEGER DEFAULT 0,
-            points INTEGER DEFAULT 0
-        )
-    `);
-
-    // ================= DAILY =================
-    db.run(`
-        CREATE TABLE IF NOT EXISTS daily_streaks (
-            userId TEXT PRIMARY KEY,
-            streak INTEGER DEFAULT 0,
-            lastClaim INTEGER DEFAULT 0,
-            points INTEGER DEFAULT 0
-        )
-    `);
-
-    // ================= RSS POSTS =================
+    // RSS POSTS
     db.run(`
         CREATE TABLE IF NOT EXISTS rss_posts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,7 +39,35 @@ db.serialize(() => {
         )
     `);
 
-    console.log("💰 MAIN DATABASE READY (CLEAN PHASE 4)");
+    // DAILY STREAKS
+    db.run(`
+        CREATE TABLE IF NOT EXISTS daily_streaks (
+            userId TEXT PRIMARY KEY,
+            streak INTEGER DEFAULT 0,
+            lastClaim INTEGER DEFAULT 0,
+            points INTEGER DEFAULT 0
+        )
+    `);
+
+    // ECONOMY
+    db.run(`
+        CREATE TABLE IF NOT EXISTS economy (
+            userId TEXT PRIMARY KEY,
+            balance INTEGER DEFAULT 0
+        )
+    `);
+
+    // REFERRALS
+    db.run(`
+        CREATE TABLE IF NOT EXISTS referrals (
+            userId TEXT PRIMARY KEY,
+            code TEXT UNIQUE,
+            invites INTEGER DEFAULT 0,
+            points INTEGER DEFAULT 0
+        )
+    `);
+
+    console.log("💰 MAIN DATABASE READY (SINGLE DB MODE)");
 });
 
 module.exports = db;
