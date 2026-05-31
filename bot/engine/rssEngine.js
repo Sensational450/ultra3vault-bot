@@ -1,7 +1,7 @@
 const Parser = require("rss-parser");
 const { EmbedBuilder } = require("discord.js");
 
-const { hasPosted, savePost } = require("../../database/rssDB");
+const db = require("../../database/db");
 
 // ================= SAFE ANALYTICS =================
 let logRSS = () => {};
