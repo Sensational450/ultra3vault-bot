@@ -3,16 +3,20 @@ const sqlite3 = require("sqlite3").verbose();
 console.log("📂 Opening DB: ./database/main.sqlite");
 
 const db = new sqlite3.Database("./database/main.sqlite", (err) => {
-    if (err) console.error(err.message);
-    else console.log("🧠 MAIN DB OPENED");
+    if (err) {
+        console.error("❌ MAIN DB ERROR:", err.message);
+    } else {
+        console.log("🧠 MAIN DB OPENED");
+    }
 });
 
+// ================= SAFETY SETTINGS =================
 db.serialize(() => {
 
     db.run("PRAGMA journal_mode = WAL");
     db.run("PRAGMA busy_timeout = 5000");
 
-    // USERS (economy + streak)
+    // ================= USERS =================
     db.run(`
         CREATE TABLE IF NOT EXISTS users (
             userId TEXT PRIMARY KEY,
@@ -22,7 +26,7 @@ db.serialize(() => {
         )
     `);
 
-    // REFERRALS
+    // ================= REFERRALS =================
     db.run(`
         CREATE TABLE IF NOT EXISTS referrals (
             userId TEXT PRIMARY KEY,
@@ -32,7 +36,7 @@ db.serialize(() => {
         )
     `);
 
-    console.log("💰 MAIN ECONOMY READY");
+    console.log("💰 MAIN DATABASE READY");
 });
 
 module.exports = db;
