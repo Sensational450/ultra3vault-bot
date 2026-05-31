@@ -1,4 +1,4 @@
-const db = require("../../database/referralDB");
+const db = require("../../database/rewardsDB");
 
 // ================= ADD REFERRAL =================
 function addReferral(userId) {
@@ -25,41 +25,54 @@ function applyReferral(code) {
     );
 }
 
-// ================= GET USER =================
-function getReferralUser(userId, callback) {
+// ================= DAILY CLAIM =================
+function claimDaily(userId, callback) {
 
-    db.get(
-        `SELECT * FROM referrals WHERE userId = ?`,
-        [userId],
-        (err, row) => {
+    const now = Date.now();
 
-            if (err) {
-                console.error("Referral DB error:", err.message);
-                return callback(null);
-            }
+    db.get(`SELECT * FROM users WHERE userId = ?`, [userId], (err, row) => {
 
-            if (row) return callback(row);
-
-            const code = "ULTRA-" + userId.slice(-5);
-
+        if (!row) {
             db.run(
-                `INSERT INTO referrals (userId, code, invites, points)
-                 VALUES (?, ?, 0, 0)`,
-                [userId, code]
+                `INSERT INTO users (userId, points, streak, lastClaim)
+                 VALUES (?, 10, 1, ?)`,
+                [userId, now]
             );
 
-            callback({
-                userId,
-                code,
-                invites: 0,
-                points: 0
+            return callback({
+                reward: 10,
+                streak: 1,
+                points: 10
             });
         }
-    );
+
+        const diff = now - row.lastClaim;
+        const oneDay = 86400000;
+
+        if (diff < oneDay) {
+            return callback({
+                reward: 0,
+                streak: row.streak,
+                points: row.points
+            });
+        }
+
+        const streak = row.streak + 1;
+        const reward = 10 + streak * 2;
+        const points = row.points + reward;
+
+        db.run(
+            `UPDATE users SET points = ?, streak = ?, lastClaim = ?
+             WHERE userId = ?`,
+            [points, streak, now, userId]
+        );
+
+        callback({ reward, streak, points });
+    });
 }
 
 module.exports = {
     addReferral,
     applyReferral,
-    getReferralUser
+    claimDaily
 };
