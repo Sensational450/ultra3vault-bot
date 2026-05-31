@@ -15,7 +15,7 @@ const FEEDS = [
     "https://decrypt.co/feed"
 ];
 
-// ================= COVERAGE SYSTEM =================
+// ================= CHANNEL SYSTEM =================
 const CHANNEL_POOL = [
     "crypto-news",
     "vip-news",
@@ -33,17 +33,27 @@ function safeAdd(link) {
     seen.add(link);
 }
 
-// ================= IMAGE =================
-function getImage(title = "") {
+// ================= PROFESSIONAL IMAGE SYSTEM =================
+function getIntelImage(title = "") {
     const t = title.toLowerCase();
 
-    if (t.includes("bitcoin") || t.includes("btc"))
-        return "https://cryptologos.cc/logos/bitcoin-btc-logo.png";
+    if (t.includes("hack") || t.includes("exploit")) {
+        return "https://images.unsplash.com/photo-1550751827-4bd374c3f58b";
+    }
 
-    if (t.includes("ethereum") || t.includes("eth"))
-        return "https://cryptologos.cc/logos/ethereum-eth-logo.png";
+    if (t.includes("sec") || t.includes("regulation") || t.includes("lawsuit")) {
+        return "https://images.unsplash.com/photo-1454165804606-c3d57bc86b40";
+    }
 
-    return "https://cryptologos.cc/logos/bitcoin-btc-logo.png";
+    if (t.includes("bitcoin") || t.includes("btc") || t.includes("crypto")) {
+        return "https://images.unsplash.com/photo-1621761191319-c6fb62004040";
+    }
+
+    if (t.includes("ai") || t.includes("artificial intelligence")) {
+        return "https://images.unsplash.com/photo-1677442136019-21780ecad995";
+    }
+
+    return "https://images.unsplash.com/photo-1551288049-bebda4e38f71"; // finance newsroom
 }
 
 // ================= DB =================
@@ -76,9 +86,10 @@ async function fetchRSS(client) {
             const items = parsed.items.slice(0, 3);
 
             for (const item of items) {
-                if (!item?.link) continue;
 
+                if (!item?.link) continue;
                 if (seen.has(item.link)) continue;
+
                 safeAdd(item.link);
 
                 if (await hasPosted(item.link)) continue;
@@ -86,7 +97,7 @@ async function fetchRSS(client) {
                 const title = item.title || "Untitled";
                 const content = item.contentSnippet || "";
 
-                // ================= AI =================
+                // ================= AI LAYER =================
                 const score = getSentimentScore(title, content);
                 const sentiment = getSentiment(score);
                 const scamScore = getScamScore(title, content, item.link);
@@ -103,28 +114,40 @@ async function fetchRSS(client) {
                     risk
                 });
 
-                // track coverage
                 activity.set(vip.channel, (activity.get(vip.channel) || 0) + 1);
 
-                console.log(`🧠 AI → ${score} | ${sentiment} | ${risk} → ${vip.channel}`);
+                console.log(`🧠 INTEL → ${score} | ${sentiment} | ${risk} → ${vip.channel}`);
 
-                // ================= EMBED =================
+                // ================= BLOOMBERG STYLE EMBED =================
                 const embed = new EmbedBuilder()
-                    .setTitle(`ULTRA3 INTEL: ${title.slice(0, 200)}`)
+                    .setTitle(`ULTRA3 INTELLIGENCE: ${title.slice(0, 200)}`)
                     .setURL(item.link)
-                    .setDescription(content?.slice(0, 400) || "No summary")
+                    .setDescription(
+                        `🧠 **MARKET INTELLIGENCE REPORT**\n\n` +
+                        `📌 ${content?.slice(0, 350) || "No summary available"}\n\n` +
+                        `━━━━━━━━━━━━━━━━━━\n` +
+                        `📊 Sentiment: ${sentiment}\n` +
+                        `⚠️ Risk Level: ${risk}\n` +
+                        `📈 Score: ${score}\n` +
+                        `🐋 Whale Activity: ${whaleAlert ? "Detected" : "None"}\n` +
+                        `━━━━━━━━━━━━━━━━━━`
+                    )
                     .setColor(
                         risk === "DANGEROUS"
                             ? 0xff0000
-                            : score >= 5
+                            : score >= 6
                             ? 0x00ff88
-                            : 0x00bfff
+                            : score <= -3
+                            ? 0xff4444
+                            : 0x0099ff
                     )
-                    .setImage(getImage(title))
-                    .setFooter({ text: `ULTRA3 INTEL • ${vip.tier}` })
+                    .setImage(getIntelImage(title))
+                    .setFooter({
+                        text: `ULTRA3 INTELLIGENCE FEED • ${vip.channel.toUpperCase()}`
+                    })
                     .setTimestamp();
 
-                // ================= ROUTING FIX =================
+                // ================= ROUTING =================
                 let channel =
                     client.channels.cache.find(c => c.name === vip.channel) ||
                     client.channels.cache.find(c => c.name === "crypto-news");
@@ -135,7 +158,7 @@ async function fetchRSS(client) {
 
                     channel = client.channels.cache.find(c => c.name === fallback);
 
-                    console.log(`🔁 FORCED ROUTE → ${fallback}`);
+                    console.log(`🔁 FALLBACK ROUTE → ${fallback}`);
                 }
 
                 if (!channel) continue;
@@ -152,13 +175,13 @@ async function fetchRSS(client) {
         }
     }
 
-    // ================= COVERAGE GUARANTEE =================
+    // ================= SILENT COVERAGE (NO SPAM) =================
     for (const ch of CHANNEL_POOL) {
         if ((activity.get(ch) || 0) === 0) {
             const channel = client.channels.cache.find(c => c.name === ch);
 
             if (channel) {
-                await channel.send("🧠 Coverage system active — keeping feed alive");
+                await channel.send("🧠 Feed active — awaiting intelligence signals");
             }
         }
     }
