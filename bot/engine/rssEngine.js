@@ -3,17 +3,16 @@ const { EmbedBuilder } = require("discord.js");
 
 const { hasPosted, savePost } = require("../../database/rssDB");
 
-// ================= SAFE ANALYTICS IMPORT =================
+// ================= SAFE ANALYTICS =================
 let logRSS = () => {};
 let logSecurity = () => {};
 
 try {
     const analytics = require("../../database/analyticsDB");
-
     logRSS = analytics.logRSS || (() => {});
     logSecurity = analytics.logSecurity || (() => {});
-} catch (err) {
-    console.log("⚠️ Analytics DB not loaded, RSS logging disabled");
+} catch {
+    console.log("⚠️ Analytics DB disabled");
 }
 
 // ================= AI MODULES =================
@@ -31,18 +30,13 @@ const FEEDS = [
     "https://decrypt.co/feed"
 ];
 
-// ================= MEMORY SAFE =================
+// ================= MEMORY =================
 const seen = new Set();
 const MAX_SEEN = 200;
 
 function safeAdd(link) {
     if (seen.size > MAX_SEEN) seen.clear();
     seen.add(link);
-}
-
-// ================= SCORE =================
-async function getScore(text) {
-    return await getLearningScore(text);
 }
 
 // ================= MAIN ENGINE =================
@@ -55,7 +49,10 @@ async function fetchRSS(client) {
         try {
             const parsed = await parser.parseURL(feed);
 
-            logRSS("feed_loaded", feed);
+            // safe async logging (prevents SQLITE_BUSY)
+            setTimeout(() => {
+                try { logRSS("feed_loaded", feed); } catch {}
+            }, 0);
 
             const items = parsed.items.slice(0, 2);
 
@@ -71,45 +68,32 @@ async function fetchRSS(client) {
                 const content = item.contentSnippet || "";
                 const text = `${title} ${content}`;
 
-                // ================= SCAM CHECK =================
                 const scamScore = getScamScore(title, content, item.link);
                 const risk = getRiskLevel(scamScore);
 
                 if (risk === "DANGEROUS") {
-                    logSecurity("SCAM_BLOCKED", title, risk);
+                    try { logSecurity("SCAM_BLOCKED", title, risk); } catch {}
                     continue;
                 }
 
-                // ================= AI SCORE =================
-                const score = await getScore(text);
+                const score = await getLearningScore(text);
                 if (score <= 0) continue;
 
-                // ================= SENTIMENT =================
                 const sentiment = getSentiment(getSentimentScore(title, content));
 
-                // ================= WHALE CHECK =================
                 const whaleInfo = classifyWhale(title, content);
                 const whaleAlert = whaleInfo?.type === "WHALE_TRANSFER";
 
-                // ================= VIP ROUTING =================
                 const vip = vipRouter.routeIntelligence?.({
                     score,
                     sentiment,
                     whaleAlert,
                     risk
-                }) || {
-                    channel: "crypto-news",
-                    tier: "FREE"
-                };
+                }) || { channel: "crypto-news", tier: "FREE" };
 
-                // ================= CHANNEL =================
-                const channel = client.channels.cache.find(
-                    c => c?.name === vip.channel
-                );
-
+                const channel = client.channels.cache.find(c => c?.name === vip.channel);
                 if (!channel) continue;
 
-                // ================= EMBED =================
                 const embed = new EmbedBuilder()
                     .setTitle(title)
                     .setURL(item.link)
@@ -121,18 +105,14 @@ async function fetchRSS(client) {
 
                 await savePost(item.link, title);
 
-                // ================= LEARNING =================
-                if (score > 5) {
-                    learnPositive(text);
-                } else {
-                    learnNegative(text);
-                }
+                if (score > 5) learnPositive(text);
+                else learnNegative(text);
 
                 console.log(`✅ RSS Posted: ${title}`);
             }
 
         } catch (err) {
-            console.log(`❌ RSS Error (${feed}):`, err.message || err);
+            console.log(`❌ RSS Error (${feed}):`, err.message);
         }
     }
 }
