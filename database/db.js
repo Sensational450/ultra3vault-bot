@@ -5,6 +5,13 @@ const dbPath = path.join(__dirname, "main.sqlite");
 
 console.log("📂 OPENING MAIN DATABASE:", dbPath);
 
+// ================= SINGLETON PROTECTION =================
+if (global.__MAIN_DB__) {
+    console.log("♻️ REUSING EXISTING MAIN DB CONNECTION");
+    module.exports = global.__MAIN_DB__;
+    return;
+}
+
 const db = new sqlite3.Database(dbPath, (err) => {
     if (err) {
         console.error("❌ DB ERROR:", err.message);
@@ -13,11 +20,15 @@ const db = new sqlite3.Database(dbPath, (err) => {
     }
 });
 
-// ================= SAFE GLOBAL MODE =================
+// store globally to prevent duplicate connections
+global.__MAIN_DB__ = db;
+
+// ================= SAFE CONFIG =================
 db.serialize(() => {
 
     db.run("PRAGMA journal_mode = WAL");
-    db.run("PRAGMA busy_timeout = 5000");
+    db.run("PRAGMA synchronous = NORMAL");
+    db.run("PRAGMA busy_timeout = 8000");
 
     // USERS
     db.run(`
@@ -36,7 +47,7 @@ db.serialize(() => {
         )
     `);
 
-    // DAILY
+    // DAILY STREAKS
     db.run(`
         CREATE TABLE IF NOT EXISTS daily_streaks (
             userId TEXT PRIMARY KEY,
@@ -66,7 +77,7 @@ db.serialize(() => {
         )
     `);
 
-    console.log("💰 MAIN DATABASE READY (SINGLE DB MODE)");
+    console.log("💰 MAIN DATABASE READY (SINGLE SAFE MODE)");
 });
 
 module.exports = db;
