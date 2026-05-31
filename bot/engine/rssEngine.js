@@ -3,28 +3,28 @@ const { EmbedBuilder } = require("discord.js");
 
 const db = require("../../database/db");
 
-const {
-    getSentimentScore,
-    getSentiment
-} = require("./sentimentAI");
-
-const {
-    getScamScore,
-    getRiskLevel
-} = require("./antiScamAI");
-
+const { getSentimentScore, getSentiment } = require("./sentimentAI");
+const { getScamScore, getRiskLevel } = require("./antiScamAI");
 const { routeIntelligence } = require("./vipRouter");
 
 const parser = new Parser();
 
-// ================= FEEDS =================
 const FEEDS = [
     "https://cointelegraph.com/rss",
     "https://www.coindesk.com/arc/outboundfeeds/rss/",
     "https://decrypt.co/feed"
 ];
 
-// ================= MEMORY CACHE =================
+// ================= COVERAGE SYSTEM =================
+const CHANNEL_POOL = [
+    "crypto-news",
+    "vip-news",
+    "alpha-news",
+    "airdrop-news",
+    "whale-alerts",
+    "security-alerts"
+];
+
 const seen = new Set();
 const MAX_SEEN = 200;
 
@@ -33,47 +33,26 @@ function safeAdd(link) {
     seen.add(link);
 }
 
-// ================= IMAGE FALLBACK =================
-function getFallbackImage(title = "") {
+// ================= IMAGE =================
+function getImage(title = "") {
     const t = title.toLowerCase();
 
-    if (t.includes("bitcoin") || t.includes("btc")) {
+    if (t.includes("bitcoin") || t.includes("btc"))
         return "https://cryptologos.cc/logos/bitcoin-btc-logo.png";
-    }
-    if (t.includes("ethereum") || t.includes("eth")) {
+
+    if (t.includes("ethereum") || t.includes("eth"))
         return "https://cryptologos.cc/logos/ethereum-eth-logo.png";
-    }
-    if (t.includes("xrp")) {
-        return "https://cryptologos.cc/logos/xrp-xrp-logo.png";
-    }
-    if (t.includes("solana")) {
-        return "https://cryptologos.cc/logos/solana-sol-logo.png";
-    }
 
     return "https://cryptologos.cc/logos/bitcoin-btc-logo.png";
 }
 
-// ================= INTELLIGENCE LABEL =================
-function getIntelLabel(score, risk, whale, isAirdrop) {
-    if (risk === "DANGEROUS") return "🚨 CRITICAL ALERT";
-    if (isAirdrop) return "🪂 AIRDROP INTEL";
-    if (whale && score >= 5) return "🐋 WHALE MOVEMENT";
-    if (score >= 8) return "🔥 BREAKING INTEL";
-    if (score >= 5) return "📊 HIGH IMPACT";
-    if (score <= -3) return "⚠️ NEGATIVE PRESSURE";
-    return "📰 MARKET UPDATE";
-}
-
-// ================= DB HELPERS =================
+// ================= DB =================
 function hasPosted(link) {
-    return new Promise((resolve) => {
+    return new Promise(resolve => {
         db.get(
             "SELECT 1 FROM rss_posts WHERE link = ?",
             [link],
-            (err, row) => {
-                if (err) return resolve(false);
-                resolve(!!row);
-            }
+            (err, row) => resolve(!!row)
         );
     });
 }
@@ -87,17 +66,16 @@ function savePost(link, title) {
 
 // ================= MAIN ENGINE =================
 async function fetchRSS(client) {
-
     if (!client) return;
 
-    for (const feed of FEEDS) {
+    const activity = new Map();
 
+    for (const feed of FEEDS) {
         try {
             const parsed = await parser.parseURL(feed);
             const items = parsed.items.slice(0, 3);
 
             for (const item of items) {
-
                 if (!item?.link) continue;
 
                 if (seen.has(item.link)) continue;
@@ -108,22 +86,15 @@ async function fetchRSS(client) {
                 const title = item.title || "Untitled";
                 const content = item.contentSnippet || "";
 
-                // ================= AI ANALYSIS =================
+                // ================= AI =================
                 const score = getSentimentScore(title, content);
                 const sentiment = getSentiment(score);
-
                 const scamScore = getScamScore(title, content, item.link);
                 const risk = getRiskLevel(scamScore);
 
                 const whaleAlert =
                     title.toLowerCase().includes("whale") ||
                     content.toLowerCase().includes("whale");
-
-                const isAirdrop =
-                    title.toLowerCase().includes("airdrop") ||
-                    title.toLowerCase().includes("claim") ||
-                    content.toLowerCase().includes("airdrop") ||
-                    content.toLowerCase().includes("reward");
 
                 const vip = routeIntelligence({
                     score,
@@ -132,64 +103,63 @@ async function fetchRSS(client) {
                     risk
                 });
 
-                const intelLabel = getIntelLabel(score, risk, whaleAlert, isAirdrop);
+                // track coverage
+                activity.set(vip.channel, (activity.get(vip.channel) || 0) + 1);
 
-                console.log(
-                    `🧠 AI → Score:${score} Sentiment:${sentiment} Risk:${risk} Whale:${whaleAlert} Airdrop:${isAirdrop}`
-                );
+                console.log(`🧠 AI → ${score} | ${sentiment} | ${risk} → ${vip.channel}`);
 
                 // ================= EMBED =================
                 const embed = new EmbedBuilder()
-                    .setTitle(`ULTRA3 INTEL: ${title.substring(0, 200)}`)
+                    .setTitle(`ULTRA3 INTEL: ${title.slice(0, 200)}`)
                     .setURL(item.link)
-                    .setDescription(
-                        `**${intelLabel}**\n\n` +
-                        `📌 ${content || "No summary available."}\n\n` +
-                        `━━━━━━━━━━━━━━━━━━\n` +
-                        `📊 SENTIMENT: ${sentiment}\n` +
-                        `⚠️ RISK: ${risk}\n` +
-                        `📈 SCORE: ${score}\n` +
-                        `🐋 WHALE: ${whaleAlert ? "YES" : "NO"}\n` +
-                        `━━━━━━━━━━━━━━━━━━`
-                    )
+                    .setDescription(content?.slice(0, 400) || "No summary")
                     .setColor(
                         risk === "DANGEROUS"
                             ? 0xff0000
-                            : score >= 6
+                            : score >= 5
                             ? 0x00ff88
-                            : score <= -3
-                            ? 0xff4444
                             : 0x00bfff
                     )
-                    .setImage(
-                        item.enclosure?.url ||
-                        item.thumbnail ||
-                        getFallbackImage(title)
-                    )
-                    .setFooter({
-                        text: `ULTRA3 INTELLIGENCE • ${vip.channel.toUpperCase()}`
-                    })
+                    .setImage(getImage(title))
+                    .setFooter({ text: `ULTRA3 INTEL • ${vip.tier}` })
                     .setTimestamp();
 
-                // ================= ROUTING =================
-                const channel =
-                    client.channels.cache.find(c => c.name === vip.channel)
-                    || client.channels.cache.find(c => c.name === "crypto-news");
+                // ================= ROUTING FIX =================
+                let channel =
+                    client.channels.cache.find(c => c.name === vip.channel) ||
+                    client.channels.cache.find(c => c.name === "crypto-news");
 
                 if (!channel) {
-                    console.log(`⚠️ NO CHANNEL FOUND (even fallback): ${vip.channel}`);
-                    continue;
+                    const fallback =
+                        CHANNEL_POOL[Math.floor(Math.random() * CHANNEL_POOL.length)];
+
+                    channel = client.channels.cache.find(c => c.name === fallback);
+
+                    console.log(`🔁 FORCED ROUTE → ${fallback}`);
                 }
+
+                if (!channel) continue;
 
                 await channel.send({ embeds: [embed] });
 
                 savePost(item.link, title);
 
-                console.log(`✅ RSS (${vip.tier}) → ${channel.name}: ${title}`);
+                console.log(`✅ POSTED → ${channel.name}`);
             }
 
         } catch (err) {
-            console.log(`❌ RSS Error (${feed}):`, err.message);
+            console.log(`❌ RSS ERROR:`, err.message);
+        }
+    }
+
+    // ================= COVERAGE GUARANTEE =================
+    for (const ch of CHANNEL_POOL) {
+        if ((activity.get(ch) || 0) === 0) {
+            const channel = client.channels.cache.find(c => c.name === ch);
+
+            if (channel) {
+                await channel.send("🧠 Coverage system active — keeping feed alive");
+            }
         }
     }
 }
