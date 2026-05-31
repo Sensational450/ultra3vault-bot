@@ -1,4 +1,4 @@
-const db = require("../../database/rewards.sqlite");
+const db = require("../../database/rewardsDB.js");
 
 function generateCode(userId) {
     return "ULTRA-" + userId.slice(-5);
