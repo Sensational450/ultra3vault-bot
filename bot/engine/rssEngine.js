@@ -3,50 +3,28 @@ const { EmbedBuilder } = require("discord.js");
 
 const db = require("../../database/db");
 
-const { getSentimentScore, getSentiment } = require("./sentimentAI");
-const { getScamScore, getRiskLevel } = require("./antiScamAI");
+const {
+    getSentimentScore,
+    getSentiment
+} = require("./sentimentAI");
+
+const {
+    getScamScore,
+    getRiskLevel
+} = require("./antiScamAI");
+
 const { routeIntelligence } = require("./vipRouter");
 
-// ================= AIRDROP DETECTOR =================
-const AIRDROP_KEYWORDS = [
-    "airdrop",
-    "claim",
-    "eligibility",
-    "snapshot",
-    "retroactive",
-    "testnet",
-    "points",
-    "reward",
-    "distribution",
-    "checker",
-    "whitelist",
-    "allocation"
-];
-
-function detectAirdrop(title = "", content = "") {
-    const text = (title + " " + content).toLowerCase();
-
-    let score = 0;
-    AIRDROP_KEYWORDS.forEach(k => {
-        if (text.includes(k)) score += 2;
-    });
-
-    return {
-        isAirdrop: score >= 4,
-        score
-    };
-}
-
-// ================= RSS =================
 const parser = new Parser();
 
+// ================= FEEDS =================
 const FEEDS = [
     "https://cointelegraph.com/rss",
     "https://www.coindesk.com/arc/outboundfeeds/rss/",
     "https://decrypt.co/feed"
 ];
 
-// ================= CHANNEL SYSTEM =================
+// ================= CHANNEL SYSTEM (IMPORTANT FIX) =================
 const CHANNEL_POOL = [
     "crypto-news",
     "vip-news",
@@ -56,30 +34,27 @@ const CHANNEL_POOL = [
     "security-alerts"
 ];
 
-// ================= CACHE =================
+// ================= STATE =================
 const seen = new Set();
-const MAX_SEEN = 200;
+const MAX_SEEN = 300;
 
+// track distribution per run
+const distribution = new Map();
+
+// ================= UTIL =================
 function safeAdd(link) {
     if (seen.size > MAX_SEEN) seen.clear();
     seen.add(link);
 }
 
-// ================= IMAGE SYSTEM =================
-function getIntelImage(title = "") {
+// ================= INTELLIGENCE IMAGE SYSTEM =================
+function getImage(title = "") {
     const t = title.toLowerCase();
 
-    if (t.includes("hack") || t.includes("exploit")) {
-        return "https://images.unsplash.com/photo-1550751827-4bd374c3f58b";
-    }
-
-    if (t.includes("sec") || t.includes("lawsuit")) {
-        return "https://images.unsplash.com/photo-1454165804606-c3d57bc86b40";
-    }
-
-    if (t.includes("bitcoin") || t.includes("btc")) {
-        return "https://images.unsplash.com/photo-1621761191319-c6fb62004040";
-    }
+    if (t.includes("airdrop")) return "https://images.unsplash.com/photo-1622630998477-20aa696ecb05";
+    if (t.includes("hack") || t.includes("exploit")) return "https://images.unsplash.com/photo-1550751827-4bd374c3f58b";
+    if (t.includes("bitcoin") || t.includes("btc")) return "https://cryptologos.cc/logos/bitcoin-btc-logo.png";
+    if (t.includes("ethereum") || t.includes("eth")) return "https://cryptologos.cc/logos/ethereum-eth-logo.png";
 
     return "https://images.unsplash.com/photo-1551288049-bebda4e38f71";
 }
@@ -102,16 +77,28 @@ function savePost(link, title) {
     );
 }
 
+// ================= TOPIC BOOSTER =================
+function detectTopic(title = "", content = "") {
+    const text = (title + " " + content).toLowerCase();
+
+    if (text.includes("airdrop")) return "airdrop-news";
+    if (text.includes("hack") || text.includes("exploit")) return "security-alerts";
+    if (text.includes("whale")) return "whale-alerts";
+    if (text.includes("etf") || text.includes("sec")) return "alpha-news";
+
+    return null;
+}
+
 // ================= MAIN ENGINE =================
 async function fetchRSS(client) {
     if (!client) return;
 
-    const activity = new Map();
+    distribution.clear();
 
     for (const feed of FEEDS) {
         try {
             const parsed = await parser.parseURL(feed);
-            const items = parsed.items.slice(0, 3);
+            const items = parsed.items.slice(0, 4);
 
             for (const item of items) {
 
@@ -135,10 +122,6 @@ async function fetchRSS(client) {
                     title.toLowerCase().includes("whale") ||
                     content.toLowerCase().includes("whale");
 
-                // ================= AIRDROP DETECTION =================
-                const airdrop = detectAirdrop(title, content);
-
-                // ================= ROUTING =================
                 let vip = routeIntelligence({
                     score,
                     sentiment,
@@ -146,55 +129,64 @@ async function fetchRSS(client) {
                     risk
                 });
 
-                // 🔥 FORCE AIRDROP ROUTE
-                if (airdrop.isAirdrop) {
-                    vip = {
-                        channel: "airdrop-news",
-                        tier: "AIRDROP"
-                    };
+                // ================= FORCE TOPIC OVERRIDE =================
+                const forcedChannel = detectTopic(title, content);
+                if (forcedChannel) {
+                    vip.channel = forcedChannel;
                 }
 
-                activity.set(vip.channel, (activity.get(vip.channel) || 0) + 1);
+                // ================= COVERAGE TRACKING =================
+                distribution.set(
+                    vip.channel,
+                    (distribution.get(vip.channel) || 0) + 1
+                );
 
-                console.log(`🧠 INTEL → ${score} | ${sentiment} | ${risk} → ${vip.channel}`);
+                console.log(
+                    `🧠 INTEL → ${score} | ${sentiment} | ${risk} → ${vip.channel}`
+                );
 
-                // ================= EMBED =================
+                // ================= BLOOMBERG STYLE EMBED =================
                 const embed = new EmbedBuilder()
-                    .setTitle(
-                        airdrop.isAirdrop
-                            ? `🎁 AIRDROP ALERT: ${title.slice(0, 180)}`
-                            : `ULTRA3 INTELLIGENCE: ${title.slice(0, 180)}`
-                    )
+                    .setTitle(`ULTRA3 INTEL: ${title.slice(0, 180)}`)
                     .setURL(item.link)
                     .setDescription(
-                        `🧠 **INTELLIGENCE REPORT**\n\n` +
-                        `📌 ${content?.slice(0, 350) || "No summary"}\n\n` +
+                        `🧠 MARKET INTELLIGENCE REPORT\n\n` +
+                        `📌 ${content?.slice(0, 300) || "No summary"}\n\n` +
                         `━━━━━━━━━━━━━━━━━━\n` +
                         `📊 Sentiment: ${sentiment}\n` +
                         `⚠️ Risk: ${risk}\n` +
                         `📈 Score: ${score}\n` +
-                        `🎁 Airdrop: ${airdrop.isAirdrop ? "YES" : "NO"}\n` +
-                        `━━━━━━━━━━━━━━━━━━`
+                        `🐋 Whale: ${whaleAlert ? "YES" : "NO"}\n` +
+                        `━━━━━━━━━━━━━━━━━━\n` +
+                        `🔔 ULTRA3 INTELLIGENCE NETWORK`
                     )
                     .setColor(
-                        airdrop.isAirdrop
-                            ? 0xffd700
-                            : risk === "DANGEROUS"
+                        risk === "DANGEROUS"
                             ? 0xff0000
                             : score >= 6
                             ? 0x00ff88
+                            : score <= -3
+                            ? 0xff4444
                             : 0x0099ff
                     )
-                    .setImage(getIntelImage(title))
+                    .setImage(getImage(title))
                     .setFooter({
-                        text: `ULTRA3 INTELLIGENCE • ${vip.channel.toUpperCase()}`
+                        text: `ULTRA3 RSS v3.0 • ${vip.channel.toUpperCase()}`
                     })
                     .setTimestamp();
 
-                // ================= ROUTING =================
+                // ================= ROUTING FIX =================
                 let channel =
-                    client.channels.cache.find(c => c.name === vip.channel) ||
-                    client.channels.cache.find(c => c.name === "crypto-news");
+                    client.channels.cache.find(c => c.name === vip.channel);
+
+                if (!channel) {
+                    const fallback =
+                        CHANNEL_POOL[Math.floor(Math.random() * CHANNEL_POOL.length)];
+
+                    channel = client.channels.cache.find(c => c.name === fallback);
+
+                    console.log(`🔁 FALLBACK → ${fallback}`);
+                }
 
                 if (!channel) continue;
 
@@ -210,12 +202,13 @@ async function fetchRSS(client) {
         }
     }
 
-    // ================= COVERAGE =================
+    // ================= COVERAGE FIX =================
     for (const ch of CHANNEL_POOL) {
-        if (!activity.get(ch)) {
+        if ((distribution.get(ch) || 0) === 0) {
             const channel = client.channels.cache.find(c => c.name === ch);
+
             if (channel) {
-                await channel.send("🧠 Feed active — monitoring intelligence streams");
+                await channel.send("🧠 ULTRA3 FEED ACTIVE — monitoring market signals");
             }
         }
     }
