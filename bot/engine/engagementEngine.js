@@ -1,6 +1,6 @@
-const { addXP } = require("./levelingEngine");
+const { addXP, getUser } = require("./levelingEngine");
 
-// ================= CORE SYSTEM STATE =================
+// ================= CORE STATE =================
 const cooldown = new Map();
 const lastActive = new Map();
 const messageCount = new Map();
@@ -9,33 +9,52 @@ const messageCount = new Map();
 const BASE_MIN_XP = 1;
 const BASE_MAX_XP = 5;
 
-const AFK_THRESHOLD = 60000; // 1 min
+const AFK_THRESHOLD = 60 * 1000; // 1 min
 const COOLDOWN_TIME = 5000;
 
-// ================= XP MULTIPLIER SYSTEM (VIP READY) =================
-function getMultiplier(userId) {
+// ================= VIP SYSTEM (MONETIZATION HOOK) =================
+// later you will connect DB subscription table here
+function getVIPMultiplier(userId) {
 
-    // placeholder for future VIP system
-    // later: check DB for VIP status
+    const vipUsers = new Set([
+        // example VIP IDs (replace with DB later)
+        // "123456789"
+    ]);
 
-    return 1; // default normal user
+    if (vipUsers.has(userId)) return 2.0; // VIP BOOST x2
+
+    return 1.0;
 }
 
-// ================= MESSAGE QUALITY SCORE =================
+// ================= LEVEL BONUS SYSTEM =================
+function getLevelBonus(level) {
+
+    if (level >= 50) return 5;
+    if (level >= 30) return 4;
+    if (level >= 20) return 3;
+    if (level >= 10) return 2;
+
+    return 1;
+}
+
+// ================= MESSAGE QUALITY ENGINE =================
 function getMessageQuality(message) {
 
     const text = message.content || "";
     let score = 0;
 
-    if (text.length > 20) score += 1;
+    if (text.length > 25) score += 1;
     if (text.length > 80) score += 2;
     if (text.includes("?")) score += 1;
-    if (text.split(" ").length > 10) score += 1;
+    if (text.includes("!")) score += 1;
 
-    return Math.min(score, 3);
+    const words = text.split(" ").length;
+    if (words > 10) score += 1;
+
+    return Math.min(score, 4);
 }
 
-// ================= MAIN HANDLER =================
+// ================= MAIN ENGINE =================
 function handleMessage(message) {
 
     if (message.author.bot) return;
@@ -43,23 +62,23 @@ function handleMessage(message) {
     const userId = message.author.id;
     const now = Date.now();
 
-    // ================= ANTI-SPAM COOLDOWN =================
+    // ================= COOLDOWN (ANTI SPAM) =================
     if (cooldown.has(userId)) {
         const last = cooldown.get(userId);
-
         if (now - last < COOLDOWN_TIME) return;
     }
 
     cooldown.set(userId, now);
 
-    // ================= ACTIVITY TRACKING =================
+    // ================= USER ACTIVITY =================
     const lastSeen = lastActive.get(userId) || 0;
     const isActive = (now - lastSeen) < AFK_THRESHOLD;
 
     lastActive.set(userId, now);
 
     // ================= MESSAGE COUNT =================
-    messageCount.set(userId, (messageCount.get(userId) || 0) + 1);
+    const totalMessages = (messageCount.get(userId) || 0) + 1;
+    messageCount.set(userId, totalMessages);
 
     // ================= BASE XP =================
     let xp =
@@ -67,47 +86,54 @@ function handleMessage(message) {
         BASE_MIN_XP;
 
     // ================= QUALITY BONUS =================
-    const quality = getMessageQuality(message);
-    xp += quality;
+    xp += getMessageQuality(message);
 
     // ================= ACTIVE USER BONUS =================
     if (isActive) xp += 2;
 
-    // ================= MESSAGE VOLUME BONUS =================
-    const count = messageCount.get(userId);
-    if (count % 20 === 0) {
-        xp += 5; // engagement milestone bonus
-    }
+    // ================= MESSAGE MILESTONES =================
+    if (totalMessages % 10 === 0) xp += 3;
+    if (totalMessages % 50 === 0) xp += 10;
+    if (totalMessages % 100 === 0) xp += 25;
 
-    // ================= VIP MULTIPLIER HOOK =================
-    xp = Math.floor(xp * getMultiplier(userId));
+    // ================= GET USER LEVEL =================
+    getUser(userId, (user) => {
 
-    // ================= ADD XP =================
-    addXP(userId, xp, (levelUp) => {
+        if (!user) return;
 
-        if (levelUp) {
+        const levelBonus = getLevelBonus(user.level);
 
-            message.channel.send(
-                `🎉 <@${userId}> leveled up to **Level ${levelUp.newLevel}**!`
-            );
-        }
+        // ================= VIP MULTIPLIER =================
+        const vipMultiplier = getVIPMultiplier(userId);
+
+        xp = Math.floor(xp * levelBonus * vipMultiplier);
+
+        // ================= FINAL XP PUSH =================
+        addXP(userId, xp, (levelUp) => {
+
+            if (levelUp) {
+                message.channel.send(
+                    `🎉 <@${userId}> just reached **Level ${levelUp.newLevel}** 🚀`
+                );
+            }
+        });
     });
 }
 
-// ================= INVITE BONUS =================
+// ================= INVITE SYSTEM =================
 function handleInvite(userId) {
-
-    addXP(userId, 30);
+    addXP(userId, 35);
 }
 
-// ================= DAILY BONUS SYSTEM =================
+// ================= DAILY BONUS + STREAK READY =================
 function applyDailyBonus(userId, streak = 0) {
 
-    let bonus = 50 + (streak * 10);
+    let bonus = 50 + (streak * 12);
 
     // streak multipliers
     if (streak >= 7) bonus *= 1.5;
     if (streak >= 14) bonus *= 2;
+    if (streak >= 30) bonus *= 3;
 
     addXP(userId, Math.floor(bonus));
 }
