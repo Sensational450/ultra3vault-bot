@@ -1,41 +1,30 @@
 function routeIntelligence(data) {
+    const { score = 0, sentiment = "NEUTRAL", whaleAlert = false, risk = "SAFE" } = data;
 
-    const {
-        score = 0,
-        sentiment = "NEUTRAL",
-        whaleAlert = false,
-        risk = "SAFE",
-        isAirdrop = false
-    } = data;
-
-    // ================= AIRDROP PRIORITY =================
-    if (isAirdrop) {
-        return {
-            channel: "airdrop-news",
-            tier: "AIRDROP"
-        };
-    }
-
-    // ================= SECURITY =================
     if (risk === "DANGEROUS") {
         return { channel: "security-alerts", tier: "BLOCKED" };
     }
 
-    // ================= WHALE =================
-    if (whaleAlert && score > 5) {
+    if (whaleAlert && score >= 6) {
         return { channel: "whale-alerts", tier: "VIP" };
     }
 
-    // ================= HIGH IMPACT =================
-    if (score > 8) {
-        return { channel: "alpha-news", tier: "VIP" };
+    if (score >= 8) {
+        return { channel: "alpha-news", tier: "ELITE" };
     }
 
-    if (score > 5) {
+    if (score >= 5) {
         return { channel: "vip-news", tier: "VIP" };
     }
 
-    // ================= DEFAULT =================
+    if (sentiment.includes("BULLISH")) {
+        return { channel: "crypto-news", tier: "FREE" };
+    }
+
+    if (sentiment.includes("BEARISH")) {
+        return { channel: "market-watch", tier: "FREE" };
+    }
+
     return { channel: "crypto-news", tier: "FREE" };
 }
 
