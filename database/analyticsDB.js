@@ -1,12 +1,19 @@
-// ================= VIP ANALYTICS DATABASE =================
-
 const sqlite3 = require("sqlite3").verbose();
-const db = new sqlite3.Database("./database/analytics.sqlite");
 
-// ================= INIT TABLES =================
+console.log("📂 Opening DB: ./database/analytics.sqlite");
+
+const db = new sqlite3.Database("./database/analytics.sqlite", (err) => {
+    if (err) {
+        console.error("❌ ANALYTICS DB OPEN ERROR:", err.message);
+    } else {
+        console.log("✅ ANALYTICS DB OPENED");
+    }
+});
+
 db.serialize(() => {
 
-    // VIP USERS
+    db.run("PRAGMA journal_mode = WAL");
+
     db.run(`
         CREATE TABLE IF NOT EXISTS vip_users (
             user_id TEXT PRIMARY KEY,
@@ -15,7 +22,6 @@ db.serialize(() => {
         )
     `);
 
-    // RSS STATS
     db.run(`
         CREATE TABLE IF NOT EXISTS rss_stats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -25,7 +31,6 @@ db.serialize(() => {
         )
     `);
 
-    // SECURITY LOGS
     db.run(`
         CREATE TABLE IF NOT EXISTS security_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,7 +41,6 @@ db.serialize(() => {
         )
     `);
 
-    // VIP EVENTS
     db.run(`
         CREATE TABLE IF NOT EXISTS vip_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,7 +53,7 @@ db.serialize(() => {
     console.log("📊 VIP Analytics DB ready");
 });
 
-// ================= VIP USERS =================
+// VIP USERS
 function addVIP(userId, durationDays = 7) {
     const now = Date.now();
     const expires = now + durationDays * 24 * 60 * 60 * 1000;
@@ -69,7 +73,7 @@ function getVIP(userId, callback) {
     );
 }
 
-// ================= RSS STATS =================
+// RSS LOGS
 function logRSS(category, feed) {
     db.run(
         `INSERT INTO rss_stats (category, feed, timestamp)
@@ -78,7 +82,7 @@ function logRSS(category, feed) {
     );
 }
 
-// ================= SECURITY LOG =================
+// SECURITY LOGS
 function logSecurity(type, title, risk) {
     db.run(
         `INSERT INTO security_logs (type, title, risk, timestamp)
@@ -87,7 +91,7 @@ function logSecurity(type, title, risk) {
     );
 }
 
-// ================= VIP EVENTS =================
+// VIP EVENTS
 function logVIPEvent(userId, event) {
     db.run(
         `INSERT INTO vip_events (user_id, event, timestamp)
