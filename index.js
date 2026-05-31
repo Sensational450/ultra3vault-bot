@@ -1,32 +1,28 @@
-// ================= STARTUP DEBUG =================
 console.log("🧠 STARTUP DEBUG ACTIVE (PHASE 4 CORE)");
 
-// ================= DB DEBUG TRACER =================
-const sqlite3 = require("sqlite3").verbose();
-
-const originalDatabase = sqlite3.Database;
-
-sqlite3.Database = function (...args) {
-    console.log("🧠 DB OPEN CALLED:", args[0]);
-    console.trace("📍 DB CREATED FROM:");
-    return new originalDatabase(...args);
-};
-
-// ================= ERROR HANDLERS =================
 process.on("uncaughtException", (err) => {
-    console.error("💥 UNCAUGHT EXCEPTION:", err.stack || err);
+    console.error("💥 UNCAUGHT EXCEPTION:");
+    console.error(err?.stack || err);
 });
 
 process.on("unhandledRejection", (err) => {
-    console.error("💥 UNHANDLED REJECTION:", err?.stack || err);
+    console.error("💥 UNHANDLED REJECTION:");
+    console.error(err?.stack || err);
 });
 
-// ================= CORE LOAD =================
+// ================= CORE IMPORTS =================
 const client = require("./bot/client");
 const fetchRSS = require("./bot/engine/rssEngine");
 const fetchPrices = require("./bot/engine/priceEngine");
 const { attachClient } = require("./web/server");
 const { cleanupExpired } = require("./bot/engine/subscriptionManager");
+
+// ================= DEBUG TRACKING =================
+console.log("📦 ENGINE LOAD CHECK:");
+
+Object.keys(require.cache)
+    .filter(f => f.includes("/engine/"))
+    .forEach(f => console.log("✔", f));
 
 // ================= STATE =================
 let started = false;
@@ -35,24 +31,22 @@ let intervals = [];
 // ================= SAFE RUNNER =================
 async function safeRun(name, fn) {
     try {
+        console.log(`⚙️ Running: ${name}`);
         return await fn();
     } catch (err) {
-        console.error(`❌ ${name} FAILED:`, err.stack || err);
+        console.error(`❌ ${name} FAILED:`);
+        console.error(err?.message || err);
     }
 }
 
-// ================= READY EVENT =================
+// ================= READY =================
 client.once("ready", async () => {
 
     if (started) return;
     started = true;
 
     console.log("🤖 BOT ONLINE:", client.user.tag);
-
-    console.log("🔍 LOADED ENGINE FILES:");
-    Object.keys(require.cache)
-        .filter(f => f.includes("/engine/") || f.includes("\\engine\\"))
-        .forEach(f => console.log("📦", f));
+    console.log("📡 SYSTEM INITIALIZING...");
 
     attachClient?.(client);
 
@@ -70,17 +64,24 @@ client.once("ready", async () => {
     ));
 
     intervals.push(setInterval(() =>
-        safeRun("CLEANUP", () => cleanupExpired(client)),
+        safeRun("CLEANUP LOOP", () => cleanupExpired(client)),
         60 * 60 * 1000
     ));
+
+    intervals.push(setInterval(() => {
+        console.log(`📊 HEALTH CHECK:
+Memory: ${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB
+Uptime: ${Math.floor(process.uptime())}s
+DB Status: ACTIVE`);
+    }, 5 * 60 * 1000));
 
     console.log("🚀 SYSTEM STABLE CORE RUNNING (PHASE 4 READY)");
 });
 
 // ================= SHUTDOWN =================
 process.on("SIGINT", () => {
-    intervals.forEach(clearInterval);
     console.log("⚠️ SHUTTING DOWN...");
+    intervals.forEach(clearInterval);
     console.log("✅ CLEAN SHUTDOWN COMPLETE");
     process.exit(0);
 });
