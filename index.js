@@ -1,5 +1,30 @@
+// ================= STARTUP =================
 console.log("🧠 STARTUP DEBUG ACTIVE (PHASE 4 CORE)");
 
+// ================= DB DUPLICATE DETECTOR =================
+const sqlite3 = require("sqlite3").verbose();
+
+const activeDBs = new Map();
+const OriginalDB = sqlite3.Database;
+
+sqlite3.Database = function (...args) {
+
+    const dbPath = args[0];
+
+    console.log("🧠 DB OPEN ATTEMPT:", dbPath);
+
+    if (activeDBs.has(dbPath)) {
+        console.error("🚨 DUPLICATE DB DETECTED:", dbPath);
+        console.trace("📍 SECOND CONNECTION CREATED HERE:");
+    } else {
+        activeDBs.set(dbPath, true);
+        console.trace("📍 FIRST CONNECTION CREATED HERE:");
+    }
+
+    return new OriginalDB(...args);
+};
+
+// ================= ERROR HANDLERS =================
 process.on("uncaughtException", (err) => {
     console.error("💥 UNCAUGHT EXCEPTION:");
     console.error(err?.stack || err);
@@ -17,7 +42,7 @@ const fetchPrices = require("./bot/engine/priceEngine");
 const { attachClient } = require("./web/server");
 const { cleanupExpired } = require("./bot/engine/subscriptionManager");
 
-// ================= DEBUG TRACKING =================
+// ================= ENGINE DEBUG =================
 console.log("📦 ENGINE LOAD CHECK:");
 
 Object.keys(require.cache)
@@ -35,11 +60,11 @@ async function safeRun(name, fn) {
         return await fn();
     } catch (err) {
         console.error(`❌ ${name} FAILED:`);
-        console.error(err?.message || err);
+        console.error(err?.stack || err);
     }
 }
 
-// ================= READY =================
+// ================= READY EVENT =================
 client.once("ready", async () => {
 
     if (started) return;
