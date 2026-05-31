@@ -1,67 +1,31 @@
-// ================= PREMIUM SYSTEM (PHASE 4 FIXED) =================
-// ⚠️ This module NO LONGER uses a separate database file.
-// Premium data is stored inside main.sqlite (users table)
+const sqlite3 = require("sqlite3").verbose();
+const path = require("path");
 
-const db = require("./db"); // main database
+const dbPath = path.join(__dirname, "analytics.sqlite");
 
-// ================= GIVE PREMIUM =================
-function givePremium(userId, durationDays = 7) {
+console.log("📂 Opening DB:", dbPath);
 
-    const expiresAt = Date.now() + durationDays * 24 * 60 * 60 * 1000;
+const db = new sqlite3.Database(dbPath, (err) => {
+    if (err) {
+        console.error("❌ PREMIUM DB ERROR:", err.message);
+    } else {
+        console.log("💎 PREMIUM DB OPENED");
+    }
+});
 
-    db.run(
-        `INSERT INTO users (userId, points, streak, lastClaim)
-         VALUES (?, 0, 0, 0)
-         ON CONFLICT(userId) DO UPDATE SET
-         lastClaim = lastClaim`,
-        [userId]
-    );
+db.serialize(() => {
 
-    db.run(
-        `UPDATE users SET tier = 'VIP', expiresAt = ? WHERE userId = ?`,
-        [expiresAt, userId]
-    );
-}
+    db.run("PRAGMA journal_mode = WAL");
+    db.run("PRAGMA busy_timeout = 5000");
 
-// ================= CHECK PREMIUM =================
-function getPremium(userId, callback) {
+    db.run(`
+        CREATE TABLE IF NOT EXISTS premium_users (
+            user_id TEXT PRIMARY KEY,
+            expires_at INTEGER
+        )
+    `);
 
-    db.get(
-        `SELECT * FROM users WHERE userId = ?`,
-        [userId],
-        (err, row) => {
+    console.log("💎 PREMIUM SYSTEM READY");
+});
 
-            if (err) return callback(null);
-
-            if (!row) {
-                return callback({
-                    userId,
-                    tier: "FREE",
-                    expiresAt: 0
-                });
-            }
-
-            const isActive = row.expiresAt && row.expiresAt > Date.now();
-
-            callback({
-                ...row,
-                tier: isActive ? "VIP" : "FREE",
-                active: isActive
-            });
-        }
-    );
-}
-
-// ================= REMOVE PREMIUM =================
-function revokePremium(userId) {
-    db.run(
-        `UPDATE users SET tier = 'FREE', expiresAt = 0 WHERE userId = ?`,
-        [userId]
-    );
-}
-
-module.exports = {
-    givePremium,
-    getPremium,
-    revokePremium
-};
+module.exports = db;
