@@ -3,8 +3,19 @@ const { EmbedBuilder } = require("discord.js");
 
 const db = require("../../database/db");
 
-const vipRouter = require("./vipRouter"); // 🔥 IMPORTANT ADD
+const {
+    getSentimentScore,
+    getSentiment
+} = require("./sentimentAI");
 
+const {
+    getScamScore,
+    getRiskLevel
+} = require("./antiScamAI");
+
+const { routeIntelligence } = require("./vipRouter");
+
+// ================= FEEDS =================
 const FEEDS = [
     "https://cointelegraph.com/rss",
     "https://www.coindesk.com/arc/outboundfeeds/rss/",
@@ -18,7 +29,9 @@ const seen = new Set();
 const MAX_SEEN = 200;
 
 function safeAdd(link) {
-    if (seen.size > MAX_SEEN) seen.clear();
+    if (seen.size > MAX_SEEN) {
+        seen.clear();
+    }
     seen.add(link);
 }
 
@@ -29,7 +42,11 @@ function hasPosted(link) {
             "SELECT 1 FROM rss_posts WHERE link = ?",
             [link],
             (err, row) => {
-                if (err) return resolve(false);
+                if (err) {
+                    console.log("DB CHECK ERROR:", err.message);
+                    return resolve(false);
+                }
+
                 resolve(!!row);
             }
         );
@@ -39,7 +56,12 @@ function hasPosted(link) {
 function savePost(link, title) {
     db.run(
         "INSERT OR IGNORE INTO rss_posts (link, title) VALUES (?, ?)",
-        [link, title]
+        [link, title],
+        (err) => {
+            if (err) {
+                console.log("SAVE POST ERROR:", err.message);
+            }
+        }
     );
 }
 
@@ -51,8 +73,10 @@ async function fetchRSS(client) {
     for (const feed of FEEDS) {
 
         try {
+
             const parsed = await parser.parseURL(feed);
-            const items = parsed.items.slice(0, 2);
+
+            const items = parsed.items.slice(0, 3);
 
             for (const item of items) {
 
@@ -61,46 +85,87 @@ async function fetchRSS(client) {
                 if (seen.has(item.link)) continue;
                 safeAdd(item.link);
 
-                if (await hasPosted(item.link)) continue;
+                const alreadyPosted = await hasPosted(item.link);
 
-                const title = item.title || "";
+                if (alreadyPosted) continue;
+
+                const title = item.title || "Untitled";
                 const content = item.contentSnippet || "";
 
-                // ================= VIP ROUTING (NEW SYSTEM) =================
-                const vip = vipRouter.routeIntelligence?.({
+                // ================= AI ANALYSIS =================
+                const score = getSentimentScore(
                     title,
                     content
-                }) || {
-                    channel: "crypto-news",
-                    tier: "FREE"
-                };
+                );
 
+                const sentiment = getSentiment(score);
+
+                const scamScore = getScamScore(
+                    title,
+                    content,
+                    item.link
+                );
+
+                const risk = getRiskLevel(scamScore);
+
+                const whaleAlert =
+                    title.toLowerCase().includes("whale") ||
+                    content.toLowerCase().includes("whale");
+
+                const vip = routeIntelligence({
+                    score,
+                    sentiment,
+                    whaleAlert,
+                    risk
+                });
+
+                console.log(
+                    `🧠 AI → Score:${score} Sentiment:${sentiment} Risk:${risk} Whale:${whaleAlert}`
+                );
+
+                // ================= EMBED =================
                 const embed = new EmbedBuilder()
-                    .setTitle(title)
+                    .setTitle(title.substring(0, 256))
                     .setURL(item.link)
-                    .setDescription((content || "").slice(0, 180))
+                    .setDescription(
+                        (content || "No summary available.")
+                            .substring(0, 500)
+                    )
                     .setColor(0x00bfff)
+                    .setFooter({
+                        text: `${vip.tier} • ${sentiment}`
+                    })
                     .setTimestamp();
 
-                // 🔥 FIXED: dynamic channel routing
+                // ================= ROUTING =================
                 const channel = client.channels.cache.find(
                     c => c.name === vip.channel
                 );
 
                 if (!channel) {
-                    console.log(`⚠️ Channel not found: ${vip.channel}`);
+                    console.log(
+                        `⚠️ Channel not found: ${vip.channel}`
+                    );
                     continue;
                 }
 
-                await channel.send({ embeds: [embed] });
+                await channel.send({
+                    embeds: [embed]
+                });
 
                 savePost(item.link, title);
 
-                console.log(`✅ RSS (${vip.tier}) → ${vip.channel}: ${title}`);
+                console.log(
+                    `✅ RSS (${vip.tier}) → ${vip.channel}: ${title}`
+                );
             }
 
         } catch (err) {
-            console.log(`❌ RSS Error (${feed}):`, err.message);
+
+            console.log(
+                `❌ RSS Error (${feed}):`,
+                err.message
+            );
         }
     }
 }
