@@ -29,10 +29,28 @@ const seen = new Set();
 const MAX_SEEN = 200;
 
 function safeAdd(link) {
-    if (seen.size > MAX_SEEN) {
-        seen.clear();
-    }
+    if (seen.size > MAX_SEEN) seen.clear();
     seen.add(link);
+}
+
+// ================= IMAGE FALLBACK =================
+function getFallbackImage(title = "") {
+    const t = title.toLowerCase();
+
+    if (t.includes("bitcoin") || t.includes("btc")) {
+        return "https://cryptologos.cc/logos/bitcoin-btc-logo.png";
+    }
+    if (t.includes("ethereum") || t.includes("eth")) {
+        return "https://cryptologos.cc/logos/ethereum-eth-logo.png";
+    }
+    if (t.includes("xrp")) {
+        return "https://cryptologos.cc/logos/xrp-xrp-logo.png";
+    }
+    if (t.includes("solana")) {
+        return "https://cryptologos.cc/logos/solana-sol-logo.png";
+    }
+
+    return "https://cryptologos.cc/logos/bitcoin-btc-logo.png";
 }
 
 // ================= DB HELPERS =================
@@ -42,11 +60,7 @@ function hasPosted(link) {
             "SELECT 1 FROM rss_posts WHERE link = ?",
             [link],
             (err, row) => {
-                if (err) {
-                    console.log("DB CHECK ERROR:", err.message);
-                    return resolve(false);
-                }
-
+                if (err) return resolve(false);
                 resolve(!!row);
             }
         );
@@ -56,12 +70,7 @@ function hasPosted(link) {
 function savePost(link, title) {
     db.run(
         "INSERT OR IGNORE INTO rss_posts (link, title) VALUES (?, ?)",
-        [link, title],
-        (err) => {
-            if (err) {
-                console.log("SAVE POST ERROR:", err.message);
-            }
-        }
+        [link, title]
     );
 }
 
@@ -73,9 +82,7 @@ async function fetchRSS(client) {
     for (const feed of FEEDS) {
 
         try {
-
             const parsed = await parser.parseURL(feed);
-
             const items = parsed.items.slice(0, 3);
 
             for (const item of items) {
@@ -85,19 +92,13 @@ async function fetchRSS(client) {
                 if (seen.has(item.link)) continue;
                 safeAdd(item.link);
 
-                const alreadyPosted = await hasPosted(item.link);
-
-                if (alreadyPosted) continue;
+                if (await hasPosted(item.link)) continue;
 
                 const title = item.title || "Untitled";
                 const content = item.contentSnippet || "";
 
                 // ================= AI ANALYSIS =================
-                const score = getSentimentScore(
-                    title,
-                    content
-                );
-
+                const score = getSentimentScore(title, content);
                 const sentiment = getSentiment(score);
 
                 const scamScore = getScamScore(
@@ -128,14 +129,29 @@ async function fetchRSS(client) {
                     .setTitle(title.substring(0, 256))
                     .setURL(item.link)
                     .setDescription(
-                        (content || "No summary available.")
-                            .substring(0, 500)
+                        (content || "No summary available.").substring(0, 500)
                     )
-                    .setColor(0x00bfff)
+                    .setColor(
+                        sentiment.includes("BULLISH")
+                            ? 0x00ff88
+                            : sentiment.includes("BEARISH")
+                            ? 0xff4444
+                            : 0x00bfff
+                    )
                     .setFooter({
-                        text: `${vip.tier} • ${sentiment}`
+                        text: `${vip.tier} • ${sentiment} • Risk: ${risk}`
                     })
                     .setTimestamp();
+
+                // ================= IMAGE SYSTEM =================
+                const image =
+                    item.enclosure?.url ||
+                    item.thumbnail ||
+                    getFallbackImage(title);
+
+                if (image) {
+                    embed.setImage(image);
+                }
 
                 // ================= ROUTING =================
                 const channel = client.channels.cache.find(
@@ -143,15 +159,11 @@ async function fetchRSS(client) {
                 );
 
                 if (!channel) {
-                    console.log(
-                        `⚠️ Channel not found: ${vip.channel}`
-                    );
+                    console.log(`⚠️ Channel not found: ${vip.channel}`);
                     continue;
                 }
 
-                await channel.send({
-                    embeds: [embed]
-                });
+                await channel.send({ embeds: [embed] });
 
                 savePost(item.link, title);
 
@@ -161,11 +173,7 @@ async function fetchRSS(client) {
             }
 
         } catch (err) {
-
-            console.log(
-                `❌ RSS Error (${feed}):`,
-                err.message
-            );
+            console.log(`❌ RSS Error (${feed}):`, err.message);
         }
     }
 }
