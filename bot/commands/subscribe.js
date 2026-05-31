@@ -1,42 +1,27 @@
-const { createCryptoPayment } = require("../engine/nowpayService");
+const { setVIP } = require("../engine/vipEngine");
 
 module.exports = {
     name: "subscribe",
 
     async execute(message, args) {
 
-        const tier = args[0];
+        const tier = (args[0] || "").toUpperCase();
 
-        if (!tier) {
-            return message.reply("Usage: !subscribe VIP or VIP_ALPHA");
-        }
+        const valid = ["BRONZE", "SILVER", "GOLD", "DIAMOND"];
 
-        const prices = {
-            VIP: 10,
-            VIP_ALPHA: 25
-        };
-
-        if (!prices[tier]) {
-            return message.reply("Invalid plan. Use VIP or VIP_ALPHA");
-        }
-
-        try {
-            const payment = await createCryptoPayment({
-                userId: message.author.id,
-                tier,
-                priceUSD: prices[tier]
-            });
-
+        if (!valid.includes(tier)) {
             return message.reply(
-                `💎 Crypto Payment Created!\n\n` +
-                `Plan: ${tier}\n` +
-                `Price: $${prices[tier]}\n\n` +
-                `👉 Pay here:\n${payment.payUrl}`
+                "❌ Use: !subscribe BRONZE | SILVER | GOLD | DIAMOND"
             );
-
-        } catch (err) {
-            console.error(err);
-            return message.reply("❌ Payment system error.");
         }
+
+        setVIP(message.author.id, tier, 30);
+
+        message.reply(
+            `💎 VIP Activated!\n\n` +
+            `Tier: ${tier}\n` +
+            `Duration: 30 days\n` +
+            `⚡ XP Boost Enabled`
+        );
     }
 };
