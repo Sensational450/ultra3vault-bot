@@ -1,10 +1,20 @@
 const sqlite3 = require("sqlite3").verbose();
 
-const db = new sqlite3.Database("./database/main.sqlite");
+console.log("📂 Opening DB: ./database/main.sqlite");
+
+const db = new sqlite3.Database("./database/main.sqlite", (err) => {
+    if (err) {
+        console.error("❌ MAIN DB OPEN ERROR:", err.message);
+    } else {
+        console.log("✅ MAIN DB OPENED");
+    }
+});
 
 db.serialize(() => {
 
-    // ================= USERS =================
+    db.run("PRAGMA journal_mode = WAL");
+
+    // USERS
     db.run(`
         CREATE TABLE IF NOT EXISTS users (
             id TEXT PRIMARY KEY,
@@ -13,7 +23,7 @@ db.serialize(() => {
         )
     `);
 
-    // ================= RSS POSTS =================
+    // RSS POSTS
     db.run(`
         CREATE TABLE IF NOT EXISTS rss_posts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -23,7 +33,7 @@ db.serialize(() => {
         )
     `);
 
-    // ================= DAILY STREAKS =================
+    // DAILY STREAKS
     db.run(`
         CREATE TABLE IF NOT EXISTS daily_streaks (
             userId TEXT PRIMARY KEY,
@@ -32,7 +42,7 @@ db.serialize(() => {
         )
     `);
 
-    // ================= ECONOMY =================
+    // ECONOMY
     db.run(`
         CREATE TABLE IF NOT EXISTS economy (
             userId TEXT PRIMARY KEY,
