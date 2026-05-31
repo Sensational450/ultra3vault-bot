@@ -1,4 +1,4 @@
-const db = require("../../database/rewardsDB");
+const db = require("../../database/db");
 
 // ================= ADD REFERRAL =================
 function addReferral(userId) {
