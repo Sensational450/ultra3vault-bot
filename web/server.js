@@ -3,29 +3,31 @@ const axios = require("axios");
 const crypto = require("crypto");
 const path = require("path");
 
-const db = require("../database/premium");
+// ================= DB =================
+const db = require("../database/db"); // IMPORTANT: use main DB only
+const premiumDB = require("../database/premium");
 
 // ================= REFERRAL SYSTEM =================
-const { addReferral } = require("../bot/engine/referralManager");
+const { addReferral } = require("../bot/engine/economyManager");
 
 const app = express();
 
-// ================= RAW BODY (WEBHOOK SECURITY) =================
+// ================= PERFORMANCE MIDDLEWARE =================
 app.use(express.json({
     verify: (req, res, buf) => {
         req.rawBody = buf;
     }
 }));
 
-// ================= STATIC FILES =================
+// ================= STATIC FRONTEND =================
 app.use(express.static(path.join(__dirname, "public")));
 
 // ================= HEALTH CHECK =================
 app.get("/api", (req, res) => {
-    res.status(200).json({
+    res.json({
         status: "OK",
-        service: "Ultra3Vault API",
-        time: new Date().toISOString()
+        service: "Ultra3Vault",
+        time: Date.now()
     });
 });
 
@@ -34,25 +36,7 @@ app.get("/", (req, res) => {
     res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-// ================= DB INIT =================
-setImmediate(() => {
-    try {
-        db.serialize(() => {
-            db.run(`
-                CREATE TABLE IF NOT EXISTS premium_users (
-                    user_id TEXT PRIMARY KEY,
-                    expires_at INTEGER
-                )
-            `);
-        });
-
-        console.log("🧠 Database ready");
-    } catch (err) {
-        console.log("DB INIT ERROR:", err.message);
-    }
-});
-
-// ================= SIGNATURE =================
+// ================= SIGNATURE VERIFY =================
 function verifySignature(rawBody, signature) {
     const secret = process.env.WEBHOOK_SECRET;
     if (!secret || !signature || !rawBody) return false;
@@ -76,7 +60,6 @@ const PLANS = {
 app.post("/webhook", async (req, res) => {
 
     try {
-
         const signature = req.headers["x-signature"];
 
         if (!verifySignature(req.rawBody, signature)) {
@@ -112,37 +95,37 @@ app.post("/webhook", async (req, res) => {
             }
         }
 
-        console.log(`💰 PAYMENT OK → ${userId} (${plan})`);
+        console.log(`💰 PAYMENT SUCCESS → ${userId} (${plan})`);
 
         // ================= DISCORD CLIENT =================
-        let client;
-        try {
-            client = require("../bot/client");
-        } catch {
-            console.log("⚠️ Bot not ready");
-            return res.sendStatus(200);
-        }
+        const client = require("../bot/client");
 
         // ================= GIVE ROLE =================
         try {
             const guild = client.guilds.cache.first();
-            if (!guild) return res.sendStatus(200);
+            if (guild) {
+                const member = await guild.members.fetch(userId).catch(() => null);
 
-            const member = await guild.members.fetch(userId).catch(() => null);
-            if (!member) return res.sendStatus(200);
-
-            const role = guild.roles.cache.get("1509191517909024950");
-            if (role) await member.roles.add(role).catch(() => {});
-
+                if (member) {
+                    const role = guild.roles.cache.get("1509191517909024950");
+                    if (role) await member.roles.add(role).catch(() => {});
+                }
+            }
         } catch (err) {
             console.log("ROLE ERROR:", err.message);
         }
 
-        // ================= REFERRAL SYSTEM (PHASE 4) =================
+        // ================= REFERRAL SYSTEM =================
         try {
             if (referral_code) {
                 addReferral(referral_code);
                 console.log("🎯 Referral rewarded:", referral_code);
+
+                // optional reward system
+                db.run(
+                    `UPDATE referrals SET points = points + 5 WHERE code = ?`,
+                    [referral_code]
+                );
             }
         } catch (err) {
             console.log("REFERRAL ERROR:", err.message);
@@ -151,13 +134,11 @@ app.post("/webhook", async (req, res) => {
         // ================= SAVE PREMIUM =================
         const expiresAt = Date.now() + days * 86400000;
 
-        try {
-            db.run(
-                `INSERT OR REPLACE INTO premium_users (user_id, expires_at)
-                 VALUES (?, ?)`,
-                [userId, expiresAt]
-            );
-        } catch {}
+        premiumDB.run(
+            `INSERT OR REPLACE INTO premium_users (user_id, expires_at)
+             VALUES (?, ?)`,
+            [userId, expiresAt]
+        );
 
         // ================= DM USER =================
         try {
@@ -168,13 +149,12 @@ app.post("/webhook", async (req, res) => {
                     `💎 Ultra3Vault Activated!\nPlan: ${plan}\nDuration: ${days} days`
                 );
             }
-
         } catch {}
 
         res.sendStatus(200);
 
     } catch (err) {
-        console.log("WEBHOOK CRASH:", err.message);
+        console.log("WEBHOOK ERROR:", err.message);
         res.sendStatus(500);
     }
 });
