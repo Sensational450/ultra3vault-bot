@@ -1,14 +1,17 @@
 const Parser = require("rss-parser");
 const { EmbedBuilder } = require("discord.js");
 
-const db = require("../../database/db"); // ✅ SINGLE DB ONLY
+const db = require("../../database/db");
 
-// ================= FEEDS =================
+const vipRouter = require("./vipRouter"); // 🔥 IMPORTANT ADD
+
 const FEEDS = [
     "https://cointelegraph.com/rss",
     "https://www.coindesk.com/arc/outboundfeeds/rss/",
     "https://decrypt.co/feed"
 ];
+
+const parser = new Parser();
 
 // ================= MEMORY CACHE =================
 const seen = new Set();
@@ -41,18 +44,18 @@ function savePost(link, title) {
 }
 
 // ================= MAIN ENGINE =================
-const parser = new Parser();
-
 async function fetchRSS(client) {
+
     if (!client) return;
 
     for (const feed of FEEDS) {
+
         try {
             const parsed = await parser.parseURL(feed);
-
             const items = parsed.items.slice(0, 2);
 
             for (const item of items) {
+
                 if (!item?.link) continue;
 
                 if (seen.has(item.link)) continue;
@@ -63,7 +66,15 @@ async function fetchRSS(client) {
                 const title = item.title || "";
                 const content = item.contentSnippet || "";
 
-                // ================= EMBED =================
+                // ================= VIP ROUTING (NEW SYSTEM) =================
+                const vip = vipRouter.routeIntelligence?.({
+                    title,
+                    content
+                }) || {
+                    channel: "crypto-news",
+                    tier: "FREE"
+                };
+
                 const embed = new EmbedBuilder()
                     .setTitle(title)
                     .setURL(item.link)
@@ -71,17 +82,21 @@ async function fetchRSS(client) {
                     .setColor(0x00bfff)
                     .setTimestamp();
 
+                // 🔥 FIXED: dynamic channel routing
                 const channel = client.channels.cache.find(
-                    c => c.name === "crypto-news"
+                    c => c.name === vip.channel
                 );
 
-                if (!channel) continue;
+                if (!channel) {
+                    console.log(`⚠️ Channel not found: ${vip.channel}`);
+                    continue;
+                }
 
                 await channel.send({ embeds: [embed] });
 
                 savePost(item.link, title);
 
-                console.log(`✅ RSS Posted: ${title}`);
+                console.log(`✅ RSS (${vip.tier}) → ${vip.channel}: ${title}`);
             }
 
         } catch (err) {
