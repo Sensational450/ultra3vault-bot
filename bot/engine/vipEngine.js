@@ -1,74 +1,193 @@
 const db = require("../../database/db");
 
-// ================= VIP GETTER =================
+// ================= VIP TIERS =================
+const VIP_TIERS = {
+VIP: {
+multiplier: 2.0,
+days: 30
+},
+
+GOLD: {
+    multiplier: 3.0,
+    days: 30
+},
+
+PLATINUM: {
+    multiplier: 5.0,
+    days: 30
+}
+
+};
+
+// ================= GET VIP =================
 function getVIP(userId, callback) {
 
-    db.get(
-        "SELECT * FROM vip_users WHERE userId = ?",
-        [userId],
-        (err, row) => {
+db.get(
+    "SELECT * FROM vip_users WHERE userId = ?",
+    [userId],
+    (err, row) => {
 
-            if (err || !row) {
-                return callback({
-                    tier: "FREE",
-                    multiplier: 1.0,
-                    active: false,
-                    expiresAt: null
-                });
-            }
-
-            const now = Date.now();
-
-            // expired VIP cleanup
-            if (row.expiresAt && row.expiresAt < now) {
-                db.run("DELETE FROM vip_users WHERE userId = ?", [userId]);
-
-                return callback({
-                    tier: "FREE",
-                    multiplier: 1.0,
-                    active: false,
-                    expiresAt: null
-                });
-            }
-
-            callback({
-                tier: row.tier,
-                multiplier: row.multiplier,
-                active: true,
-                expiresAt: row.expiresAt
+        if (err || !row) {
+            return callback({
+                tier: "FREE",
+                multiplier: 1,
+                active: false,
+                expiresAt: null,
+                daysRemaining: 0
             });
         }
-    );
+
+        const now = Date.now();
+
+        // expired cleanup
+        if (row.expiresAt && row.expiresAt <= now) {
+
+            db.run(
+                "DELETE FROM vip_users WHERE userId = ?",
+                [userId]
+            );
+
+            return callback({
+                tier: "FREE",
+                multiplier: 1,
+                active: false,
+                expiresAt: null,
+                daysRemaining: 0
+            });
+        }
+
+        const daysRemaining = Math.ceil(
+            (row.expiresAt - now) /
+            (1000 * 60 * 60 * 24)
+        );
+
+        callback({
+            tier: row.tier,
+            multiplier: row.multiplier,
+            active: true,
+            expiresAt: row.expiresAt,
+            daysRemaining
+        });
+    }
+);
+
 }
 
-// ================= VIP GRANT =================
-function grantVIP(userId, tier = "VIP", days = 30, multiplier = 2.0) {
+// ================= GET MULTIPLIER =================
+function getMultiplier(userId, callback) {
 
-    const expiresAt = Date.now() + days * 24 * 60 * 60 * 1000;
+getVIP(userId, (vip) => {
+    callback(vip.multiplier || 1);
+});
+
+}
+
+// ================= GRANT VIP =================
+function grantVIP(
+userId,
+tier = "VIP",
+days = null
+) {
+
+const preset = VIP_TIERS[tier] || VIP_TIERS.VIP;
+
+const multiplier = preset.multiplier;
+const duration = days || preset.days;
+
+const expiresAt =
+    Date.now() +
+    duration * 24 * 60 * 60 * 1000;
+
+db.run(
+    `
+    INSERT OR REPLACE INTO vip_users
+    (userId, tier, multiplier, expiresAt)
+    VALUES (?, ?, ?, ?)
+    `,
+    [
+        userId,
+        tier,
+        multiplier,
+        expiresAt
+    ]
+);
+
+}
+
+// ================= EXTEND VIP =================
+function extendVIP(userId, extraDays = 30) {
+
+getVIP(userId, (vip) => {
+
+    const base =
+        vip.active
+            ? vip.expiresAt
+            : Date.now();
+
+    const newExpiry =
+        base +
+        extraDays *
+        24 *
+        60 *
+        60 *
+        1000;
 
     db.run(
-        `INSERT OR REPLACE INTO vip_users (userId, tier, multiplier, expiresAt)
-         VALUES (?, ?, ?, ?)`,
-        [userId, tier, multiplier, expiresAt]
+        `
+        UPDATE vip_users
+        SET expiresAt = ?
+        WHERE userId = ?
+        `,
+        [newExpiry, userId]
     );
+});
+
 }
 
-// ================= VIP REMOVE =================
+// ================= REMOVE VIP =================
 function removeVIP(userId) {
-    db.run("DELETE FROM vip_users WHERE userId = ?", [userId]);
+
+db.run(
+    "DELETE FROM vip_users WHERE userId = ?",
+    [userId]
+);
+
 }
 
-// ================= CHECK VIP BOOLEAN =================
+// ================= BOOLEAN CHECK =================
 function isVIP(userId, callback) {
 
-    getVIP(userId, (vip) => {
-        callback(vip.active);
-    });
+getVIP(userId, (vip) => {
+    callback(vip.active);
+});
+
 }
 
+// ================= CLEANUP =================
+function cleanupExpiredVIPs() {
+
+db.run(
+    `
+    DELETE FROM vip_users
+    WHERE expiresAt <= ?
+    `,
+    [Date.now()]
+);
+
+}
+
+// ================= EXPORTS =================
 module.exports = {
-    getVIP,
-    grantVIP,
-    removeVIP,
-    isVIP
+VIP_TIERS,
+
+getVIP,
+getMultiplier,
+
+grantVIP,
+extendVIP,
+removeVIP,
+
+isVIP,
+cleanupExpiredVIPs
+
 };
