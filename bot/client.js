@@ -5,6 +5,8 @@ const path = require("path");
 // ================= ENGINES =================
 let handleMessage;
 let handleReferral;
+let cacheInvites;
+let trackMember;
 
 try {
 ({ handleMessage } = require("./engine/engagementEngine"));
@@ -16,6 +18,12 @@ try {
 ({ handleReferral } = require("./engine/referralEngine"));
 } catch (e) {
 console.log("⚠️ Referral engine missing");
+}
+
+try {
+({ cacheInvites, trackMember } = require("./engine/inviteTracker"));
+} catch (e) {
+console.log("⚠️ Invite tracker missing");
 }
 
 // ================= CLIENT =================
@@ -74,7 +82,7 @@ if (message.author.bot) return;
 
 try {
 
-    // ================= XP ENGINE =================
+    // ================= ENGAGEMENT ENGINE =================
     if (handleMessage) {
         handleMessage(message);
     }
@@ -110,28 +118,44 @@ try {
 
 });
 
-// ================= MEMBER JOIN (REFERRAL HOOK READY) =================
-client.on("guildMemberAdd", (member) => {
+// ================= MEMBER JOIN (REAL REFERRAL SYSTEM) =================
+client.on("guildMemberAdd", async (member) => {
 
 try {
 
-    if (handleReferral) {
-        // placeholder (real tracking comes in v2.6)
-        handleReferral("UNKNOWN", member.id);
+    // REAL invite tracking (v2.6 core fix)
+    if (trackMember) {
+        await trackMember(member);
     }
 
 } catch (err) {
-    console.log("❌ REFERRAL ERROR:", err.message);
+    console.log("❌ REFERRAL TRACKING ERROR:", err.message);
 }
 
 });
 
 // ================= READY EVENT =================
-client.once("clientReady", () => {
+client.once("clientReady", async () => {
 
 console.log("🤖 ULTRA3 SYSTEM ONLINE");
-console.log("🚀 CORE ENGINE v2.5 ACTIVE");
-console.log("📡 ENGAGEMENT + REFERRAL READY");
+console.log("🚀 CORE ENGINE v2.6 ACTIVE");
+console.log("🔗 REFERRAL TRACKING ENABLED");
+
+// ================= INIT INVITE CACHE =================
+try {
+    const guilds = client.guilds.cache;
+
+    for (const guild of guilds.values()) {
+
+        if (cacheInvites) {
+            await cacheInvites(guild);
+        }
+    }
+
+    console.log("🔗 Invite cache initialized");
+} catch (err) {
+    console.log("❌ Invite cache error:", err.message);
+}
 
 });
 
