@@ -3,14 +3,28 @@ const fs = require("fs");
 const path = require("path");
 
 // ================= ENGINES =================
-// FIXED PATH
-const { handleMessage } = require("./engine/engagementEngine");
+let handleMessage;
+let handleReferral;
 
+try {
+({ handleMessage } = require("./engine/engagementEngine"));
+} catch (e) {
+console.log("⚠️ Engagement engine missing");
+}
+
+try {
+({ handleReferral } = require("./engine/referralEngine"));
+} catch (e) {
+console.log("⚠️ Referral engine missing");
+}
+
+// ================= CLIENT =================
 const client = new Client({
 intents: [
 GatewayIntentBits.Guilds,
 GatewayIntentBits.GuildMessages,
-GatewayIntentBits.MessageContent
+GatewayIntentBits.MessageContent,
+GatewayIntentBits.GuildMembers
 ]
 });
 
@@ -18,9 +32,9 @@ GatewayIntentBits.MessageContent
 client.commands = new Collection();
 client.cooldowns = new Map();
 
+// ================= LOAD COMMANDS =================
 const commandPath = path.join(__dirname, "commands");
 
-// ================= LOAD COMMANDS =================
 function loadCommands() {
 
 if (!fs.existsSync(commandPath)) {
@@ -37,15 +51,15 @@ for (const file of files) {
         const cmd = require(path.join(commandPath, file));
 
         if (!cmd?.name || typeof cmd.execute !== "function") {
-            console.log(`⚠️ Invalid command skipped: ${file}`);
             continue;
         }
 
         client.commands.set(cmd.name, cmd);
+
         console.log(`✅ Loaded command: ${cmd.name}`);
 
     } catch (err) {
-        console.log(`❌ Failed loading ${file}:`, err.message);
+        console.log(`❌ Command error ${file}:`, err.message);
     }
 }
 
@@ -56,58 +70,58 @@ loadCommands();
 // ================= MESSAGE SYSTEM =================
 client.on("messageCreate", async (message) => {
 
+if (message.author.bot) return;
+
 try {
 
-    if (message.author.bot) return;
+    // ================= XP ENGINE =================
+    if (handleMessage) {
+        handleMessage(message);
+    }
 
-    // ================= ENGAGEMENT XP =================
-    handleMessage(message);
-
+    // ================= COMMAND SYSTEM =================
     if (!message.content.startsWith("!")) return;
 
     const args = message.content.slice(1).trim().split(/\s+/);
     const commandName = args.shift().toLowerCase();
 
     const command = client.commands.get(commandName);
-
     if (!command) return;
 
     // ================= COOLDOWN =================
-    const now = Date.now();
     const key = `${message.author.id}_${commandName}`;
-    const cooldownTime = 3000;
+    const now = Date.now();
 
     if (client.cooldowns.has(key)) {
-
         const last = client.cooldowns.get(key);
 
-        if (now - last < cooldownTime) {
-            return message.reply(
-                "⏳ Slow down! Try again shortly."
-            );
+        if (now - last < 3000) {
+            return message.reply("⏳ Slow down!");
         }
     }
 
     client.cooldowns.set(key, now);
 
-    await command.execute(
-        message,
-        args,
-        client
-    );
+    await command.execute(message, args, client);
 
 } catch (err) {
+    console.log("❌ MESSAGE ERROR:", err.message);
+}
 
-    console.log(
-        "❌ MESSAGE HANDLER ERROR:",
-        err?.stack || err
-    );
+});
 
-    try {
-        await message.reply(
-            "❌ Command failed safely."
-        );
-    } catch {}
+// ================= MEMBER JOIN (REFERRAL HOOK READY) =================
+client.on("guildMemberAdd", (member) => {
+
+try {
+
+    if (handleReferral) {
+        // placeholder (real tracking comes in v2.6)
+        handleReferral("UNKNOWN", member.id);
+    }
+
+} catch (err) {
+    console.log("❌ REFERRAL ERROR:", err.message);
 }
 
 });
@@ -115,25 +129,19 @@ try {
 // ================= READY EVENT =================
 client.once("clientReady", () => {
 
-console.log("🤖 BOT ONLINE:", client.user.tag);
-console.log("🚀 CORE SYSTEM v3.0 ACTIVE");
-console.log("📡 ENGAGEMENT ENGINE ENABLED");
+console.log("🤖 ULTRA3 SYSTEM ONLINE");
+console.log("🚀 CORE ENGINE v2.5 ACTIVE");
+console.log("📡 ENGAGEMENT + REFERRAL READY");
 
 });
 
 // ================= GLOBAL SAFETY =================
 process.on("uncaughtException", (err) => {
-console.log(
-"💥 UNCAUGHT EXCEPTION:",
-err?.stack || err
-);
+console.log("💥 UNCAUGHT:", err.message);
 });
 
 process.on("unhandledRejection", (err) => {
-console.log(
-"💥 UNHANDLED REJECTION:",
-err?.stack || err
-);
+console.log("💥 REJECTION:", err.message);
 });
 
 module.exports = client;
