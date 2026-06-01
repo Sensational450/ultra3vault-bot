@@ -1,19 +1,44 @@
+const {
+getReferralStats,
+getReferralCode
+} = require("../engine/referralEngine");
+
 module.exports = {
-    name: "invite",
+name: "invite",
 
-    async execute(message) {
+async execute(message) {
 
-        return message.reply(
-`🔗 ULTRA3 INVITE SYSTEM
+    const userId = message.author.id;
 
-Invite friends to grow the community.
+    getReferralStats(userId, (data) => {
 
-🎯 Benefits:
-+ XP boost for every invite
-+ Leaderboard ranking increase
-+ Future VIP rewards
+        const code = data.code || getReferralCode(userId);
 
-👉 Keep building your trader rank in Ultra3`
-        );
-    }
+        message.reply(
+
+`🔗 ULTRA3 REFERRAL SYSTEM
+
+━━━━━━━━━━━━━━━━━━
+👤 Your Code:
+`${code}`
+
+👥 Total Invites:
+${data.invites || 0}
+
+💰 Earned Points:
+${data.points || 0}
+
+━━━━━━━━━━━━━━━━━━
+
+🎯 REWARDS:
++100 XP per invite
++50 points per invite
++Level boost for active referrals
+
+━━━━━━━━━━━━━━━━━━
+
+🚀 Share your code and grow your rank!`
+);
+});
+}
 };
