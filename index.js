@@ -1,22 +1,25 @@
-console.log("🧠 STARTUP DEBUG ACTIVE (PHASE 4 CORE)");
+console.log("🧠 ULTRA3 AI SYSTEM BOOTING (v5 CORE)");
 
 // ================= ERROR HANDLERS =================
 process.on("uncaughtException", (err) => {
-    console.error("💥 UNCAUGHT EXCEPTION:");
-    console.error(err?.stack || err);
+    console.error("💥 UNCAUGHT EXCEPTION:", err?.stack || err);
 });
 
 process.on("unhandledRejection", (err) => {
-    console.error("💥 UNHANDLED REJECTION:");
-    console.error(err?.stack || err);
+    console.error("💥 UNHANDLED REJECTION:", err?.stack || err);
 });
 
 // ================= CORE IMPORTS =================
 const client = require("./bot/client");
+
 const fetchRSS = require("./bot/engine/rssEngine");
 const fetchPrices = require("./bot/engine/priceEngine");
+
 const { attachClient } = require("./web/server");
 const { cleanupExpired } = require("./bot/engine/subscriptionManager");
+
+// 🧠 NEW: ORCHESTRATOR (IMPORTANT CONNECTION)
+const { runOrchestrator } = require("./bot/engine/ai/orchestrator");
 
 // ================= STATE =================
 let started = false;
@@ -28,25 +31,26 @@ async function safeRun(name, fn) {
         console.log(`⚙️ Running: ${name}`);
         return await fn();
     } catch (err) {
-        console.error(`❌ ${name} FAILED:`);
-        console.error(err?.stack || err);
+        console.error(`❌ ${name} FAILED:`, err?.stack || err);
     }
 }
 
-// ================= READY EVENT =================
+// ================= READY =================
 client.once("ready", async () => {
 
     if (started) return;
     started = true;
 
     console.log("🤖 BOT ONLINE:", client.user.tag);
-    console.log("📡 SYSTEM INITIALIZING...");
+    console.log("🚀 AI SYSTEM v5 ACTIVE");
 
     attachClient?.(client);
 
-    // ================= ENGINE START =================
-    await safeRun("RSS STARTUP", () => fetchRSS(client));
-    await safeRun("PRICE STARTUP", () => fetchPrices(client));
+    // ================= RSS ENGINE =================
+    await safeRun("RSS INIT", () => fetchRSS(client));
+
+    // ================= PRICE ENGINE =================
+    await safeRun("PRICE INIT", () => fetchPrices(client));
 
     // ================= LOOPS =================
     intervals.push(setInterval(() =>
@@ -60,28 +64,23 @@ client.once("ready", async () => {
     ));
 
     intervals.push(setInterval(() =>
-        safeRun("CLEANUP LOOP", () => cleanupExpired(client)),
+        safeRun("CLEANUP", () => cleanupExpired(client)),
         60 * 60 * 1000
     ));
 
-    // ================= HEALTH CHECK =================
-    intervals.push(setInterval(() => {
-        console.log(`📊 HEALTH CHECK:
-Memory: ${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB
-Uptime: ${Math.floor(process.uptime())}s
-Status: ACTIVE`);
-    }, 5 * 60 * 1000));
-
-    console.log("🚀 SYSTEM STABLE CORE RUNNING (PHASE 4 READY)");
+    console.log("🚀 SYSTEM FULLY CONNECTED (v5 ACTIVE)");
 });
 
-// ================= SHUTDOWN =================
-process.on("SIGINT", () => {
-    console.log("⚠️ SHUTTING DOWN...");
-    intervals.forEach(clearInterval);
-    console.log("✅ CLEAN SHUTDOWN COMPLETE");
-    process.exit(0);
-});
+// ================= GLOBAL EVENT PIPELINE =================
+// THIS IS THE MOST IMPORTANT CONNECTION YOU WERE MISSING
+function routeToAI(event) {
+
+    if (!runOrchestrator) return;
+
+    runOrchestrator(event, {
+        client
+    });
+}
 
 // ================= LOGIN =================
 client.login(process.env.TOKEN);
