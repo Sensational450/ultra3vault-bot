@@ -1,7 +1,6 @@
 const sqlite3 = require("sqlite3").verbose();
 const path = require("path");
 
-// ================= SINGLETON =================
 let dbInstance = null;
 
 function getDB() {
@@ -14,31 +13,25 @@ function getDB() {
 
     dbInstance = new sqlite3.Database(dbPath, (err) => {
         if (err) console.error("❌ DB ERROR:", err.message);
-        else console.log("🧠 MAIN DB CONNECTED (v3.1 AI CORE)");
+        else console.log("🧠 MAIN DB CONNECTED (v3.2 SAAS AI CORE)");
     });
 
     dbInstance.serialize(() => {
 
-        // ================= PERFORMANCE =================
         dbInstance.run("PRAGMA journal_mode = WAL");
         dbInstance.run("PRAGMA busy_timeout = 5000");
 
-        // ================= USERS CORE =================
+        // ================= USERS =================
         dbInstance.run(`
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY,
-
                 tier TEXT DEFAULT 'FREE',
                 expiresAt INTEGER DEFAULT 0,
-
                 xp INTEGER DEFAULT 0,
                 level INTEGER DEFAULT 1,
-
                 messages INTEGER DEFAULT 0,
                 invites INTEGER DEFAULT 0,
-
                 points INTEGER DEFAULT 0,
-
                 streak INTEGER DEFAULT 0,
                 lastDaily INTEGER DEFAULT 0
             )
@@ -52,7 +45,7 @@ function getDB() {
             )
         `);
 
-        // ================= DAILY SYSTEM =================
+        // ================= DAILY =================
         dbInstance.run(`
             CREATE TABLE IF NOT EXISTS daily_streaks (
                 userId TEXT PRIMARY KEY,
@@ -72,7 +65,7 @@ function getDB() {
             )
         `);
 
-        // ================= RSS EVENTS =================
+        // ================= RSS =================
         dbInstance.run(`
             CREATE TABLE IF NOT EXISTS rss_posts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,7 +75,7 @@ function getDB() {
             )
         `);
 
-        // ================= VIP SYSTEM =================
+        // ================= VIP =================
         dbInstance.run(`
             CREATE TABLE IF NOT EXISTS vip_users (
                 userId TEXT PRIMARY KEY,
@@ -103,7 +96,7 @@ function getDB() {
             )
         `);
 
-        // ================= REDEEM CODES =================
+        // ================= REDEEM =================
         dbInstance.run(`
             CREATE TABLE IF NOT EXISTS redeem_codes (
                 code TEXT PRIMARY KEY,
@@ -133,7 +126,7 @@ function getDB() {
             )
         `);
 
-        // ================= 💰 REVENUE SYSTEM =================
+        // ================= REVENUE =================
         dbInstance.run(`
             CREATE TABLE IF NOT EXISTS revenue (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -143,30 +136,27 @@ function getDB() {
                 amount REAL DEFAULT 0,
                 currency TEXT DEFAULT 'USD',
                 source TEXT,
+                aiTriggered INTEGER DEFAULT 0,
                 createdAt INTEGER DEFAULT (strftime('%s','now'))
             )
         `);
 
-        // ================= 🧠 AI USER MEMORY SYSTEM v2.2 =================
+        // ================= USER MEMORY AI =================
         dbInstance.run(`
             CREATE TABLE IF NOT EXISTS user_memory (
                 userId TEXT PRIMARY KEY,
-
                 engagementScore INTEGER DEFAULT 0,
                 activityScore INTEGER DEFAULT 0,
                 monetizationScore INTEGER DEFAULT 0,
-
                 lastSeen INTEGER,
                 totalMessages INTEGER DEFAULT 0,
-
                 vipLikelihood REAL DEFAULT 0,
                 churnRisk REAL DEFAULT 0,
-
                 xpVelocity REAL DEFAULT 0
             )
         `);
 
-        // ================= 🧠 AI EVENT BUFFER (NEW) =================
+        // ================= EVENT SYSTEM =================
         dbInstance.run(`
             CREATE TABLE IF NOT EXISTS event_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -177,7 +167,7 @@ function getDB() {
             )
         `);
 
-        // ================= 🧠 AI DECISIONS (NEW) =================
+        // ================= AI DECISIONS =================
         dbInstance.run(`
             CREATE TABLE IF NOT EXISTS ai_decisions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -190,7 +180,22 @@ function getDB() {
             )
         `);
 
-        console.log("💰 DATABASE READY (v3.1 FULL AI + MONETIZATION CORE)");
+        // ================= REVENUE ANALYTICS (NEW) =================
+        dbInstance.run(`
+            CREATE TABLE IF NOT EXISTS revenue_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                userId TEXT,
+                itemType TEXT,
+                itemId TEXT,
+                amount REAL DEFAULT 0,
+                currency TEXT DEFAULT 'USD',
+                source TEXT,
+                aiTriggered INTEGER DEFAULT 0,
+                createdAt INTEGER DEFAULT (strftime('%s','now'))
+            )
+        `);
+
+        console.log("💰 DATABASE READY (v3.2 FULL SAAS AI MONETIZATION)");
     });
 
     return dbInstance;
