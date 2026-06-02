@@ -1,8 +1,6 @@
 const { runOrchestrator } = require("../ai/orchestrator");
-const { handleMessage } = require("../engagementEngine");
 const { updateFromMessage } = require("../userMemoryEngine");
 const { trackRevenue } = require("../revenueEngine");
-const { runMonetizationAI } = require("../aiMonetizationEngine");
 
 // ================= GLOBAL EVENT BUS =================
 async function emitEvent(event, context = {}) {
@@ -11,41 +9,49 @@ async function emitEvent(event, context = {}) {
 
         const { type, userId } = event;
 
-        // ================= 1. MEMORY UPDATE =================
-        if (updateFromMessage && userId && type === "MESSAGE") {
-            updateFromMessage(userId, event.message, event.user);
-        }
-
-        // ================= 2. ENGAGEMENT ENGINE =================
-        if (type === "MESSAGE" && event.message) {
-            handleMessage(event.message);
-        }
-
-        // ================= 3. REVENUE EVENTS =================
-        if (type === "REVENUE") {
-            trackRevenue(event.data);
-        }
-
-        // ================= 4. AI ORCHESTRATOR =================
-        if (runOrchestrator) {
-            runOrchestrator(event, context);
-        }
-
-        // ================= 5. MONETIZATION AI =================
-        if (runMonetizationAI && type === "MESSAGE") {
-            runMonetizationAI(
+        // ================= MEMORY =================
+        if (
+            type === "MESSAGE" &&
+            userId &&
+            updateFromMessage &&
+            event.message &&
+            event.user
+        ) {
+            updateFromMessage(
+                userId,
                 event.message,
-                event.user,
-                {},
-                event.message.channel
+                event.user
             );
         }
 
-        // ================= LOG =================
-        console.log("🧠 EVENT BUS PROCESSED:", type);
+        // ================= REVENUE =================
+        if (
+            type === "REVENUE" &&
+            trackRevenue &&
+            event.data
+        ) {
+            trackRevenue(event.data);
+        }
+
+        // ================= AI ORCHESTRATOR =================
+        if (runOrchestrator) {
+            await runOrchestrator(
+                event,
+                context
+            );
+        }
+
+        console.log(
+            `🧠 EVENT BUS → ${type}`
+        );
 
     } catch (err) {
-        console.log("❌ EVENT BUS ERROR:", err.message);
+
+        console.log(
+            "❌ EVENT BUS ERROR:",
+            err.message
+        );
+
     }
 }
 
