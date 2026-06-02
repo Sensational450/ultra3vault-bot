@@ -2,12 +2,20 @@ const { addXP, getUser } = require("./levelingEngine");
 const { getVIP } = require("./vipEngine");
 const { getBooster } = require("./boosterEngine");
 
-// 🧠 AI MONETIZATION ENGINE (OPTIONAL MODULE)
+// 🧠 OPTIONAL AI MONETIZATION ENGINE
 let runMonetizationAI = null;
 try {
     ({ runMonetizationAI } = require("./aiMonetizationEngine"));
 } catch (e) {
     console.log("⚠️ AI Monetization Engine not found (safe mode)");
+}
+
+// 🧠 OPTIONAL USER MEMORY SYSTEM (v2.3 READY)
+let updateFromMessage = null;
+try {
+    ({ updateFromMessage } = require("./userMemoryEngine"));
+} catch (e) {
+    console.log("⚠️ User Memory Engine not found (safe mode)");
 }
 
 // ================= CORE STATE =================
@@ -26,7 +34,7 @@ const COOLDOWN_TIME = 5000;
 const PRESSURE_COOLDOWN_TIME = 30000;
 const AI_COOLDOWN_TIME = 60000;
 
-// ================= MESSAGE QUALITY =================
+// ================= MESSAGE QUALITY ENGINE =================
 function getMessageQuality(message) {
     const text = message.content || "";
     let score = 0;
@@ -82,7 +90,7 @@ function applyMonetizationPressure(message, user, totalMessages) {
     }
 }
 
-// ================= AI ENGINE (SAFE + CONTROLLED) =================
+// ================= AI ENGINE =================
 function runAIEngine(message, user, vip, booster) {
 
     if (!runMonetizationAI) return;
@@ -145,23 +153,30 @@ function handleMessage(message) {
 
         if (!user) return;
 
+        // ================= VIP =================
         getVIP(userId, (vip) => {
 
             const vipMultiplier = vip?.multiplier || 1;
 
+            // ================= BOOSTER =================
             getBooster(userId, (booster) => {
 
                 const boosterMultiplier = booster?.multiplier || 1;
 
+                // ================= LEVEL BONUS =================
                 let levelBonus = 1;
                 if (user.level >= 50) levelBonus = 5;
                 else if (user.level >= 30) levelBonus = 4;
                 else if (user.level >= 20) levelBonus = 3;
                 else if (user.level >= 10) levelBonus = 2;
 
-                const finalXP = Math.floor(
+                // ================= FINAL XP =================
+                let finalXP = Math.floor(
                     xp * vipMultiplier * boosterMultiplier * levelBonus
                 );
+
+                // ================= SAFETY CLAMP (ANTI EXPLOIT) =================
+                if (finalXP > 200) finalXP = 200;
 
                 // ================= PRESSURE SYSTEM =================
                 applyMonetizationPressure(message, user, totalMessages);
@@ -169,8 +184,18 @@ function handleMessage(message) {
                 // ================= AI SYSTEM =================
                 runAIEngine(message, user, vip, booster);
 
+                // ================= MEMORY SYSTEM (v2.3 READY) =================
+                if (updateFromMessage) {
+                    try {
+                        updateFromMessage(userId, message, user);
+                    } catch (e) {
+                        console.log("MEMORY ERROR:", e.message);
+                    }
+                }
+
                 // ================= XP SYSTEM =================
                 addXP(userId, finalXP, (levelUp) => {
+
                     if (levelUp) {
                         message.channel.send(
 `🎉 <@${userId}> reached **Level ${levelUp.newLevel}** 🚀`
