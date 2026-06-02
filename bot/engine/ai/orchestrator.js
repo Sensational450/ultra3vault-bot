@@ -1,80 +1,127 @@
 const { getUserMemory } = require("../engine/userMemoryEngine");
 
-// ================= AGENT REGISTRY =================
-const agents = {};
+// ================= IMPORT AGENTS =================
+const rssAgent = require("../agents/rssAgent");
+const engagementAgent = require("../agents/engagementAgent");
+const monetizationAgent = require("../agents/monetizationAgent");
+const memoryAgent = require("../agents/memoryAgent");
+const riskAgent = require("../agents/riskAgent");
 
-// ================= ORCHESTRATOR =================
+// ================= ORCHESTRATOR CORE =================
 async function runOrchestrator(event, context = {}) {
 
-    const memory = await getMemory(event.userId);
+    try {
 
-    const decision = await makeDecision(event, memory);
+        const memory = await getMemory(event.userId);
 
-    executeAgents(event, decision, context);
+        const enrichedContext = {
+            ...context,
+            memory,
+            isActive: context.isActive || false,
+            spamDetected: context.spamDetected || false
+        };
+
+        const decision = await makeDecision(event, memory);
+
+        executeAgents(event, decision, enrichedContext);
+
+    } catch (err) {
+        console.log("❌ ORCHESTRATOR ERROR:", err.message);
+    }
 }
 
 // ================= MEMORY LOADER =================
 function getMemory(userId) {
+
     return new Promise((resolve) => {
+
         if (!userId) return resolve(null);
-        getUserMemory(userId, (data) => resolve(data));
+
+        getUserMemory(userId, (data) => {
+            resolve(data || null);
+        });
     });
 }
 
-// ================= AI DECISION ENGINE =================
+// ================= AI DECISION ENGINE (IMPROVED v4.0) =================
 async function makeDecision(event, memory) {
 
-    const score = {
-        engagement: memory?.engagementScore || 0,
-        monetization: memory?.monetizationScore || 0,
-        vip: memory?.vipLikelihood || 0,
-        churn: memory?.churnRisk || 0
-    };
+    const m = memory || {};
+
+    const engagement = m.engagementScore || 0;
+    const monetization = m.monetizationScore || 0;
+    const vip = m.vipLikelihood || 0;
+    const churn = m.churnRisk || 0;
+
+    // ================= INTELLIGENCE SCORE =================
+    const intelligenceScore =
+        (engagement * 0.4) +
+        (monetization * 0.3) +
+        (vip * 0.2) -
+        (churn * 0.5);
 
     return {
-        engagement: score.engagement > 5,
-        monetization: score.monetization > 3,
+        engagement: engagement > 5 || event.type === "MESSAGE",
+        monetization: monetization > 3 || vip > 60,
         memoryUpdate: true,
         rss: event.type === "RSS",
-        risk: score.churn > 60,
-        broadcast: event.priority === "HIGH"
+        risk: churn > 60,
+        broadcast: event.priority === "HIGH",
+
+        // NEW v4.0 SIGNAL
+        highValueUser: intelligenceScore > 25,
+        lowValueUser: intelligenceScore < 5
     };
 }
 
 // ================= EXECUTION LAYER =================
 function executeAgents(event, decision, context) {
 
-    if (decision.engagement) {
-        agents.engagement?.(event, context);
-    }
+    // ================= MEMORY AGENT (ALWAYS RUN) =================
+    memoryAgent?.handle(event, context);
 
-    if (decision.monetization) {
-        agents.monetization?.(event, context);
-    }
-
-    if (decision.memoryUpdate) {
-        agents.memory?.(event, context);
-    }
-
+    // ================= RSS =================
     if (decision.rss) {
-        agents.rss?.(event, context);
+        rssAgent?.handle(event, context);
     }
 
+    // ================= ENGAGEMENT =================
+    if (decision.engagement) {
+        engagementAgent?.handle(event, context);
+    }
+
+    // ================= MONETIZATION =================
+    if (decision.monetization) {
+        monetizationAgent?.handle(event, context);
+    }
+
+    // ================= RISK SYSTEM =================
     if (decision.risk) {
-        agents.risk?.(event, context);
+        riskAgent?.handle(event, context);
     }
 
+    // ================= HIGH VALUE USER BOOST =================
+    if (decision.highValueUser) {
+        monetizationAgent?.handle(event, {
+            ...context,
+            mode: "VIP_PRIORITY"
+        });
+    }
+
+    // ================= LOW VALUE USER RECOVERY =================
+    if (decision.lowValueUser) {
+        riskAgent?.handle(event, {
+            ...context,
+            mode: "RECOVERY"
+        });
+    }
+
+    // ================= BROADCAST SYSTEM =================
     if (decision.broadcast) {
-        agents.broadcast?.(event, context);
+        console.log("📢 BROADCAST EVENT:", event.type);
     }
-}
-
-// ================= REGISTER AGENTS =================
-function registerAgent(name, fn) {
-    agents[name] = fn;
 }
 
 module.exports = {
-    runOrchestrator,
-    registerAgent
+    runOrchestrator
 };
