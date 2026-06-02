@@ -6,6 +6,7 @@ const { getBooster } = require("./boosterEngine");
 const cooldown = new Map();
 const lastActive = new Map();
 const messageCount = new Map();
+const pressureCooldown = new Map();
 
 // ================= CONFIG =================
 const BASE_MIN_XP = 1;
@@ -14,7 +15,9 @@ const BASE_MAX_XP = 5;
 const AFK_THRESHOLD = 60 * 1000;
 const COOLDOWN_TIME = 5000;
 
-// ================= MESSAGE QUALITY =================
+const PRESSURE_COOLDOWN_TIME = 30000; // prevent spam messages
+
+// ================= MESSAGE QUALITY ENGINE =================
 function getMessageQuality(message) {
 
     const text = message.content || "";
@@ -31,39 +34,49 @@ function getMessageQuality(message) {
     return Math.min(score, 4);
 }
 
-// ================= PRESSURE SYSTEM =================
+// ================= PRESSURE SYSTEM (SMART + CONTROLLED) =================
 function applyMonetizationPressure(message, user, totalMessages) {
 
     const userId = message.author.id;
+    const now = Date.now();
 
-    // ================= XP SLOWDOWN PRESSURE =================
+    const key = `${userId}_pressure`;
+
+    if (pressureCooldown.has(key)) {
+        const last = pressureCooldown.get(key);
+        if (now - last < PRESSURE_COOLDOWN_TIME) return;
+    }
+
+    pressureCooldown.set(key, now);
+
+    const xpProgress = user.xp % 100;
+
+    // ================= XP SLOWDOWN AWARENESS =================
     if (totalMessages % 40 === 0) {
         message.channel.send(
-`📊 <@${userId}> you're progressing steadily...
+`📊 <@${userId}> progress check...
 
-💡 VIP users gain XP 2x faster
-⚡ Boosters accelerate leveling`
+⚡ VIP users earn XP faster
+🚀 Boosters accelerate leveling`
         );
     }
 
     // ================= LEVEL NEAR-UP ALERT =================
-    const xpProgress = user.xp % 100;
-
     if (xpProgress > 80) {
         message.channel.send(
 `🎯 <@${userId}> you're close to leveling up!
 
-⚡ Use boosters to reach it instantly`
+⚡ Tip: boosters can finish levels instantly`
         );
     }
 
     // ================= LEADERBOARD PRESSURE =================
-    if (user.level % 10 === 0) {
+    if (user.level % 10 === 0 && user.level > 0) {
         message.channel.send(
-`🏆 <@${userId}> milestone reached!
+`🏆 <@${userId}> milestone unlocked!
 
 🔥 You're climbing the leaderboard
-💎 VIP helps you rank faster`
+💎 VIP gives competitive advantage`
         );
     }
 }
@@ -83,7 +96,7 @@ function handleMessage(message) {
     }
     cooldown.set(userId, now);
 
-    // ================= ACTIVITY =================
+    // ================= ACTIVITY TRACKING =================
     const lastSeen = lastActive.get(userId) || 0;
     const isActive = (now - lastSeen) < AFK_THRESHOLD;
 
@@ -98,25 +111,28 @@ function handleMessage(message) {
         Math.floor(Math.random() * (BASE_MAX_XP - BASE_MIN_XP + 1)) +
         BASE_MIN_XP;
 
+    // ================= QUALITY BONUS =================
     xp += getMessageQuality(message);
+
+    // ================= ACTIVE USER BONUS =================
     if (isActive) xp += 2;
 
-    // ================= USER DATA =================
+    // ================= USER DATA PIPE =================
     getUser(userId, (user) => {
 
         if (!user) return;
 
-        // ================= VIP =================
+        // ================= VIP SYSTEM =================
         getVIP(userId, (vip) => {
 
             const vipMultiplier = vip?.multiplier || 1;
 
-            // ================= BOOSTER =================
+            // ================= BOOSTER SYSTEM =================
             getBooster(userId, (booster) => {
 
                 const boosterMultiplier = booster?.multiplier || 1;
 
-                // ================= LEVEL BONUS =================
+                // ================= LEVEL BONUS SYSTEM =================
                 let levelBonus = 1;
 
                 if (user.level >= 50) levelBonus = 5;
@@ -124,15 +140,15 @@ function handleMessage(message) {
                 else if (user.level >= 20) levelBonus = 3;
                 else if (user.level >= 10) levelBonus = 2;
 
-                // ================= FINAL XP =================
+                // ================= FINAL XP CALCULATION =================
                 const finalXP = Math.floor(
                     xp * vipMultiplier * boosterMultiplier * levelBonus
                 );
 
-                // ================= APPLY PRESSURE SYSTEM =================
+                // ================= MONETIZATION PRESSURE =================
                 applyMonetizationPressure(message, user, totalMessages);
 
-                // ================= ADD XP =================
+                // ================= APPLY XP =================
                 addXP(userId, finalXP, (levelUp) => {
 
                     if (levelUp) {
