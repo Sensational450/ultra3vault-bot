@@ -1,23 +1,35 @@
 module.exports = {
 
+    async vote(event, context) {
+
+        const m = context.memory;
+
+        if (!m) return { vote: 0, action: "NONE" };
+
+        if (m.vipLikelihood > 70) {
+            return {
+                vote: 90,
+                action: "MONETIZE",
+                confidence: 0.9
+            };
+        }
+
+        if (m.churnRisk > 60) {
+            return {
+                vote: 80,
+                action: "RISK",
+                confidence: 0.8
+            };
+        }
+
+        return {
+            vote: 10,
+            action: "ENGAGE",
+            confidence: 0.3
+        };
+    },
+
     handle(event, context) {
-
-        const user = event.userMemory;
-
-        if (!user) return;
-
-        console.log("💰 MONETIZATION AGENT:", event.userId);
-
-        if (user.vipLikelihood > 60) {
-            console.log("👑 VIP OFFER SHOULD BE SHOWN");
-        }
-
-        if (user.xpVelocity > 15) {
-            console.log("⚡ BOOSTER OFFER RECOMMENDED");
-        }
-
-        if (user.churnRisk > 60) {
-            console.log("💔 CHURN RECOVERY OFFER");
-        }
+        console.log("💰 Monetization executed:", event.type);
     }
 };
