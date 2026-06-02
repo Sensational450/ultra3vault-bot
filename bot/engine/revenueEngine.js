@@ -5,17 +5,24 @@ function trackRevenue({
     userId,
     itemType,
     itemId,
-    amount,
-    source = "shop"
+    amount = 0,
+    currency = "USD",
+    source = "system"
 }) {
 
     db.run(
-        `
-        INSERT INTO revenue
-        (userId, itemType, itemId, amount, source)
-        VALUES (?, ?, ?, ?, ?)
-        `,
-        [userId, itemType, itemId, amount, source]
+        `INSERT INTO revenue
+        (userId, itemType, itemId, amount, currency, source, createdAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+            userId,
+            itemType,
+            itemId,
+            amount,
+            currency,
+            source,
+            Date.now()
+        ]
     );
 }
 
@@ -23,10 +30,7 @@ function trackRevenue({
 function getTotalRevenue(callback) {
 
     db.get(
-        `
-        SELECT SUM(amount) as total
-        FROM revenue
-        `,
+        `SELECT SUM(amount) as total FROM revenue`,
         [],
         (err, row) => {
             callback(row?.total || 0);
@@ -34,34 +38,63 @@ function getTotalRevenue(callback) {
     );
 }
 
-// ================= USER REVENUE =================
-function getUserRevenue(userId, callback) {
+// ================= DAILY REVENUE =================
+function getDailyRevenue(callback) {
+
+    const today = Date.now() - 86400000;
 
     db.get(
-        `
-        SELECT SUM(amount) as total
-        FROM revenue
-        WHERE userId = ?
-        `,
-        [userId],
+        `SELECT SUM(amount) as total
+         FROM revenue
+         WHERE createdAt >= ?`,
+        [today],
         (err, row) => {
             callback(row?.total || 0);
         }
     );
 }
 
-// ================= ITEM PERFORMANCE =================
-function getItemStats(itemId, callback) {
+// ================= REVENUE BY TYPE =================
+function getRevenueByType(callback) {
 
-    db.get(
-        `
-        SELECT COUNT(*) as sales, SUM(amount) as revenue
-        FROM revenue
-        WHERE itemId = ?
-        `,
-        [itemId],
-        (err, row) => {
-            callback(row || { sales: 0, revenue: 0 });
+    db.all(
+        `SELECT itemType, SUM(amount) as total
+         FROM revenue
+         GROUP BY itemType`,
+        [],
+        (err, rows) => {
+            callback(rows || []);
+        }
+    );
+}
+
+// ================= TOP USERS =================
+function getTopBuyers(limit = 10, callback) {
+
+    db.all(
+        `SELECT userId, SUM(amount) as spent
+         FROM revenue
+         GROUP BY userId
+         ORDER BY spent DESC
+         LIMIT ?`,
+        [limit],
+        (err, rows) => {
+            callback(rows || []);
+        }
+    );
+}
+
+// ================= ITEM PERFORMANCE =================
+function getTopItems(callback) {
+
+    db.all(
+        `SELECT itemId, COUNT(*) as purchases, SUM(amount) as revenue
+         FROM revenue
+         GROUP BY itemId
+         ORDER BY revenue DESC`,
+        [],
+        (err, rows) => {
+            callback(rows || []);
         }
     );
 }
@@ -69,6 +102,8 @@ function getItemStats(itemId, callback) {
 module.exports = {
     trackRevenue,
     getTotalRevenue,
-    getUserRevenue,
-    getItemStats
+    getDailyRevenue,
+    getRevenueByType,
+    getTopBuyers,
+    getTopItems
 };
