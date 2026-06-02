@@ -2,68 +2,120 @@ const { handleMessage } = require("../engagementEngine");
 const { grantVIP } = require("../vipEngine");
 const { giveBooster } = require("../boosterEngine");
 
+// ================= AGENT REGISTRY =================
+const agents = {};
+
+// ================= REGISTER AGENTS =================
+function registerAgent(name, fn) {
+    agents[name] = fn;
+}
+
+// ================= EVENT SCORING ENGINE =================
+function scoreEvent(event) {
+
+    const c = event.classification;
+
+    let score = 0;
+
+    if (c.value) score += c.value;
+    if (c.type === "AIR_DROP") score += 5;
+    if (c.type === "SECURITY") score += 4;
+    if (c.type === "PROJECT") score += 3;
+    if (c.sentiment === "POSITIVE") score += 2;
+
+    return score;
+}
+
+// ================= AI DECISION ENGINE =================
+function decideRouting(event, score) {
+
+    const c = event.classification;
+
+    return {
+        engagement: score >= 3,
+        monetization: score >= 5,
+        alert: c.type === "SECURITY",
+        broadcast: score >= 6,
+        booster: c.type === "AIR_DROP"
+    };
+}
+
 // ================= MAIN ROUTER =================
 function routeEvent(event) {
 
     try {
 
-        switch (event.eventType) {
+        const score = scoreEvent(event);
+        const decision = decideRouting(event, score);
 
-            // ================= RSS EVENTS =================
-            case "GLOBAL_DISCORD_EVENT":
-
-                handleRSS(event);
-                break;
-
-            default:
-                console.log("Unknown event type:", event.eventType);
-        }
+        // ================= LOGIC PIPE =================
+        processEvent(event, decision, score);
 
     } catch (err) {
         console.log("ROUTER ERROR:", err.message);
     }
 }
 
-// ================= RSS HANDLER =================
-function handleRSS(event) {
+// ================= EVENT PROCESSOR =================
+function processEvent(event, decision, score) {
 
     const c = event.classification;
 
-    // 🔥 HIGH VALUE EVENTS → MONETIZATION + ALERTS
-    if (c.value >= 5) {
-
-        console.log("🔥 HIGH VALUE EVENT DETECTED");
-
-        // future: trigger VIP ads
-        // grantVIP(userId, "VIP", 1);
-
+    // ================= ENGAGEMENT AGENT =================
+    if (decision.engagement) {
+        agents.engagement?.(event, score);
     }
 
-    // ⚠️ SECURITY EVENTS → ALERT MODE
-    if (c.type === "SECURITY") {
-
-        console.log("⚠️ SECURITY ALERT EVENT");
-
-        // future: send alert to admin channel
+    // ================= MONETIZATION AGENT =================
+    if (decision.monetization) {
+        agents.monetization?.(event, score);
     }
 
-    // 💎 AIRDROP EVENTS → ENGAGEMENT BOOST
-    if (c.type === "AIR_DROP") {
-
-        console.log("💎 AIRDROP OPPORTUNITY");
-
-        // future: boost XP or notify users
+    // ================= SECURITY ALERT =================
+    if (decision.alert) {
+        console.log("⚠️ SECURITY EVENT:", event.title);
     }
 
-    // 📊 GENERAL ENGAGEMENT FLOW
-    if (c.type === "PROJECT") {
+    // ================= BOOSTER TRIGGER =================
+    if (decision.booster) {
+        agents.booster?.(event, score);
+    }
 
-        console.log("📢 PROJECT UPDATE EVENT");
+    // ================= CONTENT BROADCAST =================
+    if (decision.broadcast) {
+        agents.broadcast?.(event, score);
+    }
 
-        // future: post to Discord automatically
+    // ================= DEFAULT HANDLING =================
+    if (c.type === "GENERAL") {
+        console.log("📡 General event processed:", event.title);
     }
 }
 
+// ================= DEFAULT AGENTS =================
+
+// Engagement Agent
+registerAgent("engagement", (event, score) => {
+    console.log("🎯 Engagement Agent triggered");
+});
+
+// Monetization Agent
+registerAgent("monetization", (event, score) => {
+    console.log("💰 Monetization Agent triggered");
+});
+
+// Booster Agent
+registerAgent("booster", (event, score) => {
+    console.log("⚡ Booster opportunity detected");
+});
+
+// Broadcast Agent
+registerAgent("broadcast", (event, score) => {
+    console.log("📢 Broadcast event:", event.title);
+});
+
+// ================= EXPORT =================
 module.exports = {
-    routeEvent
+    routeEvent,
+    registerAgent
 };
