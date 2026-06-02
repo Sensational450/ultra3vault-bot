@@ -28,12 +28,9 @@ async execute(message, args) {
             "30d": 15
         };
 
-        if (!prices[itemId]) {
-            return message.reply("❌ Invalid plan");
-        }
+        if (!prices[itemId]) return message.reply("❌ Invalid plan");
 
         try {
-
             const res = await axios.post(
                 "https://api.nowpayments.io/v1/invoice",
                 {
@@ -42,17 +39,14 @@ async execute(message, args) {
                     order_id: `${message.author.id}_${itemId}`
                 },
                 {
-                    headers: {
-                        "x-api-key": process.env.NOWPAYMENTS_API_KEY
-                    }
+                    headers: { "x-api-key": process.env.NOWPAYMENTS_API_KEY }
                 }
             );
 
-            // 💰 REVENUE TRACKING (CRYPTO)
             trackRevenue({
                 userId: message.author.id,
                 itemType: "VIP",
-                itemId: itemId,
+                itemId,
                 amount: prices[itemId],
                 source: "nowpayments",
                 aiTriggered: 0
@@ -60,71 +54,60 @@ async execute(message, args) {
 
             return message.reply(`💰 Invoice: ${res.data.invoice_url}`);
 
-        } catch (err) {
-            return message.reply("❌ Payment error");
+        } catch (e) {
+            return message.reply("❌ Payment failed");
         }
     }
 
-    // ================= POINTS PURCHASE =================
-    db.get(
-        "SELECT points FROM users WHERE id = ?",
-        [message.author.id],
-        (err, row) => {
+    // ================= POINTS =================
+    db.get("SELECT points FROM users WHERE id = ?", [message.author.id], (err, row) => {
 
-            if (!row) return message.reply("❌ No user data");
+        if (!row) return message.reply("❌ No user");
 
-            const balance = row.points || 0;
+        const balance = row.points || 0;
 
-            if (balance < item.cost) {
-                return message.reply("❌ Not enough points");
-            }
-
-            db.run(
-                "UPDATE users SET points = points - ? WHERE id = ?",
-                [item.cost, message.author.id]
-            );
-
-            // ================= BOOSTER =================
-            if (item.type === "booster") {
-
-                giveBooster(
-                    message.author.id,
-                    item.multiplier,
-                    item.minutes,
-                    "SHOP"
-                );
-
-                // 💰 REVENUE TRACKING
-                trackRevenue({
-                    userId: message.author.id,
-                    itemType: "BOOSTER",
-                    itemId: itemId,
-                    amount: item.cost,
-                    source: "points",
-                    aiTriggered: 0
-                });
-
-                return message.reply(`⚡ Booster activated`);
-            }
-
-            // ================= VIP =================
-            if (item.type === "vip") {
-
-                grantVIP(message.author.id, "VIP", item.days);
-
-                // 💰 REVENUE TRACKING
-                trackRevenue({
-                    userId: message.author.id,
-                    itemType: "VIP",
-                    itemId: itemId,
-                    amount: item.cost,
-                    source: "points",
-                    aiTriggered: 0
-                });
-
-                return message.reply(`👑 VIP activated`);
-            }
+        if (balance < item.cost) {
+            return message.reply("❌ Not enough points");
         }
-    );
+
+        db.run("UPDATE users SET points = points - ? WHERE id = ?", [
+            item.cost,
+            message.author.id
+        ]);
+
+        // BOOSTER
+        if (item.type === "booster") {
+
+            giveBooster(message.author.id, item.multiplier, item.minutes, "SHOP");
+
+            trackRevenue({
+                userId: message.author.id,
+                itemType: "BOOSTER",
+                itemId,
+                amount: item.cost,
+                source: "points",
+                aiTriggered: 0
+            });
+
+            return message.reply("⚡ Booster activated");
+        }
+
+        // VIP
+        if (item.type === "vip") {
+
+            grantVIP(message.author.id, "VIP", item.days);
+
+            trackRevenue({
+                userId: message.author.id,
+                itemType: "VIP",
+                itemId,
+                amount: item.cost,
+                source: "points",
+                aiTriggered: 0
+            });
+
+            return message.reply("👑 VIP activated");
+        }
+    });
 }
 };
