@@ -1,55 +1,85 @@
 const { handleMessage } = require("../engagementEngine");
-const { grantVIP } = require("../vipEngine");
 const { giveBooster } = require("../boosterEngine");
+const { grantVIP } = require("../vipEngine");
+const axios = require("axios");
 
-// ================= AGENT REGISTRY =================
+// ================= AGENTS =================
 const agents = {};
 
-// ================= REGISTER AGENTS =================
-function registerAgent(name, fn) {
-    agents[name] = fn;
-}
-
-// ================= EVENT SCORING ENGINE =================
-function scoreEvent(event) {
-
-    const c = event.classification;
-
-    let score = 0;
-
-    if (c.value) score += c.value;
-    if (c.type === "AIR_DROP") score += 5;
-    if (c.type === "SECURITY") score += 4;
-    if (c.type === "PROJECT") score += 3;
-    if (c.sentiment === "POSITIVE") score += 2;
-
-    return score;
-}
-
-// ================= AI DECISION ENGINE =================
-function decideRouting(event, score) {
-
-    const c = event.classification;
-
-    return {
-        engagement: score >= 3,
-        monetization: score >= 5,
-        alert: c.type === "SECURITY",
-        broadcast: score >= 6,
-        booster: c.type === "AIR_DROP"
-    };
-}
-
-// ================= MAIN ROUTER =================
-function routeEvent(event) {
+// ================= LLM DECISION ENGINE =================
+async function aiDecide(event) {
 
     try {
 
-        const score = scoreEvent(event);
-        const decision = decideRouting(event, score);
+        const prompt = `
+You are an AI decision engine for a Discord automation system.
 
-        // ================= LOGIC PIPE =================
-        processEvent(event, decision, score);
+Analyze this event and return ONLY JSON.
+
+EVENT:
+Title: ${event.title}
+Type: ${event.classification.type}
+Sentiment: ${event.classification.sentiment}
+Value: ${event.classification.value}
+Risk: ${event.classification.risk}
+
+Return format:
+{
+  "engagement": true/false,
+  "monetization": true/false,
+  "alert": true/false,
+  "boost": true/false,
+  "broadcast": true/false,
+  "reason": "short reason"
+}
+`;
+
+        // ⚠️ You can switch this to OpenAI / Claude / local LLM later
+        const res = await axios.post(
+            "https://api.openai.com/v1/chat/completions",
+            {
+                model: "gpt-4o-mini",
+                messages: [
+                    { role: "user", content: prompt }
+                ],
+                temperature: 0.2
+            },
+            {
+                headers: {
+                    "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
+                }
+            }
+        );
+
+        const output = res.data.choices[0].message.content;
+
+        return JSON.parse(output);
+
+    } catch (err) {
+
+        console.log("🧠 LLM ERROR:", err.message);
+
+        // fallback safe mode
+        return {
+            engagement: true,
+            monetization: false,
+            alert: false,
+            boost: false,
+            broadcast: false,
+            reason: "fallback mode"
+        };
+    }
+}
+
+// ================= MAIN ROUTER =================
+async function routeEvent(event) {
+
+    try {
+
+        // ================= AI DECISION =================
+        const decision = await aiDecide(event);
+
+        processEvent(event, decision);
 
     } catch (err) {
         console.log("ROUTER ERROR:", err.message);
@@ -57,64 +87,60 @@ function routeEvent(event) {
 }
 
 // ================= EVENT PROCESSOR =================
-function processEvent(event, decision, score) {
+function processEvent(event, decision) {
 
     const c = event.classification;
 
-    // ================= ENGAGEMENT AGENT =================
+    // ================= ENGAGEMENT =================
     if (decision.engagement) {
-        agents.engagement?.(event, score);
+        agents.engagement?.(event);
     }
 
-    // ================= MONETIZATION AGENT =================
+    // ================= MONETIZATION =================
     if (decision.monetization) {
-        agents.monetization?.(event, score);
+        agents.monetization?.(event);
     }
 
-    // ================= SECURITY ALERT =================
+    // ================= BOOST SYSTEM =================
+    if (decision.boost) {
+        agents.boost?.(event);
+    }
+
+    // ================= ALERT SYSTEM =================
     if (decision.alert) {
-        console.log("⚠️ SECURITY EVENT:", event.title);
+        console.log("⚠️ ALERT:", event.title);
     }
 
-    // ================= BOOSTER TRIGGER =================
-    if (decision.booster) {
-        agents.booster?.(event, score);
-    }
-
-    // ================= CONTENT BROADCAST =================
+    // ================= BROADCAST =================
     if (decision.broadcast) {
-        agents.broadcast?.(event, score);
+        agents.broadcast?.(event);
     }
 
-    // ================= DEFAULT HANDLING =================
-    if (c.type === "GENERAL") {
-        console.log("📡 General event processed:", event.title);
-    }
+    console.log("🧠 AI REASON:", decision.reason);
+}
+
+// ================= REGISTER AGENTS =================
+function registerAgent(name, fn) {
+    agents[name] = fn;
 }
 
 // ================= DEFAULT AGENTS =================
-
-// Engagement Agent
-registerAgent("engagement", (event, score) => {
-    console.log("🎯 Engagement Agent triggered");
+registerAgent("engagement", (event) => {
+    console.log("🎯 Engagement triggered:", event.title);
 });
 
-// Monetization Agent
-registerAgent("monetization", (event, score) => {
-    console.log("💰 Monetization Agent triggered");
+registerAgent("monetization", (event) => {
+    console.log("💰 Monetization triggered:", event.title);
 });
 
-// Booster Agent
-registerAgent("booster", (event, score) => {
-    console.log("⚡ Booster opportunity detected");
+registerAgent("boost", (event) => {
+    console.log("⚡ Booster triggered:", event.title);
 });
 
-// Broadcast Agent
-registerAgent("broadcast", (event, score) => {
-    console.log("📢 Broadcast event:", event.title);
+registerAgent("broadcast", (event) => {
+    console.log("📢 Broadcast:", event.title);
 });
 
-// ================= EXPORT =================
 module.exports = {
     routeEvent,
     registerAgent
