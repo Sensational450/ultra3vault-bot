@@ -1,10 +1,28 @@
-const { handleMessage } = require("../engagementEngine");
-const { giveBooster } = require("../boosterEngine");
-const { grantVIP } = require("../vipEngine");
 const axios = require("axios");
+const { registerEventToMemory } = require("../engine/userMemoryEngine");
 
 // ================= AGENTS =================
 const agents = {};
+
+// ================= SAFE JSON PARSER =================
+function safeParseJSON(text) {
+    try {
+        return JSON.parse(text);
+    } catch (err) {
+
+        // fallback extraction if LLM adds extra text
+        const match = text.match(/\{[\s\S]*\}/);
+        if (match) {
+            try {
+                return JSON.parse(match[0]);
+            } catch (e) {
+                return null;
+            }
+        }
+
+        return null;
+    }
+}
 
 // ================= LLM DECISION ENGINE =================
 async function aiDecide(event) {
@@ -12,9 +30,9 @@ async function aiDecide(event) {
     try {
 
         const prompt = `
-You are an AI decision engine for a Discord automation system.
+You are an AI decision engine for a Discord SaaS automation system.
 
-Analyze this event and return ONLY JSON.
+Return ONLY valid JSON.
 
 EVENT:
 Title: ${event.title}
@@ -25,49 +43,72 @@ Risk: ${event.classification.risk}
 
 Return format:
 {
-  "engagement": true/false,
-  "monetization": true/false,
-  "alert": true/false,
-  "boost": true/false,
-  "broadcast": true/false,
+  "engagement": true,
+  "monetization": true,
+  "alert": false,
+  "boost": false,
+  "broadcast": false,
+  "priority": 1-10,
   "reason": "short reason"
 }
 `;
 
-        // ⚠️ You can switch this to OpenAI / Claude / local LLM later
         const res = await axios.post(
             "https://api.openai.com/v1/chat/completions",
             {
                 model: "gpt-4o-mini",
-                messages: [
-                    { role: "user", content: prompt }
-                ],
+                messages: [{ role: "user", content: prompt }],
                 temperature: 0.2
             },
             {
                 headers: {
-                    "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
+                    Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
                 }
             }
         );
 
         const output = res.data.choices[0].message.content;
 
-        return JSON.parse(output);
+        const parsed = safeParseJSON(output);
+
+        if (!parsed) {
+            throw new Error("Invalid JSON from AI");
+        }
+
+        return parsed;
 
     } catch (err) {
 
         console.log("🧠 LLM ERROR:", err.message);
 
-        // fallback safe mode
+        // fallback safe AI mode
         return {
             engagement: true,
             monetization: false,
             alert: false,
             boost: false,
             broadcast: false,
-            reason: "fallback mode"
+            priority: 5,
+            reason: "fallback deterministic mode"
         };
+    }
+}
+
+// ================= EVENT MEMORY LOGGER =================
+function logToMemory(event, decision) {
+
+    try {
+
+        registerEventToMemory({
+            title: event.title,
+            type: event.classification.type,
+            value: event.classification.value,
+            risk: event.classification.risk,
+            decision
+        });
+
+    } catch (err) {
+        console.log("MEMORY LOG ERROR:", err.message);
     }
 }
 
@@ -79,7 +120,11 @@ async function routeEvent(event) {
         // ================= AI DECISION =================
         const decision = await aiDecide(event);
 
-        processEvent(event, decision);
+        // ================= MEMORY STORAGE =================
+        logToMemory(event, decision);
+
+        // ================= PROCESS =================
+        processEvent(event, decision, event);
 
     } catch (err) {
         console.log("ROUTER ERROR:", err.message);
@@ -89,56 +134,54 @@ async function routeEvent(event) {
 // ================= EVENT PROCESSOR =================
 function processEvent(event, decision) {
 
-    const c = event.classification;
-
     // ================= ENGAGEMENT =================
     if (decision.engagement) {
-        agents.engagement?.(event);
+        agents.engagement?.(event, decision);
     }
 
     // ================= MONETIZATION =================
     if (decision.monetization) {
-        agents.monetization?.(event);
+        agents.monetization?.(event, decision);
     }
 
     // ================= BOOST SYSTEM =================
     if (decision.boost) {
-        agents.boost?.(event);
+        agents.boost?.(event, decision);
     }
 
-    // ================= ALERT SYSTEM =================
+    // ================= ALERT =================
     if (decision.alert) {
         console.log("⚠️ ALERT:", event.title);
     }
 
     // ================= BROADCAST =================
     if (decision.broadcast) {
-        agents.broadcast?.(event);
+        agents.broadcast?.(event, decision);
     }
 
-    console.log("🧠 AI REASON:", decision.reason);
+    console.log("🧠 AI DECISION:", decision.reason);
 }
 
-// ================= REGISTER AGENTS =================
+// ================= AGENT REGISTRATION =================
 function registerAgent(name, fn) {
     agents[name] = fn;
 }
 
 // ================= DEFAULT AGENTS =================
 registerAgent("engagement", (event) => {
-    console.log("🎯 Engagement triggered:", event.title);
+    console.log("🎯 Engagement Agent:", event.title);
 });
 
 registerAgent("monetization", (event) => {
-    console.log("💰 Monetization triggered:", event.title);
+    console.log("💰 Monetization Agent:", event.title);
 });
 
 registerAgent("boost", (event) => {
-    console.log("⚡ Booster triggered:", event.title);
+    console.log("⚡ Boost Agent:", event.title);
 });
 
 registerAgent("broadcast", (event) => {
-    console.log("📢 Broadcast:", event.title);
+    console.log("📢 Broadcast Agent:", event.title);
 });
 
 module.exports = {
