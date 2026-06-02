@@ -1,125 +1,136 @@
-const { getUserMemory } = require("../engine/userMemoryEngine");
+const { getUserMemory, updateUserMemory } = require("../engine/userMemoryEngine");
 
 // ================= IMPORT AGENTS =================
-const rssAgent = require("../agents/rssAgent");
-const engagementAgent = require("../agents/engagementAgent");
-const monetizationAgent = require("../agents/monetizationAgent");
-const memoryAgent = require("../agents/memoryAgent");
-const riskAgent = require("../agents/riskAgent");
+const agents = {
+    rss: require("../agents/rssAgent"),
+    engagement: require("../agents/engagementAgent"),
+    monetization: require("../agents/monetizationAgent"),
+    memory: require("../agents/memoryAgent"),
+    risk: require("../agents/riskAgent")
+};
 
-// ================= ORCHESTRATOR CORE =================
+// ================= SELF-LEARNING WEIGHTS =================
+const weights = {
+    engagement: 1.0,
+    monetization: 1.0,
+    risk: 1.0,
+    rss: 1.0
+};
+
+// ================= MAIN ORCHESTRATOR =================
 async function runOrchestrator(event, context = {}) {
 
-    try {
+    const memory = await loadMemory(event.userId);
 
-        const memory = await getMemory(event.userId);
+    const votes = await collectVotes(event, memory, context);
 
-        const enrichedContext = {
-            ...context,
-            memory,
-            isActive: context.isActive || false,
-            spamDetected: context.spamDetected || false
-        };
+    const decision = resolveDecision(votes);
 
-        const decision = await makeDecision(event, memory);
+    executeDecision(event, decision, context);
 
-        executeAgents(event, decision, enrichedContext);
-
-    } catch (err) {
-        console.log("❌ ORCHESTRATOR ERROR:", err.message);
-    }
+    learnFromOutcome(event, decision, memory);
 }
 
-// ================= MEMORY LOADER =================
-function getMemory(userId) {
-
+// ================= MEMORY =================
+function loadMemory(userId) {
     return new Promise((resolve) => {
-
         if (!userId) return resolve(null);
-
-        getUserMemory(userId, (data) => {
-            resolve(data || null);
-        });
+        getUserMemory(userId, (data) => resolve(data || {}));
     });
 }
 
-// ================= AI DECISION ENGINE (IMPROVED v4.0) =================
-async function makeDecision(event, memory) {
+// ================= COLLECT AGENT VOTES =================
+async function collectVotes(event, memory, context) {
 
-    const m = memory || {};
+    const results = [];
 
-    const engagement = m.engagementScore || 0;
-    const monetization = m.monetizationScore || 0;
-    const vip = m.vipLikelihood || 0;
-    const churn = m.churnRisk || 0;
+    for (const [name, agent] of Object.entries(agents)) {
 
-    // ================= INTELLIGENCE SCORE =================
-    const intelligenceScore =
-        (engagement * 0.4) +
-        (monetization * 0.3) +
-        (vip * 0.2) -
-        (churn * 0.5);
+        if (!agent?.vote) continue;
 
-    return {
-        engagement: engagement > 5 || event.type === "MESSAGE",
-        monetization: monetization > 3 || vip > 60,
-        memoryUpdate: true,
-        rss: event.type === "RSS",
-        risk: churn > 60,
-        broadcast: event.priority === "HIGH",
+        try {
+            const res = await agent.vote(event, { memory, context });
 
-        // NEW v4.0 SIGNAL
-        highValueUser: intelligenceScore > 25,
-        lowValueUser: intelligenceScore < 5
+            results.push({
+                agent: name,
+                ...res,
+                weightedScore: (res.vote || 0) * (weights[name] || 1)
+            });
+
+        } catch (err) {
+            console.log(`⚠️ Agent error (${name}):`, err.message);
+        }
+    }
+
+    return results;
+}
+
+// ================= DECISION ENGINE =================
+function resolveDecision(votes) {
+
+    let best = null;
+    let highest = -Infinity;
+
+    for (const v of votes) {
+
+        if (v.weightedScore > highest) {
+            highest = v.weightedScore;
+            best = v;
+        }
+    }
+
+    return best || {
+        action: "IGNORE",
+        vote: 0
     };
 }
 
 // ================= EXECUTION LAYER =================
-function executeAgents(event, decision, context) {
+function executeDecision(event, decision, context) {
 
-    // ================= MEMORY AGENT (ALWAYS RUN) =================
-    memoryAgent?.handle(event, context);
+    if (!decision) return;
 
-    // ================= RSS =================
-    if (decision.rss) {
-        rssAgent?.handle(event, context);
+    console.log("🧠 FINAL DECISION:", decision.action);
+
+    if (decision.action === "ENGAGE") {
+        agents.engagement?.handle(event, context);
     }
 
-    // ================= ENGAGEMENT =================
-    if (decision.engagement) {
-        engagementAgent?.handle(event, context);
+    if (decision.action === "MONETIZE") {
+        agents.monetization?.handle(event, context);
     }
 
-    // ================= MONETIZATION =================
-    if (decision.monetization) {
-        monetizationAgent?.handle(event, context);
+    if (decision.action === "RISK") {
+        agents.risk?.handle(event, context);
     }
 
-    // ================= RISK SYSTEM =================
-    if (decision.risk) {
-        riskAgent?.handle(event, context);
+    if (decision.action === "RSS") {
+        agents.rss?.handle(event, context);
+    }
+}
+
+// ================= SELF-LEARNING LOOP =================
+function learnFromOutcome(event, decision, memory) {
+
+    if (!memory) return;
+
+    let update = {};
+
+    // simple reinforcement learning
+
+    if (decision.action === "MONETIZE") {
+        update.monetizationScore = (memory.monetizationScore || 0) + 1;
     }
 
-    // ================= HIGH VALUE USER BOOST =================
-    if (decision.highValueUser) {
-        monetizationAgent?.handle(event, {
-            ...context,
-            mode: "VIP_PRIORITY"
-        });
+    if (decision.action === "ENGAGE") {
+        update.engagementScore = (memory.engagementScore || 0) + 1;
     }
 
-    // ================= LOW VALUE USER RECOVERY =================
-    if (decision.lowValueUser) {
-        riskAgent?.handle(event, {
-            ...context,
-            mode: "RECOVERY"
-        });
+    if (decision.action === "RISK") {
+        update.churnRisk = Math.max((memory.churnRisk || 0) - 1, 0);
     }
 
-    // ================= BROADCAST SYSTEM =================
-    if (decision.broadcast) {
-        console.log("📢 BROADCAST EVENT:", event.type);
-    }
+    updateUserMemory(event.userId, update);
 }
 
 module.exports = {
