@@ -1,7 +1,7 @@
 const sqlite3 = require("sqlite3").verbose();
 const path = require("path");
 
-// ================= SINGLETON CONTROL =================
+// ================= SINGLETON =================
 let dbInstance = null;
 
 function getDB() {
@@ -14,7 +14,7 @@ function getDB() {
 
     dbInstance = new sqlite3.Database(dbPath, (err) => {
         if (err) console.error("❌ DB ERROR:", err.message);
-        else console.log("🧠 MAIN DB CONNECTED (SINGLETON MODE)");
+        else console.log("🧠 MAIN DB CONNECTED (v3.1 AI CORE)");
     });
 
     dbInstance.serialize(() => {
@@ -23,7 +23,7 @@ function getDB() {
         dbInstance.run("PRAGMA journal_mode = WAL");
         dbInstance.run("PRAGMA busy_timeout = 5000");
 
-        // ================= USERS =================
+        // ================= USERS CORE =================
         dbInstance.run(`
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY,
@@ -52,7 +52,7 @@ function getDB() {
             )
         `);
 
-        // ================= DAILY =================
+        // ================= DAILY SYSTEM =================
         dbInstance.run(`
             CREATE TABLE IF NOT EXISTS daily_streaks (
                 userId TEXT PRIMARY KEY,
@@ -72,7 +72,7 @@ function getDB() {
             )
         `);
 
-        // ================= RSS =================
+        // ================= RSS EVENTS =================
         dbInstance.run(`
             CREATE TABLE IF NOT EXISTS rss_posts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,7 +103,7 @@ function getDB() {
             )
         `);
 
-        // ================= REDEEM =================
+        // ================= REDEEM CODES =================
         dbInstance.run(`
             CREATE TABLE IF NOT EXISTS redeem_codes (
                 code TEXT PRIMARY KEY,
@@ -133,7 +133,7 @@ function getDB() {
             )
         `);
 
-        // ================= 💰 REVENUE SYSTEM (NEW CORE) =================
+        // ================= 💰 REVENUE SYSTEM =================
         dbInstance.run(`
             CREATE TABLE IF NOT EXISTS revenue (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -147,7 +147,50 @@ function getDB() {
             )
         `);
 
-        console.log("💰 DATABASE READY (CORE v3.0 MONETIZATION READY)");
+        // ================= 🧠 AI USER MEMORY SYSTEM v2.2 =================
+        dbInstance.run(`
+            CREATE TABLE IF NOT EXISTS user_memory (
+                userId TEXT PRIMARY KEY,
+
+                engagementScore INTEGER DEFAULT 0,
+                activityScore INTEGER DEFAULT 0,
+                monetizationScore INTEGER DEFAULT 0,
+
+                lastSeen INTEGER,
+                totalMessages INTEGER DEFAULT 0,
+
+                vipLikelihood REAL DEFAULT 0,
+                churnRisk REAL DEFAULT 0,
+
+                xpVelocity REAL DEFAULT 0
+            )
+        `);
+
+        // ================= 🧠 AI EVENT BUFFER (NEW) =================
+        dbInstance.run(`
+            CREATE TABLE IF NOT EXISTS event_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                eventType TEXT,
+                payload TEXT,
+                processed INTEGER DEFAULT 0,
+                createdAt INTEGER DEFAULT (strftime('%s','now'))
+            )
+        `);
+
+        // ================= 🧠 AI DECISIONS (NEW) =================
+        dbInstance.run(`
+            CREATE TABLE IF NOT EXISTS ai_decisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                userId TEXT,
+                decisionType TEXT,
+                input TEXT,
+                output TEXT,
+                confidence REAL,
+                createdAt INTEGER DEFAULT (strftime('%s','now'))
+            )
+        `);
+
+        console.log("💰 DATABASE READY (v3.1 FULL AI + MONETIZATION CORE)");
     });
 
     return dbInstance;
