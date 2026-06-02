@@ -1,94 +1,105 @@
-const { getVIP } = require("./vipEngine");
-const { getBooster } = require("./boosterEngine");
-const { predictVIPChance } = require("./aiEngine");
+const { getUserMemory } = require("./userMemoryEngine");
 
-// ================= USER MONETIZATION PROFILE =================
-function buildUserProfile(message, user, stats) {
+// ================= MAIN AI ENGINE =================
+async function runMonetizationAI(message, user, meta = {}, channel) {
 
-    return {
-        userId: message.author.id,
-        level: user.level,
-        xp: user.xp,
-        messages: user.messages,
-        invites: user.invites,
+    const userId = message.author.id;
 
-        vipChance: predictVIPChance(user),
+    getUserMemory(userId, (memory) => {
 
-        boosterActive: stats.booster?.active || false,
-        vipActive: stats.vip?.active || false,
+        if (!memory) return;
 
-        engagementScore:
-            user.messages * 0.3 +
-            user.level * 2 +
-            user.invites * 5
+        const decision = generateDecision(memory, user);
+
+        if (!decision.showOffer) return;
+
+        sendOffer(channel, userId, decision);
+    });
+}
+
+// ================= DECISION ENGINE =================
+function generateDecision(memory, user) {
+
+    const engagement = memory.engagementScore || 0;
+    const monetization = memory.monetizationScore || 0;
+    const vipLikelihood = memory.vipLikelihood || 0;
+    const churnRisk = memory.churnRisk || 0;
+    const xpVelocity = memory.xpVelocity || 0;
+
+    // ================= DEFAULT =================
+    let offer = {
+        showOffer: false,
+        offerType: "NONE",
+        urgency: "LOW",
+        message: null
     };
+
+    // ================= VIP TARGETING =================
+    if (vipLikelihood > 60 && engagement > 10) {
+
+        offer = {
+            showOffer: true,
+            offerType: "VIP",
+            urgency: vipLikelihood > 80 ? "HIGH" : "MEDIUM",
+            message:
+`👑 You're progressing fast!
+
+Unlock VIP to:
+⚡ Gain 2x XP
+🏆 Rank faster on leaderboard`
+        };
+    }
+
+    // ================= BOOSTER TARGETING =================
+    else if (xpVelocity > 15 && engagement > 5) {
+
+        offer = {
+            showOffer: true,
+            offerType: "BOOSTER",
+            urgency: "MEDIUM",
+            message:
+`⚡ You're leveling quickly!
+
+Use boosters to:
+🚀 Speed up XP gain
+📈 Reach higher ranks faster`
+        };
+    }
+
+    // ================= CHURN RECOVERY =================
+    else if (churnRisk > 60) {
+
+        offer = {
+            showOffer: true,
+            offerType: "VIP",
+            urgency: "HIGH",
+            message:
+`💔 We noticed you're less active...
+
+Come back stronger with VIP:
+🔥 Bonus XP
+🎁 Exclusive perks`
+        };
+    }
+
+    return offer;
 }
 
-// ================= MONETIZATION DECISION ENGINE =================
-function getMonetizationAction(profile) {
+// ================= MESSAGE SENDER =================
+function sendOffer(channel, userId, decision) {
 
-    // ================= VIP TARGET =================
-    if (!profile.vipActive && profile.vipChance > 60) {
-        return {
-            type: "VIP_OFFER",
-            priority: "HIGH",
-            message:
-`💎 You’re progressing fast!
+    const prefix =
+        decision.urgency === "HIGH"
+            ? "🚨 URGENT OFFER"
+            : "💡 SPECIAL OFFER";
 
-Unlock VIP to earn 2x XP + faster leveling.`
-        };
-    }
+    channel.send(
+`${prefix}
 
-    // ================= BOOSTER TARGET =================
-    if (!profile.boosterActive && profile.engagementScore > 50) {
-        return {
-            type: "BOOSTER_OFFER",
-            priority: "MEDIUM",
-            message:
-`⚡ Boost your progress instantly!
+<@${userId}>
 
-Use XP boosters to level up faster.`
-        };
-    }
-
-    // ================= HIGH ENGAGEMENT USER =================
-    if (profile.engagementScore > 100) {
-        return {
-            type: "POWER_USER",
-            priority: "LOW",
-            message:
-`🔥 You’re a top active user!
-
-Check leaderboard to see your rank.`
-        };
-    }
-
-    return null;
-}
-
-// ================= EXECUTION SYSTEM =================
-function runMonetizationAI(message, user, stats, channel) {
-
-    const profile = buildUserProfile(message, user, stats);
-    const action = getMonetizationAction(profile);
-
-    if (!action) return;
-
-    // cooldown per user to avoid spam
-    const key = `monetization_${profile.userId}`;
-    const now = Date.now();
-
-    if (!global.__monetizationCooldown) {
-        global.__monetizationCooldown = new Map();
-    }
-
-    const last = global.__monetizationCooldown.get(key) || 0;
-
-    if (now - last < 60000) return; // 1 min cooldown
-
-    global.__monetizationCooldown.set(key, now);
-
-    channel.send(action.message);
+${decision.message}`
+    );
 }
 
 module.exports = {
