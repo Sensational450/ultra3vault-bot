@@ -1,136 +1,82 @@
 const { getUserMemory, updateUserMemory } = require("../engine/userMemoryEngine");
 
-// ================= IMPORT AGENTS =================
-const agents = {
-    rss: require("../agents/rssAgent"),
-    engagement: require("../agents/engagementAgent"),
-    monetization: require("../agents/monetizationAgent"),
-    memory: require("../agents/memoryAgent"),
-    risk: require("../agents/riskAgent")
-};
+const { generateStrategy } = require("../engine/ai/strategyEngine");
+const { predictUserBehavior } = require("../engine/ai/predictEngine");
+const { scheduleAction } = require("../engine/ai/actionScheduler");
 
-// ================= SELF-LEARNING WEIGHTS =================
-const weights = {
-    engagement: 1.0,
-    monetization: 1.0,
-    risk: 1.0,
-    rss: 1.0
-};
-
-// ================= MAIN ORCHESTRATOR =================
+// ================= ORCHESTRATOR v4.2 =================
 async function runOrchestrator(event, context = {}) {
 
     const memory = await loadMemory(event.userId);
 
-    const votes = await collectVotes(event, memory, context);
+    // ================= STRATEGY =================
+    const strategy = generateStrategy(event.userId, memory);
 
-    const decision = resolveDecision(votes);
+    // ================= PREDICTION =================
+    const prediction = predictUserBehavior(memory);
 
-    executeDecision(event, decision, context);
+    console.log("🧠 STRATEGY:", strategy.mode);
+    console.log("🔮 PREDICTION:", prediction);
 
-    learnFromOutcome(event, decision, memory);
+    // ================= EXECUTE STRATEGY =================
+    executeStrategy(event, strategy, context);
+
+    // ================= UPDATE MEMORY =================
+    updateMemory(memory, prediction, event.userId);
 }
 
 // ================= MEMORY =================
 function loadMemory(userId) {
     return new Promise((resolve) => {
-        if (!userId) return resolve(null);
         getUserMemory(userId, (data) => resolve(data || {}));
     });
 }
 
-// ================= COLLECT AGENT VOTES =================
-async function collectVotes(event, memory, context) {
+// ================= STRATEGY EXECUTION =================
+function executeStrategy(event, strategy, context) {
 
-    const results = [];
+    for (const action of strategy.actions) {
 
-    for (const [name, agent] of Object.entries(agents)) {
-
-        if (!agent?.vote) continue;
-
-        try {
-            const res = await agent.vote(event, { memory, context });
-
-            results.push({
-                agent: name,
-                ...res,
-                weightedScore: (res.vote || 0) * (weights[name] || 1)
-            });
-
-        } catch (err) {
-            console.log(`⚠️ Agent error (${name}):`, err.message);
-        }
-    }
-
-    return results;
-}
-
-// ================= DECISION ENGINE =================
-function resolveDecision(votes) {
-
-    let best = null;
-    let highest = -Infinity;
-
-    for (const v of votes) {
-
-        if (v.weightedScore > highest) {
-            highest = v.weightedScore;
-            best = v;
-        }
-    }
-
-    return best || {
-        action: "IGNORE",
-        vote: 0
-    };
-}
-
-// ================= EXECUTION LAYER =================
-function executeDecision(event, decision, context) {
-
-    if (!decision) return;
-
-    console.log("🧠 FINAL DECISION:", decision.action);
-
-    if (decision.action === "ENGAGE") {
-        agents.engagement?.handle(event, context);
-    }
-
-    if (decision.action === "MONETIZE") {
-        agents.monetization?.handle(event, context);
-    }
-
-    if (decision.action === "RISK") {
-        agents.risk?.handle(event, context);
-    }
-
-    if (decision.action === "RSS") {
-        agents.rss?.handle(event, context);
+        scheduleAction(
+            event.userId,
+            action,
+            action.delay,
+            (a) => executeAction(event, a, context)
+        );
     }
 }
 
-// ================= SELF-LEARNING LOOP =================
-function learnFromOutcome(event, decision, memory) {
+// ================= ACTION EXECUTOR =================
+function executeAction(event, action, context) {
 
-    if (!memory) return;
+    console.log("⚡ EXECUTING:", action.type);
 
-    let update = {};
+    switch (action.type) {
 
-    // simple reinforcement learning
+        case "VIP_OFFER":
+            context.channel?.send("👑 Upgrade to VIP for 2x XP!");
+            break;
 
-    if (decision.action === "MONETIZE") {
-        update.monetizationScore = (memory.monetizationScore || 0) + 1;
+        case "BOOSTER_OFFER":
+            context.channel?.send("⚡ Boost XP speed now!");
+            break;
+
+        case "REENGAGE_MESSAGE":
+            context.channel?.send("💔 We miss you! Come back!");
+            break;
+
+        case "XP_EVENT":
+            context.channel?.send("🔥 Bonus XP event active!");
+            break;
     }
+}
 
-    if (decision.action === "ENGAGE") {
-        update.engagementScore = (memory.engagementScore || 0) + 1;
-    }
+// ================= MEMORY LEARNING =================
+function updateMemory(memory, prediction, userId) {
 
-    if (decision.action === "RISK") {
-        update.churnRisk = Math.max((memory.churnRisk || 0) - 1, 0);
-    }
-
-    updateUserMemory(event.userId, update);
+    updateUserMemory(userId, {
+        xpVelocity: prediction.predictedRevenueScore || 0
+    });
 }
 
 module.exports = {
