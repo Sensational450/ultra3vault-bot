@@ -11,10 +11,10 @@ const messageCount = new Map();
 const BASE_MIN_XP = 1;
 const BASE_MAX_XP = 5;
 
-const AFK_THRESHOLD = 60 * 1000; // 1 min
+const AFK_THRESHOLD = 60 * 1000;
 const COOLDOWN_TIME = 5000;
 
-// ================= MESSAGE QUALITY ENGINE =================
+// ================= MESSAGE QUALITY =================
 function getMessageQuality(message) {
 
     const text = message.content || "";
@@ -31,7 +31,44 @@ function getMessageQuality(message) {
     return Math.min(score, 4);
 }
 
-// ================= MAIN XP ENGINE =================
+// ================= PRESSURE SYSTEM =================
+function applyMonetizationPressure(message, user, totalMessages) {
+
+    const userId = message.author.id;
+
+    // ================= XP SLOWDOWN PRESSURE =================
+    if (totalMessages % 40 === 0) {
+        message.channel.send(
+`📊 <@${userId}> you're progressing steadily...
+
+💡 VIP users gain XP 2x faster
+⚡ Boosters accelerate leveling`
+        );
+    }
+
+    // ================= LEVEL NEAR-UP ALERT =================
+    const xpProgress = user.xp % 100;
+
+    if (xpProgress > 80) {
+        message.channel.send(
+`🎯 <@${userId}> you're close to leveling up!
+
+⚡ Use boosters to reach it instantly`
+        );
+    }
+
+    // ================= LEADERBOARD PRESSURE =================
+    if (user.level % 10 === 0) {
+        message.channel.send(
+`🏆 <@${userId}> milestone reached!
+
+🔥 You're climbing the leaderboard
+💎 VIP helps you rank faster`
+        );
+    }
+}
+
+// ================= MAIN ENGINE =================
 function handleMessage(message) {
 
     if (message.author.bot) return;
@@ -46,7 +83,7 @@ function handleMessage(message) {
     }
     cooldown.set(userId, now);
 
-    // ================= ACTIVITY TRACKING =================
+    // ================= ACTIVITY =================
     const lastSeen = lastActive.get(userId) || 0;
     const isActive = (now - lastSeen) < AFK_THRESHOLD;
 
@@ -61,28 +98,20 @@ function handleMessage(message) {
         Math.floor(Math.random() * (BASE_MAX_XP - BASE_MIN_XP + 1)) +
         BASE_MIN_XP;
 
-    // ================= QUALITY BONUS =================
     xp += getMessageQuality(message);
-
-    // ================= ACTIVE BONUS =================
     if (isActive) xp += 2;
 
-    // ================= MILESTONE BONUSES =================
-    if (totalMessages % 10 === 0) xp += 3;
-    if (totalMessages % 50 === 0) xp += 10;
-    if (totalMessages % 100 === 0) xp += 25;
-
-    // ================= USER DATA FETCH =================
+    // ================= USER DATA =================
     getUser(userId, (user) => {
 
         if (!user) return;
 
-        // ================= VIP SYSTEM =================
+        // ================= VIP =================
         getVIP(userId, (vip) => {
 
             const vipMultiplier = vip?.multiplier || 1;
 
-            // ================= BOOSTER SYSTEM =================
+            // ================= BOOSTER =================
             getBooster(userId, (booster) => {
 
                 const boosterMultiplier = booster?.multiplier || 1;
@@ -95,20 +124,20 @@ function handleMessage(message) {
                 else if (user.level >= 20) levelBonus = 3;
                 else if (user.level >= 10) levelBonus = 2;
 
-                // ================= FINAL MULTIPLIER =================
-                const finalMultiplier =
-                    vipMultiplier *
-                    boosterMultiplier *
-                    levelBonus;
+                // ================= FINAL XP =================
+                const finalXP = Math.floor(
+                    xp * vipMultiplier * boosterMultiplier * levelBonus
+                );
 
-                xp = Math.floor(xp * finalMultiplier);
+                // ================= APPLY PRESSURE SYSTEM =================
+                applyMonetizationPressure(message, user, totalMessages);
 
                 // ================= ADD XP =================
-                addXP(userId, xp, (levelUp) => {
+                addXP(userId, finalXP, (levelUp) => {
 
                     if (levelUp) {
                         message.channel.send(
-                            `🎉 <@${userId}> just reached **Level ${levelUp.newLevel}** 🚀`
+`🎉 <@${userId}> reached **Level ${levelUp.newLevel}** 🚀`
                         );
                     }
                 });
@@ -117,26 +146,7 @@ function handleMessage(message) {
     });
 }
 
-// ================= INVITE SYSTEM =================
-function handleInvite(userId) {
-    addXP(userId, 35);
-}
-
-// ================= DAILY BONUS SYSTEM =================
-function applyDailyBonus(userId, streak = 0) {
-
-    let bonus = 50 + (streak * 12);
-
-    if (streak >= 7) bonus *= 1.5;
-    if (streak >= 14) bonus *= 2;
-    if (streak >= 30) bonus *= 3;
-
-    addXP(userId, Math.floor(bonus));
-}
-
 // ================= EXPORTS =================
 module.exports = {
-    handleMessage,
-    handleInvite,
-    applyDailyBonus
+    handleMessage
 };
