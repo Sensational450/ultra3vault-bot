@@ -14,16 +14,28 @@ module.exports = {
                     return message.reply("❌ No VIP data found");
                 }
 
+                const now = Date.now();
+
                 const remaining =
-                    row.vipExpires > 0
-                        ? Math.floor((row.vipExpires - Date.now()) / 86400000)
+                    row.vipExpires > now
+                        ? Math.ceil((row.vipExpires - now) / 86400000)
                         : 0;
 
+                const isActive = row.vipExpires > now;
+
                 message.reply(
-                    `💎 **VIP STATUS**\n\n` +
-                    `Tier: ${row.vipTier}\n` +
-                    `Expires in: ${remaining} days\n` +
-                    `⚡ Active Boost System`
+`💎 **VIP STATUS**
+
+👑 Tier: ${row.vipTier || "FREE"}
+📅 Status: ${isActive ? "ACTIVE" : "INACTIVE"}
+⏳ Days Left: ${remaining}
+
+⚡ VIP Benefits:
+• XP Boost Multiplier
+• Faster Level Progression
+• Leaderboard Advantage
+
+🛒 Use !shop to upgrade`
                 );
             }
         );
