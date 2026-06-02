@@ -2,7 +2,7 @@ const { addXP, getUser } = require("./levelingEngine");
 const { getVIP } = require("./vipEngine");
 const { getBooster } = require("./boosterEngine");
 
-// 🧠 AI MONETIZATION AUTOPILOT (CONNECTED)
+// 🧠 AI MONETIZATION AUTOPILOT
 const { runMonetizationAI } = require("./aiMonetizationEngine");
 
 // ================= CORE STATE =================
@@ -10,6 +10,7 @@ const cooldown = new Map();
 const lastActive = new Map();
 const messageCount = new Map();
 const pressureCooldown = new Map();
+const aiCooldown = new Map();
 
 // ================= CONFIG =================
 const BASE_MIN_XP = 1;
@@ -18,8 +19,9 @@ const BASE_MAX_XP = 5;
 const AFK_THRESHOLD = 60 * 1000;
 const COOLDOWN_TIME = 5000;
 const PRESSURE_COOLDOWN_TIME = 30000;
+const AI_COOLDOWN_TIME = 60000;
 
-// ================= MESSAGE QUALITY ENGINE =================
+// ================= MESSAGE QUALITY =================
 function getMessageQuality(message) {
 
     const text = message.content || "";
@@ -36,7 +38,7 @@ function getMessageQuality(message) {
     return Math.min(score, 4);
 }
 
-// ================= MONETIZATION PRESSURE SYSTEM =================
+// ================= MONETIZATION PRESSURE =================
 function applyMonetizationPressure(message, user, totalMessages) {
 
     const userId = message.author.id;
@@ -53,7 +55,7 @@ function applyMonetizationPressure(message, user, totalMessages) {
 
     const xpProgress = user.xp % 100;
 
-    // ================= XP PROGRESSION PRESSURE =================
+    // ================= XP FLOW PRESSURE =================
     if (totalMessages % 40 === 0) {
         message.channel.send(
 `📊 <@${userId}> progress update...
@@ -63,10 +65,10 @@ function applyMonetizationPressure(message, user, totalMessages) {
         );
     }
 
-    // ================= LEVEL NEAR-UP ALERT =================
+    // ================= NEAR LEVEL ALERT =================
     if (xpProgress > 80) {
         message.channel.send(
-`🎯 <@${userId}> you're very close to leveling up!
+`🎯 <@${userId}> you're close to leveling up!
 
 💡 Boosters can finish levels instantly`
         );
@@ -78,16 +80,29 @@ function applyMonetizationPressure(message, user, totalMessages) {
 `🏆 <@${userId}> milestone reached!
 
 🔥 You're climbing the leaderboard
-💎 VIP helps you rank faster`
+💎 VIP improves ranking speed`
         );
     }
 }
 
-// ================= AI MONETIZATION PIPE =================
+// ================= AI MONETIZATION ENGINE =================
 function runAIEngine(message, user, vip, booster) {
 
-    try {
+    const userId = message.author.id;
+    const now = Date.now();
 
+    if (!aiCooldown.has(userId)) {
+        aiCooldown.set(userId, 0);
+    }
+
+    const last = aiCooldown.get(userId);
+
+    // prevent AI spam
+    if (now - last < AI_COOLDOWN_TIME) return;
+
+    aiCooldown.set(userId, now);
+
+    try {
         runMonetizationAI(
             message,
             user,
@@ -97,7 +112,6 @@ function runAIEngine(message, user, vip, booster) {
             },
             message.channel
         );
-
     } catch (err) {
         console.log("⚠️ AI Engine Error:", err.message);
     }
@@ -111,7 +125,7 @@ function handleMessage(message) {
     const userId = message.author.id;
     const now = Date.now();
 
-    // ================= COOLDOWN =================
+    // ================= GLOBAL COOLDOWN =================
     if (cooldown.has(userId)) {
         const last = cooldown.get(userId);
         if (now - last < COOLDOWN_TIME) return;
@@ -140,7 +154,7 @@ function handleMessage(message) {
     // ================= ACTIVE BONUS =================
     if (isActive) xp += 2;
 
-    // ================= USER PIPE =================
+    // ================= USER DATA =================
     getUser(userId, (user) => {
 
         if (!user) return;
@@ -171,7 +185,7 @@ function handleMessage(message) {
                 // ================= PRESSURE SYSTEM =================
                 applyMonetizationPressure(message, user, totalMessages);
 
-                // ================= AI MONETIZATION SYSTEM =================
+                // ================= AI MONETIZATION =================
                 runAIEngine(message, user, vip, booster);
 
                 // ================= XP UPDATE =================
