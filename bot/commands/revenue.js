@@ -1,8 +1,10 @@
 const {
     getTotalRevenue,
     getDailyRevenue,
-    getRevenueByType,
-    getTopBuyers
+    getMonthlyRevenue,
+    getMRR,
+    getTopBuyers,
+    getARPU
 } = require("../engine/revenueEngine");
 
 module.exports = {
@@ -10,33 +12,36 @@ module.exports = {
 
     async execute(message) {
 
-        // (optional: restrict to admin)
-        // if (message.author.id !== "YOUR_ID") return;
-
         getTotalRevenue((total) => {
+        getDailyRevenue((daily) => {
+        getMonthlyRevenue((monthly) => {
+        getMRR((mrr) => {
+        getARPU((arpu) => {
 
-            getDailyRevenue((daily) => {
+            getTopBuyers(5, (buyers) => {
 
-                getTopBuyers(5, (buyers) => {
+                const top = buyers.map((u, i) =>
+                    `**#${i + 1}** <@${u.userId}> — $${u.spent.toFixed(2)}`
+                ).join("\n");
 
-                    let top = buyers
-                        .map((u, i) =>
-                            `**#${i + 1}** <@${u.userId}> — $${u.spent.toFixed(2)}`
-                        )
-                        .join("\n");
-
-                    message.reply(
-`💰 **REVENUE DASHBOARD v2.0**
+                message.reply(
+`💰 **SAAS REVENUE DASHBOARD v3.0**
 
 📊 Total Revenue: $${total.toFixed(2)}
 📅 Today: $${daily.toFixed(2)}
+📆 Month: $${monthly.toFixed(2)}
+
+💎 MRR (VIP): $${mrr.toFixed(2)}
+📈 ARPU: $${arpu.toFixed(2)}
 
 🏆 Top Buyers:
-${top || "No data yet"}
-`
-                    );
-                });
+${top || "No data"}
+
+⚡ SYSTEM: MONETIZATION CORE ACTIVE`
+                );
             });
-        });
+
+        }); }); }); }); });
+
     }
 };
