@@ -1,22 +1,20 @@
 const { registerAgent } = require("../ai/orchestrator");
 const { trackRevenue } = require("../revenueEngine");
+const { generateContent } = require("../ai/contentGenerator");
 
-// ================= MARKETING AGENT =================
-function marketingAgent(event, context = {}) {
+// ================= MARKETING AGENT v2.0 =================
+async function marketingAgent(event, context = {}) {
 
     try {
 
-        // ================= ONLY HANDLE RSS OR HIGH VALUE EVENTS =================
         if (!event) return;
 
-        const title =
-            event.title ||
+        const text =
+            (event.title ||
             event.message?.content ||
-            "";
+            "").toLowerCase();
 
-        const text = title.toLowerCase();
-
-        // ================= MARKETING TRIGGERS =================
+        // ================= HIGH VALUE DETECTION =================
         const isHighValue =
             text.includes("airdrop") ||
             text.includes("launch") ||
@@ -26,21 +24,20 @@ function marketingAgent(event, context = {}) {
 
         if (!isHighValue) return;
 
-        const userId = event.userId || null;
+        console.log("📢 MARKETING AGENT TRIGGERED:", event.title);
 
-        // ================= CREATE MARKETING ACTION =================
-        const marketingAction = {
-            type: "PROMO_SIGNAL",
-            priority: "HIGH",
-            message: "User may be ready for offer",
-            data: event
-        };
+        // ================= AI CONTENT GENERATION =================
+        const aiMessage = await generateContent({
+            type: "MARKETING",
+            user: event.user || null,
+            memory: event.memory || null,
+            event,
+            tone: "high-conversion"
+        });
 
-        console.log("📢 MARKETING AGENT TRIGGERED:", title);
-
-        // ================= OPTIONAL REVENUE SIGNAL =================
+        // ================= REVENUE SIGNAL =================
         trackRevenue?.({
-            userId: userId || "system",
+            userId: event.userId || "system",
             itemType: "MARKETING_SIGNAL",
             itemId: "AI_MARKETING",
             amount: 0,
@@ -48,17 +45,19 @@ function marketingAgent(event, context = {}) {
             aiTriggered: 1
         });
 
-        // ================= SEND TO CONTEXT =================
-        if (context?.eventBus) {
-            context.eventBus.emit("marketing_event", marketingAction);
-        }
+        // ================= EMIT TO EVENT BUS =================
+        context?.eventBus?.emit?.("marketing_event", {
+            type: "MARKETING_EVENT",
+            message: aiMessage,
+            raw: event
+        });
 
     } catch (err) {
         console.log("❌ Marketing Agent Error:", err.message);
     }
 }
 
-// ================= AUTO REGISTER =================
+// ================= REGISTER =================
 registerAgent("marketing", marketingAgent);
 
 module.exports = marketingAgent;
