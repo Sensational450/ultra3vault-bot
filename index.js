@@ -1,6 +1,5 @@
 console.log("🧠 ULTRA3 AI SYSTEM BOOTING (v5 CORE)");
 
-// ================= ERROR HANDLERS =================
 process.on("uncaughtException", (err) => {
     console.error("💥 UNCAUGHT EXCEPTION:", err?.stack || err);
 });
@@ -18,8 +17,16 @@ const fetchPrices = require("./bot/engine/priceEngine");
 const { attachClient } = require("./web/server");
 const { cleanupExpired } = require("./bot/engine/subscriptionManager");
 
-// 🧠 NEW: ORCHESTRATOR (IMPORTANT CONNECTION)
+// 🧠 AI ORCHESTRATOR (CORE BRAIN)
 const { runOrchestrator } = require("./bot/engine/ai/orchestrator");
+
+// 🧠 EVENT BUS (OPTIONAL FUTURE LAYER)
+let emitEvent = null;
+try {
+    ({ emitEvent } = require("./bot/engine/ai/eventBus"));
+} catch (e) {
+    console.log("⚠️ EventBus not loaded (safe mode)");
+}
 
 // ================= STATE =================
 let started = false;
@@ -35,6 +42,46 @@ async function safeRun(name, fn) {
     }
 }
 
+// ================= AI PIPELINE ROUTER =================
+function routeToAI(event) {
+
+    try {
+
+        // 1. Orchestrator (PRIMARY BRAIN)
+        if (runOrchestrator) {
+            runOrchestrator(event, { client });
+        }
+
+        // 2. Event Bus (MULTI-AGENT SYSTEM)
+        if (emitEvent) {
+            emitEvent(event, { client });
+        }
+
+    } catch (err) {
+        console.error("❌ AI ROUTER ERROR:", err.message);
+    }
+}
+
+// ================= WRAPPED ENGINE CALLS =================
+async function runRSS() {
+
+    const data = await fetchRSS(client);
+
+    // If RSS returns events → send to AI
+    if (Array.isArray(data)) {
+        data.forEach(event => routeToAI(event));
+    }
+}
+
+async function runPrices() {
+
+    const data = await fetchPrices(client);
+
+    if (Array.isArray(data)) {
+        data.forEach(event => routeToAI(event));
+    }
+}
+
 // ================= READY =================
 client.once("ready", async () => {
 
@@ -46,20 +93,18 @@ client.once("ready", async () => {
 
     attachClient?.(client);
 
-    // ================= RSS ENGINE =================
-    await safeRun("RSS INIT", () => fetchRSS(client));
-
-    // ================= PRICE ENGINE =================
-    await safeRun("PRICE INIT", () => fetchPrices(client));
+    // ================= INITIAL RUN =================
+    await safeRun("RSS INIT", runRSS);
+    await safeRun("PRICE INIT", runPrices);
 
     // ================= LOOPS =================
     intervals.push(setInterval(() =>
-        safeRun("RSS LOOP", () => fetchRSS(client)),
+        safeRun("RSS LOOP", runRSS),
         12 * 60 * 1000
     ));
 
     intervals.push(setInterval(() =>
-        safeRun("PRICE LOOP", () => fetchPrices(client)),
+        safeRun("PRICE LOOP", runPrices),
         60 * 1000
     ));
 
@@ -68,19 +113,8 @@ client.once("ready", async () => {
         60 * 60 * 1000
     ));
 
-    console.log("🚀 SYSTEM FULLY CONNECTED (v5 ACTIVE)");
+    console.log("🚀 SYSTEM FULLY CONNECTED (AI PIPELINE ACTIVE)");
 });
-
-// ================= GLOBAL EVENT PIPELINE =================
-// THIS IS THE MOST IMPORTANT CONNECTION YOU WERE MISSING
-function routeToAI(event) {
-
-    if (!runOrchestrator) return;
-
-    runOrchestrator(event, {
-        client
-    });
-}
 
 // ================= LOGIN =================
 client.login(process.env.TOKEN);
