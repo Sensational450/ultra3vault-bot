@@ -1,53 +1,121 @@
-const { runOrchestrator } = require("../ai/orchestrator");
-const { handleMessage } = require("../engagementEngine");
-const { updateFromMessage } = require("../userMemoryEngine");
-const { trackRevenue } = require("../revenueEngine");
-const { runMonetizationAI } = require("../aiMonetizationEngine");
+const { emitEvent } = require("./eventBus");
 
-// ================= GLOBAL EVENT BUS v2.0 =================
-async function emitEvent(event, context = {}) {
+// ================= EVENT ROUTER v1.0 =================
+// Central entry point that converts raw system signals
+// into structured AI events
+
+async function routeEvent(rawEvent, context = {}) {
 
     try {
 
-        const { type, userId } = event;
+        if (!rawEvent) return;
 
-        // ================= MEMORY =================
-        if (updateFromMessage && type === "MESSAGE") {
-            updateFromMessage(userId, event.message, event.user);
+        // ================= NORMALIZE EVENT =================
+        const event = normalizeEvent(rawEvent);
+
+        // ================= BASIC VALIDATION =================
+        if (!event.type) {
+            console.log("⚠️ Invalid event: missing type");
+            return;
         }
 
-        // ================= ENGAGEMENT =================
-        if (type === "MESSAGE") {
-            handleMessage(event.message);
-        }
+        // ================= ATTACH CONTEXT =================
+        event.context = context;
 
-        // ================= REVENUE =================
-        if (type === "REVENUE") {
-            trackRevenue(event.data);
-        }
+        // ================= DEBUG LOG =================
+        console.log("📡 ROUTING EVENT:", event.type);
 
-        // ================= ORCHESTRATOR (BRAIN) =================
-        if (runOrchestrator) {
-            await runOrchestrator(event, context);
-        }
-
-        // ================= MONETIZATION AI =================
-        if (runMonetizationAI && type === "MESSAGE") {
-            runMonetizationAI(
-                event.message,
-                event.user,
-                {},
-                event.message.channel
-            );
-        }
-
-        console.log("🧠 EVENT BUS PROCESSED:", type);
+        // ================= SEND TO EVENT BUS =================
+        await emitEvent(event, context);
 
     } catch (err) {
-        console.log("❌ EVENT BUS ERROR:", err.message);
+        console.log("❌ EVENT ROUTER ERROR:", err.message);
     }
 }
 
+// ================= EVENT NORMALIZER =================
+function normalizeEvent(rawEvent) {
+
+    return {
+        type: rawEvent.type || "UNKNOWN",
+
+        userId: rawEvent.userId || rawEvent.user?.id || null,
+
+        user: rawEvent.user || null,
+
+        message: rawEvent.message || null,
+
+        title: rawEvent.title || rawEvent.message?.content || "",
+
+        content: rawEvent.content || rawEvent.message?.content || "",
+
+        classification: rawEvent.classification || {
+            type: "GENERAL",
+            sentiment: "NEUTRAL",
+            value: 1,
+            risk: "LOW"
+        },
+
+        priority: rawEvent.priority || "NORMAL",
+
+        source: rawEvent.source || "SYSTEM",
+
+        timestamp: Date.now()
+    };
+}
+
+// ================= EVENT BUILDERS (HELPERS) =================
+
+// MESSAGE EVENT
+function createMessageEvent(message) {
+    return {
+        type: "MESSAGE",
+        userId: message.author.id,
+        user: message.author,
+        message,
+        source: "DISCORD"
+    };
+}
+
+// REVENUE EVENT
+function createRevenueEvent(data) {
+    return {
+        type: "REVENUE",
+        userId: data.userId,
+        data,
+        source: "PAYMENT_SYSTEM"
+    };
+}
+
+// RSS EVENT
+function createRssEvent(item) {
+    return {
+        type: "RSS",
+        title: item.title,
+        content: item.content,
+        link: item.link,
+        source: "RSS_ENGINE"
+    };
+}
+
+// ALERT EVENT
+function createAlertEvent(alert) {
+    return {
+        type: "ALERT",
+        title: alert.title,
+        content: alert.content,
+        priority: "HIGH",
+        source: "SYSTEM_ALERT"
+    };
+}
+
+// ================= EXPORTS =================
 module.exports = {
-    emitEvent
+    routeEvent,
+
+    // helpers (IMPORTANT for future scaling)
+    createMessageEvent,
+    createRevenueEvent,
+    createRssEvent,
+    createAlertEvent
 };
