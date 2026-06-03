@@ -1,39 +1,122 @@
 const { emitEvent } = require("./eventBus");
 
-// ================= EVENT ROUTER v1.0 =================
-// Central entry point that converts raw system signals
-// into structured AI events
+// ================= MEMORY (optional analytics hook) =================
+let eventStats = {
+    total: 0,
+    highPriority: 0,
+    skipped: 0
+};
 
+// ================= CACHE (deduplication) =================
+const eventCache = new Map();
+const CACHE_TTL = 60 * 1000; // 1 min
+
+// ================= PRIORITY QUEUE =================
+const queue = [];
+let processing = false;
+
+// ================= MAIN ROUTER =================
 async function routeEvent(rawEvent, context = {}) {
 
     try {
 
         if (!rawEvent) return;
 
-        // ================= NORMALIZE EVENT =================
         const event = normalizeEvent(rawEvent);
 
-        // ================= BASIC VALIDATION =================
-        if (!event.type) {
-            console.log("⚠️ Invalid event: missing type");
+        // ================= DUPLICATE CHECK =================
+        const hash = createHash(event);
+
+        if (isDuplicate(hash)) {
+            eventStats.skipped++;
             return;
         }
 
-        // ================= ATTACH CONTEXT =================
-        event.context = context;
+        markSeen(hash);
 
-        // ================= DEBUG LOG =================
-        console.log("📡 ROUTING EVENT:", event.type);
+        // ================= EVENT SCORING =================
+        const score = scoreEvent(event);
 
-        // ================= SEND TO EVENT BUS =================
-        await emitEvent(event, context);
+        event.score = score;
+
+        eventStats.total++;
+
+        if (score >= 8) eventStats.highPriority++;
+
+        // ================= FAST PATH =================
+        if (score >= 9) {
+            console.log("⚡ FAST PATH EVENT:", event.type);
+            return emitEvent(event, context);
+        }
+
+        // ================= QUEUE EVENT =================
+        queue.push({ event, context });
+
+        processQueue();
 
     } catch (err) {
-        console.log("❌ EVENT ROUTER ERROR:", err.message);
+        console.log("❌ ROUTER v2 ERROR:", err.message);
     }
 }
 
-// ================= EVENT NORMALIZER =================
+// ================= QUEUE PROCESSOR =================
+async function processQueue() {
+
+    if (processing) return;
+    processing = true;
+
+    // sort by score (highest priority first)
+    queue.sort((a, b) => (b.event.score || 0) - (a.event.score || 0));
+
+    while (queue.length > 0) {
+
+        const item = queue.shift();
+
+        try {
+            await emitEvent(item.event, item.context);
+        } catch (err) {
+            console.log("❌ QUEUE EXEC ERROR:", err.message);
+        }
+    }
+
+    processing = false;
+}
+
+// ================= EVENT SCORING ENGINE =================
+function scoreEvent(event) {
+
+    let score = 0;
+
+    // TYPE importance
+    if (event.type === "MESSAGE") score += 5;
+    if (event.type === "REVENUE") score += 9;
+    if (event.type === "RSS") score += 7;
+    if (event.type === "ALERT") score += 10;
+
+    // CLASSIFICATION VALUE
+    if (event.classification?.value) {
+        score += event.classification.value;
+    }
+
+    // RISK BOOST
+    if (event.classification?.risk === "HIGH") {
+        score += 2;
+    }
+
+    // PRIORITY BOOST
+    if (event.priority === "HIGH") {
+        score += 3;
+    }
+
+    // VIP / MONETIZATION BOOST
+    if (event.user?.tier === "VIP") {
+        score += 2;
+    }
+
+    return Math.min(score, 10);
+}
+
+// ================= NORMALIZER =================
 function normalizeEvent(rawEvent) {
 
     return {
@@ -64,58 +147,31 @@ function normalizeEvent(rawEvent) {
     };
 }
 
-// ================= EVENT BUILDERS (HELPERS) =================
-
-// MESSAGE EVENT
-function createMessageEvent(message) {
-    return {
-        type: "MESSAGE",
-        userId: message.author.id,
-        user: message.author,
-        message,
-        source: "DISCORD"
-    };
+// ================= DUPLICATION CONTROL =================
+function createHash(event) {
+    return `${event.type}_${event.userId}_${event.title?.slice(0, 30)}`;
 }
 
-// REVENUE EVENT
-function createRevenueEvent(data) {
-    return {
-        type: "REVENUE",
-        userId: data.userId,
-        data,
-        source: "PAYMENT_SYSTEM"
-    };
+function isDuplicate(hash) {
+    const entry = eventCache.get(hash);
+    return entry && Date.now() - entry < CACHE_TTL;
 }
 
-// RSS EVENT
-function createRssEvent(item) {
-    return {
-        type: "RSS",
-        title: item.title,
-        content: item.content,
-        link: item.link,
-        source: "RSS_ENGINE"
-    };
+function markSeen(hash) {
+    eventCache.set(hash, Date.now());
 }
 
-// ALERT EVENT
-function createAlertEvent(alert) {
+// ================= ANALYTICS =================
+function getEventStats() {
     return {
-        type: "ALERT",
-        title: alert.title,
-        content: alert.content,
-        priority: "HIGH",
-        source: "SYSTEM_ALERT"
+        ...eventStats,
+        queueSize: queue.length,
+        cacheSize: eventCache.size
     };
 }
 
 // ================= EXPORTS =================
 module.exports = {
     routeEvent,
-
-    // helpers (IMPORTANT for future scaling)
-    createMessageEvent,
-    createRevenueEvent,
-    createRssEvent,
-    createAlertEvent
+    getEventStats
 };
