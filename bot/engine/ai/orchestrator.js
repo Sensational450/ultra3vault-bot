@@ -4,10 +4,15 @@ const { generateStrategy } = require("../engine/ai/strategyEngine");
 const { predictUserBehavior } = require("../engine/ai/predictEngine");
 const { scheduleAction } = require("../engine/ai/actionScheduler");
 
-// ================= ORCHESTRATOR v4.2 =================
+// 🧠 NEW: CONTENT GENERATOR
+const { generateContent } = require("../engine/ai/contentGenerator");
+
+// ================= ORCHESTRATOR v4.3 =================
 async function runOrchestrator(event, context = {}) {
 
     const memory = await loadMemory(event.userId);
+
+    event.memory = memory; // 🔥 pass memory to agents
 
     // ================= STRATEGY =================
     const strategy = generateStrategy(event.userId, memory);
@@ -18,10 +23,23 @@ async function runOrchestrator(event, context = {}) {
     console.log("🧠 STRATEGY:", strategy.mode);
     console.log("🔮 PREDICTION:", prediction);
 
+    // ================= AI CONTENT PRE-GENERATION =================
+    if (strategy.mode === "MONETIZE") {
+
+        const aiOffer = await generateContent({
+            type: "VIP_OFFER",
+            user: memory,
+            event,
+            tone: "persuasive"
+        });
+
+        event.aiOffer = aiOffer;
+    }
+
     // ================= EXECUTE STRATEGY =================
     executeStrategy(event, strategy, context);
 
-    // ================= UPDATE MEMORY =================
+    // ================= MEMORY UPDATE =================
     updateMemory(memory, prediction, event.userId);
 }
 
@@ -51,22 +69,24 @@ function executeAction(event, action, context) {
 
     console.log("⚡ EXECUTING:", action.type);
 
+    const channel = context.channel;
+
     switch (action.type) {
 
         case "VIP_OFFER":
-            context.channel?.send("👑 Upgrade to VIP for 2x XP!");
+            channel?.send(event.aiOffer || "👑 Upgrade to VIP for 2x XP!");
             break;
 
         case "BOOSTER_OFFER":
-            context.channel?.send("⚡ Boost XP speed now!");
+            channel?.send("⚡ Boost XP speed now!");
             break;
 
         case "REENGAGE_MESSAGE":
-            context.channel?.send("💔 We miss you! Come back!");
+            channel?.send("💔 We miss you! Come back!");
             break;
 
         case "XP_EVENT":
-            context.channel?.send("🔥 Bonus XP event active!");
+            channel?.send("🔥 Bonus XP event active!");
             break;
     }
 }
@@ -75,7 +95,8 @@ function executeAction(event, action, context) {
 function updateMemory(memory, prediction, userId) {
 
     updateUserMemory(userId, {
-        xpVelocity: prediction.predictedRevenueScore || 0
+        xpVelocity: prediction.predictedRevenueScore || 0,
+        activityScore: (memory.activityScore || 0) + 1
     });
 }
 
