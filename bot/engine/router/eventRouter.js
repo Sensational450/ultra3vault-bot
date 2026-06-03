@@ -1,62 +1,49 @@
 const { emitEvent } = require("./eventBus");
+const { trackRevenue } = require("./revenueEngine");
 
-// ================= MEMORY (optional analytics hook) =================
-let eventStats = {
-    total: 0,
-    highPriority: 0,
-    skipped: 0
+// ================= SELF-LEARNING MEMORY =================
+const learning = {
+    eventSuccess: new Map(), // type → score
+    eventRevenue: new Map(), // type → revenue impact
+    eventEngagement: new Map()
 };
 
-// ================= CACHE (deduplication) =================
+// ================= CACHE =================
 const eventCache = new Map();
-const CACHE_TTL = 60 * 1000; // 1 min
+const CACHE_TTL = 60 * 1000;
 
-// ================= PRIORITY QUEUE =================
+// ================= QUEUE =================
 const queue = [];
 let processing = false;
 
 // ================= MAIN ROUTER =================
 async function routeEvent(rawEvent, context = {}) {
 
-    try {
+    if (!rawEvent) return;
 
-        if (!rawEvent) return;
+    const event = normalizeEvent(rawEvent);
 
-        const event = normalizeEvent(rawEvent);
+    const hash = createHash(event);
+    if (isDuplicate(hash)) return;
+    markSeen(hash);
 
-        // ================= DUPLICATE CHECK =================
-        const hash = createHash(event);
+    // ================= SELF LEARNING SCORE =================
+    const baseScore = scoreEvent(event);
+    const learnedBoost = getLearningBoost(event.type);
 
-        if (isDuplicate(hash)) {
-            eventStats.skipped++;
-            return;
-        }
+    const finalScore = Math.min(baseScore + learnedBoost, 10);
 
-        markSeen(hash);
+    event.score = finalScore;
 
-        // ================= EVENT SCORING =================
-        const score = scoreEvent(event);
-
-        event.score = score;
-
-        eventStats.total++;
-
-        if (score >= 8) eventStats.highPriority++;
-
-        // ================= FAST PATH =================
-        if (score >= 9) {
-            console.log("⚡ FAST PATH EVENT:", event.type);
-            return emitEvent(event, context);
-        }
-
-        // ================= QUEUE EVENT =================
-        queue.push({ event, context });
-
-        processQueue();
-
-    } catch (err) {
-        console.log("❌ ROUTER v2 ERROR:", err.message);
+    // ================= FAST PATH =================
+    if (finalScore >= 9) {
+        console.log("⚡ FAST LEARNED EVENT:", event.type);
+        return emitEvent(event, context);
     }
+
+    queue.push({ event, context });
+
+    processQueue();
 }
 
 // ================= QUEUE PROCESSOR =================
@@ -65,91 +52,101 @@ async function processQueue() {
     if (processing) return;
     processing = true;
 
-    // sort by score (highest priority first)
     queue.sort((a, b) => (b.event.score || 0) - (a.event.score || 0));
 
     while (queue.length > 0) {
 
         const item = queue.shift();
 
-        try {
-            await emitEvent(item.event, item.context);
-        } catch (err) {
-            console.log("❌ QUEUE EXEC ERROR:", err.message);
-        }
+        await emitEvent(item.event, item.context);
+
+        // ================= FEEDBACK LOOP =================
+        recordOutcome(item.event);
     }
 
     processing = false;
 }
 
-// ================= EVENT SCORING ENGINE =================
+// ================= STATIC SCORING =================
 function scoreEvent(event) {
 
     let score = 0;
 
-    // TYPE importance
-    if (event.type === "MESSAGE") score += 5;
-    if (event.type === "REVENUE") score += 9;
-    if (event.type === "RSS") score += 7;
-    if (event.type === "ALERT") score += 10;
+    if (event.type === "MESSAGE") score += 4;
+    if (event.type === "RSS") score += 6;
+    if (event.type === "REVENUE") score += 10;
+    if (event.type === "ALERT") score += 9;
 
-    // CLASSIFICATION VALUE
+    if (event.priority === "HIGH") score += 3;
+
     if (event.classification?.value) {
         score += event.classification.value;
     }
 
-    // RISK BOOST
     if (event.classification?.risk === "HIGH") {
-        score += 2;
-    }
-
-    // PRIORITY BOOST
-    if (event.priority === "HIGH") {
-        score += 3;
-    }
-
-    // VIP / MONETIZATION BOOST
-    if (event.user?.tier === "VIP") {
         score += 2;
     }
 
     return Math.min(score, 10);
 }
 
-// ================= NORMALIZER =================
-function normalizeEvent(rawEvent) {
+// ================= SELF LEARNING BOOST =================
+function getLearningBoost(type) {
 
-    return {
-        type: rawEvent.type || "UNKNOWN",
+    const revenue = learning.eventRevenue.get(type) || 0;
+    const engagement = learning.eventEngagement.get(type) || 0;
 
-        userId: rawEvent.userId || rawEvent.user?.id || null,
+    let boost = 0;
 
-        user: rawEvent.user || null,
+    // Revenue-driven learning
+    if (revenue > 100) boost += 2;
+    if (revenue > 500) boost += 3;
 
-        message: rawEvent.message || null,
+    // Engagement-driven learning
+    if (engagement > 50) boost += 1;
+    if (engagement > 200) boost += 2;
 
-        title: rawEvent.title || rawEvent.message?.content || "",
-
-        content: rawEvent.content || rawEvent.message?.content || "",
-
-        classification: rawEvent.classification || {
-            type: "GENERAL",
-            sentiment: "NEUTRAL",
-            value: 1,
-            risk: "LOW"
-        },
-
-        priority: rawEvent.priority || "NORMAL",
-
-        source: rawEvent.source || "SYSTEM",
-
-        timestamp: Date.now()
-    };
+    return Math.min(boost, 4);
 }
 
-// ================= DUPLICATION CONTROL =================
+// ================= OUTCOME TRACKING =================
+function recordOutcome(event) {
+
+    const type = event.type;
+
+    // track engagement
+    const currentEngagement = learning.eventEngagement.get(type) || 0;
+    learning.eventEngagement.set(type, currentEngagement + 1);
+
+    // simulate revenue impact learning
+    const revenueImpact = estimateRevenue(event);
+
+    const currentRevenue = learning.eventRevenue.get(type) || 0;
+    learning.eventRevenue.set(type, currentRevenue + revenueImpact);
+
+    // success score evolution
+    const current = learning.eventSuccess.get(type) || 0;
+    learning.eventSuccess.set(type, current + event.score * 0.1);
+}
+
+// ================= REVENUE ESTIMATOR =================
+function estimateRevenue(event) {
+
+    let value = 0;
+
+    if (event.type === "REVENUE") value = 10;
+    if (event.type === "MESSAGE") value = 1;
+    if (event.type === "RSS") value = 3;
+    if (event.type === "ALERT") value = 5;
+
+    if (event.classification?.value > 5) value += 2;
+
+    return value;
+}
+
+// ================= DUPLICATION SYSTEM =================
 function createHash(event) {
-    return `${event.type}_${event.userId}_${event.title?.slice(0, 30)}`;
+    return `${event.type}_${event.userId}_${event.title?.slice(0, 25)}`;
 }
 
 function isDuplicate(hash) {
@@ -161,17 +158,17 @@ function markSeen(hash) {
     eventCache.set(hash, Date.now());
 }
 
-// ================= ANALYTICS =================
-function getEventStats() {
+// ================= EXTERNAL INSIGHT =================
+function getLearningReport() {
     return {
-        ...eventStats,
-        queueSize: queue.length,
-        cacheSize: eventCache.size
+        eventSuccess: Object.fromEntries(learning.eventSuccess),
+        eventRevenue: Object.fromEntries(learning.eventRevenue),
+        eventEngagement: Object.fromEntries(learning.eventEngagement)
     };
 }
 
 // ================= EXPORTS =================
 module.exports = {
     routeEvent,
-    getEventStats
+    getLearningReport
 };
