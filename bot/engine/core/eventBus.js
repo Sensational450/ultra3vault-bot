@@ -1,8 +1,10 @@
 const { runOrchestrator } = require("../ai/orchestrator");
+const { handleMessage } = require("../engagementEngine");
 const { updateFromMessage } = require("../userMemoryEngine");
 const { trackRevenue } = require("../revenueEngine");
+const { runMonetizationAI } = require("../aiMonetizationEngine");
 
-// ================= GLOBAL EVENT BUS =================
+// ================= GLOBAL EVENT BUS v2.0 =================
 async function emitEvent(event, context = {}) {
 
     try {
@@ -10,48 +12,39 @@ async function emitEvent(event, context = {}) {
         const { type, userId } = event;
 
         // ================= MEMORY =================
-        if (
-            type === "MESSAGE" &&
-            userId &&
-            updateFromMessage &&
-            event.message &&
-            event.user
-        ) {
-            updateFromMessage(
-                userId,
-                event.message,
-                event.user
-            );
+        if (updateFromMessage && type === "MESSAGE") {
+            updateFromMessage(userId, event.message, event.user);
+        }
+
+        // ================= ENGAGEMENT =================
+        if (type === "MESSAGE") {
+            handleMessage(event.message);
         }
 
         // ================= REVENUE =================
-        if (
-            type === "REVENUE" &&
-            trackRevenue &&
-            event.data
-        ) {
+        if (type === "REVENUE") {
             trackRevenue(event.data);
         }
 
-        // ================= AI ORCHESTRATOR =================
+        // ================= ORCHESTRATOR (BRAIN) =================
         if (runOrchestrator) {
-            await runOrchestrator(
-                event,
-                context
+            await runOrchestrator(event, context);
+        }
+
+        // ================= MONETIZATION AI =================
+        if (runMonetizationAI && type === "MESSAGE") {
+            runMonetizationAI(
+                event.message,
+                event.user,
+                {},
+                event.message.channel
             );
         }
 
-        console.log(
-            `🧠 EVENT BUS → ${type}`
-        );
+        console.log("🧠 EVENT BUS PROCESSED:", type);
 
     } catch (err) {
-
-        console.log(
-            "❌ EVENT BUS ERROR:",
-            err.message
-        );
-
+        console.log("❌ EVENT BUS ERROR:", err.message);
     }
 }
 
