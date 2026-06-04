@@ -4,9 +4,19 @@ const { updateFromMessage } = require("../userMemoryEngine");
 const { trackRevenue } = require("../revenueEngine");
 const { runMonetizationAI } = require("../aiMonetizationEngine");
 
-// ================= GLOBAL EVENT BUS v2.0 =================
+// ================= SELF-LEARNING STATE =================
+const agentScores = {
+    memory: 1,
+    engagement: 1,
+    revenue: 1,
+    monetization: 1,
+    orchestrator: 1
+};
 
-// middleware pipeline (EXTENSIBLE)
+// event performance history
+const eventHistory = [];
+
+// middleware system
 const middleware = [];
 
 // ================= REGISTER MIDDLEWARE =================
@@ -14,23 +24,25 @@ function use(fn) {
     middleware.push(fn);
 }
 
-// ================= CORE EVENT EMITTER =================
+// ================= EVENT EMITTER =================
 async function emitEvent(event, context = {}) {
 
     try {
 
-        // ================= SAFE NORMALIZATION =================
         event = normalizeEvent(event);
 
-        // ================= RUN MIDDLEWARE PIPELINE =================
+        // ================= PRE-MIDDLEWARE =================
         for (const fn of middleware) {
             await fn(event, context);
         }
 
-        // ================= ROUTING LAYER =================
+        // ================= CORE ROUTING =================
         await routeEvent(event, context);
 
-        console.log("🧠 EVENT BUS v2.0 PROCESSED:", event.type);
+        // ================= LEARNING STEP =================
+        learnFromEvent(event);
+
+        console.log("🧠 EVENT BUS v3 PROCESSED:", event.type);
 
     } catch (err) {
         console.log("❌ EVENT BUS ERROR:", err.message);
@@ -50,75 +62,137 @@ function normalizeEvent(event) {
     };
 }
 
-// ================= SMART ROUTER =================
+// ================= SMART ADAPTIVE ROUTER =================
 async function routeEvent(event, context) {
 
-    const { type, userId } = event;
+    const weight = getRoutingWeights();
 
-    // ================= 1. MEMORY LAYER (FIRST) =================
-    if (updateFromMessage && type === "MESSAGE") {
-        try {
-            updateFromMessage(userId, event.message, event.user);
-        } catch (e) {
-            console.log("MEMORY ERROR:", e.message);
-        }
+    // ================= MEMORY LAYER =================
+    if (updateFromMessage && event.type === "MESSAGE") {
+        safeExecute("memory", () =>
+            updateFromMessage(event.userId, event.message, event.user)
+        );
     }
 
-    // ================= 2. ENGAGEMENT ENGINE =================
-    if (type === "MESSAGE" && handleMessage) {
-        try {
-            handleMessage(event.message);
-        } catch (e) {
-            console.log("ENGAGEMENT ERROR:", e.message);
-        }
+    // ================= ENGAGEMENT =================
+    if (event.type === "MESSAGE" && handleMessage) {
+        safeExecute("engagement", () =>
+            handleMessage(event.message)
+        );
     }
 
-    // ================= 3. REVENUE TRACKING =================
-    if (type === "REVENUE" && trackRevenue) {
-        try {
-            trackRevenue(event.data);
-        } catch (e) {
-            console.log("REVENUE ERROR:", e.message);
-        }
+    // ================= REVENUE =================
+    if (event.type === "REVENUE") {
+        safeExecute("revenue", () =>
+            trackRevenue(event.data)
+        );
     }
 
-    // ================= 4. MONETIZATION AI =================
-    if (type === "MESSAGE" && runMonetizationAI) {
-        try {
+    // ================= MONETIZATION AI =================
+    if (event.type === "MESSAGE" && runMonetizationAI) {
+        safeExecute("monetization", () =>
             runMonetizationAI(
                 event.message,
                 event.user,
                 {},
                 event.message?.channel
-            );
-        } catch (e) {
-            console.log("MONETIZATION AI ERROR:", e.message);
-        }
+            )
+        );
     }
 
-    // ================= 5. ORCHESTRATOR (FINAL DECISION LAYER) =================
+    // ================= ORCHESTRATOR (ADAPTIVE PRIORITY) =================
     if (runOrchestrator) {
-        try {
-            await runOrchestrator(event, context);
-        } catch (e) {
-            console.log("ORCHESTRATOR ERROR:", e.message);
-        }
+
+        const delay = Math.floor(1000 / weight.orchestrator);
+
+        setTimeout(() => {
+            safeExecute("orchestrator", () =>
+                runOrchestrator(event, context)
+            );
+        }, delay);
     }
 }
 
-// ================= BUILT-IN AI FILTER MIDDLEWARE =================
-use((event) => {
+// ================= SAFE EXECUTION WRAPPER =================
+function safeExecute(agent, fn) {
 
-    // Example: filter spam-like events
-    if (event.type === "MESSAGE" && event.message) {
+    const start = Date.now();
 
-        const text = event.message.content || "";
-
-        if (text.length > 2000) {
-            event.classification.spam = true;
-        }
+    try {
+        const result = fn();
+        updateAgentScore(agent, true, Date.now() - start);
+        return result;
+    } catch (err) {
+        updateAgentScore(agent, false, Date.now() - start);
+        console.log(`❌ AGENT ERROR [${agent}]:`, err.message);
     }
-});
+}
+
+// ================= ADAPTIVE WEIGHT SYSTEM =================
+function getRoutingWeights() {
+
+    const total = Object.values(agentScores)
+        .reduce((a, b) => a + b, 0);
+
+    return {
+        orchestrator: agentScores.orchestrator / total,
+        engagement: agentScores.engagement / total,
+        memory: agentScores.memory / total,
+        revenue: agentScores.revenue / total,
+        monetization: agentScores.monetization / total
+    };
+}
+
+// ================= SELF-LEARNING ENGINE =================
+function learnFromEvent(event) {
+
+    eventHistory.push({
+        type: event.type,
+        timestamp: event.timestamp
+    });
+
+    // keep memory bounded
+    if (eventHistory.length > 500) {
+        eventHistory.shift();
+    }
+
+    const recent = eventHistory.slice(-50);
+
+    const messageEvents = recent.filter(e => e.type === "MESSAGE").length;
+    const revenueEvents = recent.filter(e => e.type === "REVENUE").length;
+
+    // ================= DYNAMIC ADJUSTMENT =================
+
+    if (revenueEvents > messageEvents * 0.3) {
+        agentScores.revenue += 0.2;
+        agentScores.monetization += 0.1;
+    } else {
+        agentScores.engagement += 0.1;
+    }
+
+    if (messageEvents > 30) {
+        agentScores.memory += 0.05;
+    }
+}
+
+// ================= AGENT PERFORMANCE TRACKER =================
+function updateAgentScore(agent, success, latency) {
+
+    if (!agentScores[agent]) agentScores[agent] = 1;
+
+    if (success) {
+        agentScores[agent] += 0.1;
+    } else {
+        agentScores[agent] -= 0.2;
+    }
+
+    if (latency > 500) {
+        agentScores[agent] -= 0.05;
+    }
+
+    // clamp
+    agentScores[agent] = Math.max(0.1, agentScores[agent]);
+}
 
 // ================= EXPORTS =================
 module.exports = {
