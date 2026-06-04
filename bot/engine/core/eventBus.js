@@ -4,53 +4,40 @@ const { updateFromMessage } = require("../userMemoryEngine");
 const { trackRevenue } = require("../revenueEngine");
 const { runMonetizationAI } = require("../aiMonetizationEngine");
 
-// ================= SELF-LEARNING STATE =================
-const agentScores = {
-    memory: 1,
-    engagement: 1,
-    revenue: 1,
-    monetization: 1,
-    orchestrator: 1
+// ================= SELF-ADAPTIVE STATE =================
+const agentScore = new Map();
+const eventScore = new Map();
+const pipelineMemory = [];
+
+// ================= EVENT PRIORITY WEIGHTS =================
+const eventWeights = {
+    MESSAGE: 1,
+    RSS: 1,
+    REVENUE: 2,
+    SYSTEM: 0.5
 };
 
-// event performance history
-const eventHistory = [];
-
-// middleware system
-const middleware = [];
-
-// ================= REGISTER MIDDLEWARE =================
-function use(fn) {
-    middleware.push(fn);
-}
-
-// ================= EVENT EMITTER =================
+// ================= MAIN EMITTER =================
 async function emitEvent(event, context = {}) {
 
-    try {
+    const normalized = normalize(event);
 
-        event = normalizeEvent(event);
+    recordEvent(normalized);
 
-        // ================= PRE-MIDDLEWARE =================
-        for (const fn of middleware) {
-            await fn(event, context);
-        }
+    const priority = getEventPriority(normalized);
 
-        // ================= CORE ROUTING =================
-        await routeEvent(event, context);
+    // ================= DYNAMIC ROUTING ORDER =================
+    const pipeline = buildPipeline(normalized, priority);
 
-        // ================= LEARNING STEP =================
-        learnFromEvent(event);
-
-        console.log("🧠 EVENT BUS v3 PROCESSED:", event.type);
-
-    } catch (err) {
-        console.log("❌ EVENT BUS ERROR:", err.message);
+    for (const step of pipeline) {
+        await executeStep(step, normalized, context);
     }
+
+    learn(normalized, pipeline);
 }
 
-// ================= EVENT NORMALIZER =================
-function normalizeEvent(event) {
+// ================= NORMALIZER =================
+function normalize(event) {
     return {
         type: event.type || "UNKNOWN",
         userId: event.userId || event.message?.author?.id,
@@ -62,140 +49,114 @@ function normalizeEvent(event) {
     };
 }
 
-// ================= SMART ADAPTIVE ROUTER =================
-async function routeEvent(event, context) {
+// ================= PIPELINE BUILDER =================
+function buildPipeline(event, priority) {
 
-    const weight = getRoutingWeights();
+    const base = [];
 
-    // ================= MEMORY LAYER =================
     if (updateFromMessage && event.type === "MESSAGE") {
-        safeExecute("memory", () =>
-            updateFromMessage(event.userId, event.message, event.user)
-        );
+        base.push({ name: "memory", fn: updateFromMessage });
     }
 
-    // ================= ENGAGEMENT =================
-    if (event.type === "MESSAGE" && handleMessage) {
-        safeExecute("engagement", () =>
-            handleMessage(event.message)
-        );
+    if (handleMessage && event.type === "MESSAGE") {
+        base.push({ name: "engagement", fn: handleMessage });
     }
 
-    // ================= REVENUE =================
-    if (event.type === "REVENUE") {
-        safeExecute("revenue", () =>
-            trackRevenue(event.data)
-        );
+    if (runMonetizationAI && event.type === "MESSAGE") {
+        base.push({ name: "monetization", fn: runMonetizationAI });
     }
 
-    // ================= MONETIZATION AI =================
-    if (event.type === "MESSAGE" && runMonetizationAI) {
-        safeExecute("monetization", () =>
-            runMonetizationAI(
-                event.message,
-                event.user,
-                {},
-                event.message?.channel
-            )
-        );
-    }
-
-    // ================= ORCHESTRATOR (ADAPTIVE PRIORITY) =================
     if (runOrchestrator) {
-
-        const delay = Math.floor(1000 / weight.orchestrator);
-
-        setTimeout(() => {
-            safeExecute("orchestrator", () =>
-                runOrchestrator(event, context)
-            );
-        }, delay);
+        base.push({ name: "orchestrator", fn: runOrchestrator });
     }
+
+    // SORT BY PERFORMANCE SCORE
+    return base.sort((a, b) =>
+        (agentScore.get(b.name) || 1) - (agentScore.get(a.name) || 1)
+    );
 }
 
-// ================= SAFE EXECUTION WRAPPER =================
-function safeExecute(agent, fn) {
+// ================= EXECUTION ENGINE =================
+async function executeStep(step, event, context) {
 
     const start = Date.now();
 
     try {
-        const result = fn();
-        updateAgentScore(agent, true, Date.now() - start);
-        return result;
+
+        if (step.name === "memory") {
+            step.fn(event.userId, event.message, event.user);
+        }
+
+        else if (step.name === "engagement") {
+            step.fn(event.message);
+        }
+
+        else if (step.name === "monetization") {
+            step.fn(event.message, event.user, {}, event.message?.channel);
+        }
+
+        else if (step.name === "orchestrator") {
+            step.fn(event, context);
+        }
+
+        updateScore(step.name, true, Date.now() - start);
+
     } catch (err) {
-        updateAgentScore(agent, false, Date.now() - start);
-        console.log(`❌ AGENT ERROR [${agent}]:`, err.message);
+        updateScore(step.name, false, Date.now() - start);
     }
 }
 
-// ================= ADAPTIVE WEIGHT SYSTEM =================
-function getRoutingWeights() {
+// ================= LEARNING ENGINE =================
+function learn(event, pipeline) {
 
-    const total = Object.values(agentScores)
-        .reduce((a, b) => a + b, 0);
-
-    return {
-        orchestrator: agentScores.orchestrator / total,
-        engagement: agentScores.engagement / total,
-        memory: agentScores.memory / total,
-        revenue: agentScores.revenue / total,
-        monetization: agentScores.monetization / total
-    };
-}
-
-// ================= SELF-LEARNING ENGINE =================
-function learnFromEvent(event) {
-
-    eventHistory.push({
+    pipelineMemory.push({
         type: event.type,
-        timestamp: event.timestamp
+        pipeline: pipeline.map(p => p.name)
     });
 
-    // keep memory bounded
-    if (eventHistory.length > 500) {
-        eventHistory.shift();
-    }
+    if (pipelineMemory.length > 300) pipelineMemory.shift();
 
-    const recent = eventHistory.slice(-50);
+    const recent = pipelineMemory.slice(-50);
 
-    const messageEvents = recent.filter(e => e.type === "MESSAGE").length;
-    const revenueEvents = recent.filter(e => e.type === "REVENUE").length;
+    const successBias = recent.length / (pipeline.length || 1);
 
-    // ================= DYNAMIC ADJUSTMENT =================
-
-    if (revenueEvents > messageEvents * 0.3) {
-        agentScores.revenue += 0.2;
-        agentScores.monetization += 0.1;
-    } else {
-        agentScores.engagement += 0.1;
-    }
-
-    if (messageEvents > 30) {
-        agentScores.memory += 0.05;
+    if (successBias > 2) {
+        boostAllAgents(0.05);
     }
 }
 
-// ================= AGENT PERFORMANCE TRACKER =================
-function updateAgentScore(agent, success, latency) {
+// ================= SCORE SYSTEM =================
+function updateScore(name, success, latency) {
 
-    if (!agentScores[agent]) agentScores[agent] = 1;
+    const score = agentScore.get(name) || 1;
 
-    if (success) {
-        agentScores[agent] += 0.1;
-    } else {
-        agentScores[agent] -= 0.2;
+    if (success) agentScore.set(name, score + 0.1);
+    else agentScore.set(name, score - 0.2);
+
+    if (latency > 400) {
+        agentScore.set(name, score - 0.05);
     }
 
-    if (latency > 500) {
-        agentScores[agent] -= 0.05;
-    }
-
-    // clamp
-    agentScores[agent] = Math.max(0.1, agentScores[agent]);
+    agentScore.set(name, Math.max(0.1, agentScore.get(name)));
 }
 
-// ================= EXPORTS =================
-module.exports = {
-    emitEvent,
-    use
-};
+// ================= GLOBAL BOOST =================
+function boostAllAgents(val) {
+    for (const [k, v] of agentScore) {
+        agentScore.set(k, v + val);
+    }
+}
+
+// ================= PRIORITY =================
+function getEventPriority(event) {
+    return eventWeights[event.type] || 1;
+}
+
+// ================= TRACK =================
+function recordEvent(event) {
+    eventScore.set(event.type,
+        (eventScore.get(event.type) || 0) + 1
+    );
+}
+
+module.exports = { emitEvent };
