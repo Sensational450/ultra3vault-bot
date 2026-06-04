@@ -2,24 +2,8 @@ const { Client, GatewayIntentBits, Collection } = require("discord.js");
 const fs = require("fs");
 const path = require("path");
 
-// ================= AI + ENGAGEMENT =================
-const { handleMessage } = require("./engine/engagementEngine");
-
-// 🧠 MEMORY SYSTEM (NEW CONNECTION)
-let updateFromMessage = null;
-try {
-    ({ updateFromMessage } = require("./engine/userMemoryEngine"));
-} catch (e) {
-    console.log("⚠️ Memory engine missing");
-}
-
-// 🧠 ORCHESTRATOR (NEW CONNECTION)
-let runOrchestrator = null;
-try {
-    ({ runOrchestrator } = require("./engine/ai/orchestrator"));
-} catch (e) {
-    console.log("⚠️ Orchestrator missing");
-}
+// ================= GLOBAL EVENT BUS =================
+const { emitEvent } = require("./engine/eventBus");
 
 // ================= CLIENT =================
 const client = new Client({
@@ -38,104 +22,74 @@ client.cooldowns = new Map();
 const commandPath = path.join(__dirname, "commands");
 
 function loadCommands() {
-
     if (!fs.existsSync(commandPath)) return;
 
     const files = fs.readdirSync(commandPath);
 
     for (const file of files) {
+        const cmd = require(path.join(commandPath, file));
 
-        try {
-            const cmd = require(path.join(commandPath, file));
+        if (!cmd?.name || typeof cmd.execute !== "function") continue;
 
-            if (!cmd?.name || typeof cmd.execute !== "function") continue;
-
-            client.commands.set(cmd.name, cmd);
-
-            console.log(`✅ Loaded: ${cmd.name}`);
-
-        } catch (err) {
-            console.log(`❌ Command error:`, err.message);
-        }
+        client.commands.set(cmd.name, cmd);
+        console.log(`✅ Loaded: ${cmd.name}`);
     }
 }
 
 loadCommands();
 
-// ================= MESSAGE PIPELINE (FULL AI CONNECTION) =================
+// ================= MESSAGE PIPELINE =================
 client.on("messageCreate", async (message) => {
 
     if (message.author.bot) return;
 
-    try {
+    const event = {
+        type: "MESSAGE",
+        userId: message.author.id,
+        message,
+        user: message.author,
+        timestamp: Date.now()
+    };
 
-        const userId = message.author.id;
+    // 🔥 EVERYTHING GOES THROUGH EVENT BUS
+    emitEvent(event, { client });
 
-        // ================= 1. ENGAGEMENT ENGINE =================
-        handleMessage?.(message);
+    // ================= COMMAND SYSTEM =================
+    if (!message.content.startsWith("!")) return;
 
-        // ================= 2. MEMORY SYSTEM =================
-        updateFromMessage?.(userId, message, {
-            level: 0
-        });
+    const args = message.content.slice(1).trim().split(/\s+/);
+    const name = args.shift().toLowerCase();
 
-        // ================= 3. AI ORCHESTRATOR =================
-        runOrchestrator?.({
-            userId,
-            type: "MESSAGE",
-            content: message.content,
-            channelId: message.channel.id
-        }, {
-            message,
-            client
-        });
+    const command = client.commands.get(name);
+    if (!command) return;
 
-        // ================= COMMAND SYSTEM =================
-        if (!message.content.startsWith("!")) return;
+    const key = `${message.author.id}_${name}`;
+    const now = Date.now();
 
-        const args = message.content.slice(1).trim().split(/\s+/);
-        const commandName = args.shift().toLowerCase();
-
-        const command = client.commands.get(commandName);
-        if (!command) return;
-
-        const key = `${userId}_${commandName}`;
-        const now = Date.now();
-
-        if (client.cooldowns.has(key)) {
-            const last = client.cooldowns.get(key);
-            if (now - last < 3000) return message.reply("⏳ Slow down!");
-        }
-
-        client.cooldowns.set(key, now);
-
-        await command.execute(message, args, client);
-
-    } catch (err) {
-        console.log("❌ MESSAGE ERROR:", err.message);
+    if (client.cooldowns.has(key)) {
+        if (now - client.cooldowns.get(key) < 3000) return;
     }
+
+    client.cooldowns.set(key, now);
+
+    await command.execute(message, args, client);
 });
 
 // ================= MEMBER JOIN =================
-client.on("guildMemberAdd", async (member) => {
+client.on("guildMemberAdd", (member) => {
 
-    console.log("👤 NEW MEMBER:", member.user.tag);
+    emitEvent({
+        type: "JOIN",
+        userId: member.id,
+        user: member,
+        timestamp: Date.now()
+    }, { client });
+
 });
 
 // ================= READY =================
 client.once("ready", () => {
-
-    console.log("🤖 ULTRA3 AI SYSTEM ONLINE");
-    console.log("🧠 FULL AI PIPELINE CONNECTED");
-});
-
-// ================= SAFETY =================
-process.on("uncaughtException", (err) => {
-    console.log("💥 UNCAUGHT:", err.message);
-});
-
-process.on("unhandledRejection", (err) => {
-    console.log("💥 REJECTION:", err.message);
+    console.log("🤖 ULTRA3 AI SYSTEM ONLINE (EVENT BUS ACTIVE)");
 });
 
 module.exports = client;
