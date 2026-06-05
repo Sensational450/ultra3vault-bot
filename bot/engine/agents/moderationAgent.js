@@ -1,35 +1,37 @@
 const { emitEvent } = require("../eventBus");
+const { moderateText } = require("../tools/moderationAPI");
 
-// ================= MODERATION AGENT v1 =================
+// ================= MODERATION AGENT v2 (AI POWERED) =================
 async function moderationAgent(event) {
 
     try {
 
-        if (!event) return;
+        if (!event?.message) return;
 
-        const text =
-            (event.title ||
-            event.message?.content ||
-            "").toLowerCase();
+        const text = event.message.content;
 
-        let risk = 0;
+        const result = await moderateText(text);
 
-        // simple safety checks (v1 rules)
-        if (text.includes("scam")) risk += 50;
-        if (text.includes("hack")) risk += 30;
-        if (text.includes("free money")) risk += 40;
-        if (text.includes("phishing")) risk += 60;
+        if (!result) return;
 
-        if (risk === 0) return;
+        const flagged = result.flagged;
+
+        if (!flagged) return;
+
+        const categories = result.categories || {};
+
+        const risk =
+            Object.values(categories).filter(Boolean).length * 20;
 
         emitEvent({
             type: "MODERATION_EVENT",
             userId: event.userId,
             risk,
+            categories,
             data: event
         });
 
-        console.log("🛡️ MODERATION FLAG:", risk);
+        console.log("🛡️ AI MODERATION FLAGGED:", risk);
 
     } catch (err) {
         console.log("❌ Moderation Error:", err.message);
