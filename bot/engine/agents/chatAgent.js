@@ -1,4 +1,5 @@
 const { emitEvent } = require("../eventBus");
+const { openAIChat } = require("../tools/openaiChatAPI");
 
 // ================= CHAT AGENT v1 =================
 async function chatAgent(event) {
@@ -9,27 +10,28 @@ async function chatAgent(event) {
 
         const text = event.message.content.toLowerCase();
 
-        let reply = null;
+        // ================= SIMPLE RULE TRIGGERS =================
+        if (text.includes("help") || text.includes("how earn")) {
 
-        if (text.includes("help")) {
-            reply = "🧠 I can help you with commands, rewards, and crypto updates.";
+            const aiReply = await openAIChat(
+                text,
+                "You are a Discord assistant. Keep answers short and helpful."
+            );
+
+            const reply =
+                aiReply ||
+                "🧠 I can help you with commands, XP, rewards, and crypto updates.";
+
+            event.message.channel.send(reply);
+
+            emitEvent({
+                type: "CHAT_EVENT",
+                userId: event.userId,
+                reply
+            });
+
+            console.log("💬 CHAT AI RESPONSE SENT");
         }
-
-        if (text.includes("how earn")) {
-            reply = "💰 You earn XP by chatting and completing tasks.";
-        }
-
-        if (!reply) return;
-
-        event.message.channel.send(reply);
-
-        emitEvent({
-            type: "CHAT_EVENT",
-            userId: event.userId,
-            reply
-        });
-
-        console.log("💬 CHAT RESPONSE SENT");
 
     } catch (err) {
         console.log("❌ Chat Agent Error:", err.message);
