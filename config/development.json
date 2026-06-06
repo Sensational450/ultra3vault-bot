@@ -1,0 +1,70 @@
+{
+  "bot": {
+    "defaultPrefix": "?",
+    "owners": ["your_discord_id_here"]
+  },
+  "commands": {
+    "globalCooldown": 0,
+    "perUserCooldown": 1,
+    "cooldownWindowMs": 2000
+  },
+  "moderation": {
+    "autoModEnabled": false,
+    "maxWarnings": 1,
+    "muteDurationMs": 10000,
+    "spamThreshold": 3,
+    "blockScam": false,
+    "blockProfanity": false,
+    "blockLinks": true
+  },
+  "economy": {
+    "dailyRewardMin": 500,
+    "dailyRewardMax": 1000,
+    "dailyCooldownHours": 0
+  },
+  "vip": {
+    "tiers": {
+      "vip": {
+        "priceUSD": 0.01,
+        "priceCoins": 10,
+        "durationDays": 1
+      },
+      "premium": {
+        "priceUSD": 0.02,
+        "priceCoins": 20,
+        "durationDays": 1
+      }
+    }
+  },
+  "priceFeed": {
+    "updateIntervalMinutes": 0.5,
+    "priceChangeThresholdPercent": 1
+  },
+  "news": {
+    "updateIntervalMinutes": 2,
+    "reddit": {
+      "enabled": true
+    }
+  },
+  "ai": {
+    "rateLimitPerUser": 20,
+    "memoryTimeoutMinutes": 5
+  },
+  "referral": {
+    "rewardReferrerCoins": 1000,
+    "rewardRefereeCoins": 500,
+    "maxReferralsPerUser": 10
+  },
+  "web": {
+    "port": 4000,
+    "apiRateLimit": 1000
+  },
+  "logging": {
+    "level": "debug",
+    "fileEnabled": true,
+    "filePath": "logs/dev.log"
+  },
+  "database": {
+    "path": "./data_dev.sqlite"
+  }
+}
