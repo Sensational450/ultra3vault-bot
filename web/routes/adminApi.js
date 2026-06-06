@@ -1,148 +1,131 @@
 /**
  * 🔒 AdminAPI v5.0
  * - Protected endpoints for bot administration
- * - Requires API key header (x-admin-key)
+ * - Requires API key header (x-admin-key) or query param (?key=...)
  * - Endpoints: health, stats, cache management, memory info, restart signal
  * - Integrates with eventBus and orchestrator
+ * - Exports `createAdminRouter` for use in WebServer
  */
-module.exports = (eventBus, logger, options = {}) => {
-  const apiKey = options.apiKey || process.env.ADMIN_API_KEY;
-  if (!apiKey) logger?.warn('⚠️ ADMIN_API_KEY not set – admin API endpoints are insecure!');
 
-  /**
-   * 🔑 Middleware to validate admin API key
-   */
+/**
+ * 🚀 Creates an Express router with all admin endpoints
+ * @param {object} express - Express module
+ * @param {object} client - Discord client
+ * @param {object} orchestrator - Orchestrator instance (for agent stats)
+ * @param {object} caches - { cache, userMemory, conversationMemory }
+ * @param {object} eventBus - Global event bus
+ * @param {object} logger - Logger instance
+ * @returns {Express.Router}
+ */
+function createAdminRouter(express, client, orchestrator, caches, eventBus, logger) {
+  const router = express.Router();
+
+  // 🔑 Simple API key middleware (uses env ADMIN_API_KEY)
   const authenticate = (req, res, next) => {
+    const apiKey = process.env.ADMIN_API_KEY;
     const providedKey = req.headers['x-admin-key'] || req.query.key;
     if (!apiKey) {
-      logger?.warn('⚠️ No ADMIN_API_KEY configured – allowing access (INSECURE)');
+      logger?.warn('⚠️ ADMIN_API_KEY not set – admin endpoints are INSECURE!');
       return next();
     }
     if (!providedKey || providedKey !== apiKey) {
+      logger?.warn(`🔑 Unauthorized admin access attempt from ${req.ip}`);
       return res.status(401).json({ error: 'Unauthorized: Invalid or missing API key' });
     }
     next();
   };
 
-  /**
-   * 📊 Get bot statistics (guilds, users, uptime, memory)
-   */
-  const getStats = async (client, orchestrator) => {
-    const memory = process.memoryUsage();
-    return {
-      status: 'online',
-      uptime: process.uptime(),
-      guilds: client.guilds.cache.size,
-      users: client.users.cache.size,
-      memory: {
-        rss: `${(memory.rss / 1024 / 1024).toFixed(2)} MB`,
-        heapUsed: `${(memory.heapUsed / 1024 / 1024).toFixed(2)} MB`,
-        heapTotal: `${(memory.heapTotal / 1024 / 1024).toFixed(2)} MB`,
-      },
-      nodeVersion: process.version,
-      discordVersion: require('discord.js').version,
-      agents: orchestrator?.getAllAgents().length || 0,
-      timestamp: Date.now(),
-    };
-  };
+  // Apply authentication to all routes in this router
+  router.use(authenticate);
 
-  /**
-   * 🧹 Clear various caches
-   */
-  const clearCaches = async (caches = {}) => {
-    const { cache, userMemory, conversationMemory } = caches;
-    const cleared = [];
-    if (cache && typeof cache.clear === 'function') {
-      cache.clear();
-      cleared.push('cache');
+  // 🏥 Health check
+  router.get('/health', (req, res) => {
+    res.json({ status: 'ok', timestamp: Date.now() });
+  });
+
+  // 📊 Full bot statistics
+  router.get('/stats', async (req, res) => {
+    try {
+      const memory = process.memoryUsage();
+      const stats = {
+        status: 'online',
+        uptime: process.uptime(),
+        guilds: client.guilds.cache.size,
+        users: client.users.cache.size,
+        memory: {
+          rss: `${(memory.rss / 1024 / 1024).toFixed(2)} MB`,
+          heapUsed: `${(memory.heapUsed / 1024 / 1024).toFixed(2)} MB`,
+          heapTotal: `${(memory.heapTotal / 1024 / 1024).toFixed(2)} MB`,
+        },
+        nodeVersion: process.version,
+        discordVersion: require('discord.js').version,
+        agents: orchestrator?.getAllAgents().length || 0,
+        timestamp: Date.now(),
+      };
+      res.json(stats);
+    } catch (err) {
+      logger?.error(`❌ /stats error: ${err.message}`);
+      res.status(500).json({ error: 'Failed to fetch stats' });
     }
-    if (userMemory && typeof userMemory.clear === 'function') {
-      userMemory.clear();
-      cleared.push('userMemory');
+  });
+
+  // 🧹 Clear caches (cache, userMemory, conversationMemory)
+  router.post('/cache/clear', async (req, res) => {
+    try {
+      const cleared = [];
+      if (caches.cache && typeof caches.cache.clear === 'function') {
+        caches.cache.clear();
+        cleared.push('cache');
+      }
+      if (caches.userMemory && typeof caches.userMemory.clear === 'function') {
+        caches.userMemory.clear();
+        cleared.push('userMemory');
+      }
+      if (caches.conversationMemory && typeof caches.conversationMemory.clearAll === 'function') {
+        caches.conversationMemory.clearAll();
+        cleared.push('conversationMemory');
+      }
+      res.json({ success: true, cleared });
+    } catch (err) {
+      logger?.error(`❌ /cache/clear error: ${err.message}`);
+      res.status(500).json({ error: 'Failed to clear caches' });
     }
-    if (conversationMemory && typeof conversationMemory.clearAll === 'function') {
-      conversationMemory.clearAll();
-      cleared.push('conversationMemory');
+  });
+
+  // 📊 Detailed memory info
+  router.get('/memory', (req, res) => {
+    const mem = process.memoryUsage();
+    res.json({
+      rss: mem.rss,
+      heapTotal: mem.heapTotal,
+      heapUsed: mem.heapUsed,
+      external: mem.external,
+      arrayBuffers: mem.arrayBuffers,
+    });
+  });
+
+  // 🔄 Request graceful restart (emits event for orchestrator)
+  router.post('/restart', async (req, res) => {
+    try {
+      eventBus?.emit('admin.restart.requested', { timestamp: Date.now() });
+      logger?.info('🚀 Admin restart requested via API');
+      res.json({ message: 'Restart signal sent. Orchestrator should handle graceful shutdown.' });
+    } catch (err) {
+      logger?.error(`❌ /restart error: ${err.message}`);
+      res.status(500).json({ error: 'Restart failed' });
     }
-    return cleared;
-  };
+  });
 
-  /**
-   * 🔄 Emit a restart signal (doesn't restart process, just notifies orchestrator)
-   */
-  const requestRestart = async (orchestrator) => {
-    eventBus?.emit('admin.restart.requested', { timestamp: Date.now() });
-    logger?.info('🚀 Admin restart requested via API');
-    return { message: 'Restart signal sent. Orchestrator should handle graceful shutdown.' };
-  };
+  // 📢 Broadcast custom event via event bus
+  router.post('/broadcast', async (req, res) => {
+    const { event, data } = req.body;
+    if (!event) return res.status(400).json({ error: 'Missing event name' });
+    eventBus?.emit(event, data || {});
+    logger?.info(`📡 Admin broadcast: ${event}`);
+    res.json({ success: true, event });
+  });
 
-  /**
-   * 🚀 Express route handler – returns an Express router
-   */
-  const createRouter = (express, client, orchestrator, caches = {}) => {
-    const router = express.Router();
-    router.use(authenticate);
+  return router;
+}
 
-    // 🏥 Health check (simple)
-    router.get('/health', (req, res) => {
-      res.json({ status: 'ok', timestamp: Date.now() });
-    });
-
-    // 📊 Full bot stats
-    router.get('/stats', async (req, res) => {
-      try {
-        const stats = await getStats(client, orchestrator);
-        res.json(stats);
-      } catch (err) {
-        logger?.error(`❌ /stats error: ${err.message}`);
-        res.status(500).json({ error: 'Failed to fetch stats' });
-      }
-    });
-
-    // 🧹 Clear caches
-    router.post('/cache/clear', async (req, res) => {
-      try {
-        const cleared = await clearCaches(caches);
-        res.json({ success: true, cleared });
-      } catch (err) {
-        logger?.error(`❌ /cache/clear error: ${err.message}`);
-        res.status(500).json({ error: 'Failed to clear caches' });
-      }
-    });
-
-    // 📊 Memory info (detailed)
-    router.get('/memory', (req, res) => {
-      const mem = process.memoryUsage();
-      res.json({
-        rss: mem.rss,
-        heapTotal: mem.heapTotal,
-        heapUsed: mem.heapUsed,
-        external: mem.external,
-      });
-    });
-
-    // 🔄 Request graceful restart
-    router.post('/restart', async (req, res) => {
-      try {
-        const result = await requestRestart(orchestrator);
-        res.json(result);
-      } catch (err) {
-        logger?.error(`❌ /restart error: ${err.message}`);
-        res.status(500).json({ error: 'Restart failed' });
-      }
-    });
-
-    // 📢 Broadcast custom message via event bus
-    router.post('/broadcast', async (req, res) => {
-      const { event, data } = req.body;
-      if (!event) return res.status(400).json({ error: 'Missing event name' });
-      eventBus?.emit(event, data || {});
-      logger?.info(`📡 Admin broadcast: ${event}`);
-      res.json({ success: true, event });
-    });
-
-    return router;
-  };
-
-  return { createRouter };
-};
+module.exports = { createAdminRouter };
