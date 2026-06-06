@@ -1,0 +1,150 @@
+{
+  "bot": {
+    "name": "Ultra3Vault",
+    "version": "5.0",
+    "defaultPrefix": "!",
+    "owners": [],                      
+    "supportServerInvite": null
+  },
+  "commands": {
+    "globalCooldown": 3,              
+    "perUserCooldown": 5,             
+    "cooldownWindowMs": 5000          
+  },
+  "moderation": {
+    "autoModEnabled": true,
+    "maxWarnings": 3,
+    "muteDurationMs": 60000,          
+    "spamThreshold": 5,               
+    "spamWindowMs": 5000,
+    "raidThreshold": 10,              
+    "raidWindowMs": 10000,
+    "blockScam": true,
+    "blockProfanity": true,
+    "blockLinks": false,
+    "profanityList": [
+      "fuck", "shit", "asshole", "bitch", "cunt", "nigga", "retard"
+    ]
+  },
+  "economy": {
+    "currencyName": "Coins",
+    "currencySymbol": "💰",
+    "startBalance": 0,
+    "dailyRewardMin": 100,
+    "dailyRewardMax": 500,
+    "dailyCooldownHours": 24,
+    "shopMessage": "Use `/shop` to view items!",
+    "defaultShopItems": [
+      {
+        "id": "role_vip",
+        "name": "VIP Role",
+        "type": "role",
+        "price": 5000,
+        "description": "Access to VIP channels"
+      },
+      {
+        "id": "item_lottery",
+        "name": "Lottery Ticket",
+        "type": "consumable",
+        "price": 100,
+        "description": "Enter the weekly lottery"
+      },
+      {
+        "id": "color_red",
+        "name": "Red Name Color",
+        "type": "role",
+        "price": 2000,
+        "description": "Custom role color"
+      }
+    ]
+  },
+  "vip": {
+    "tiers": {
+      "vip": {
+        "name": "VIP",
+        "priceUSD": 5,
+        "priceCoins": 500,
+        "durationDays": 30,
+        "perks": "Access to VIP channels, early news"
+      },
+      "premium": {
+        "name": "Premium",
+        "priceUSD": 15,
+        "priceCoins": 1500,
+        "durationDays": 30,
+        "perks": "All VIP perks + exclusive signals & airdrop alerts"
+      }
+    },
+    "defaultPlan": "30d"
+  },
+  "priceFeed": {
+    "updateIntervalMinutes": 1,
+    "defaultCoins": ["bitcoin", "ethereum", "solana", "binancecoin"],
+    "priceChangeThresholdPercent": 2,
+    "enableWhaleAlerts": false
+  },
+  "news": {
+    "updateIntervalMinutes": 10,
+    "feeds": {
+      "cryptoNews": [
+        "https://cointelegraph.com/rss",
+        "https://cryptoslate.com/feed/",
+        "https://decrypt.co/feed"
+      ],
+      "airdrops": [
+        "https://cryptopanic.com/news/airdrop/feed/",
+        "https://airdrops.io/feed/"
+      ],
+      "bitcoinNews": ["https://news.bitcoin.com/feed/"],
+      "altcoinNews": ["https://cryptopotato.com/feed/"]
+    },
+    "reddit": {
+      "enabled": false,
+      "subreddits": ["cryptocurrency", "bitcoin", "ethereum"],
+      "limit": 5
+    },
+    "maxItemsPerFeed": 5
+  },
+  "ai": {
+    "defaultModel": "gpt-3.5-turbo",
+    "maxTokens": 1000,
+    "temperature": 0.7,
+    "rateLimitPerUser": 5,
+    "memoryTimeoutMinutes": 30,
+    "systemPrompt": "You are a helpful assistant in a Discord crypto community. Be friendly and informative."
+  },
+  "referral": {
+    "rewardReferrerCoins": 500,
+    "rewardRefereeCoins": 200,
+    "rewardReferrerVipDays": 0,
+    "rewardRefereeVipDays": 0,
+    "maxReferralsPerUser": 50,
+    "codeLength": 8,
+    "resetLeaderboardWeekly": false
+  },
+  "web": {
+    "port": 3000,
+    "apiRateLimit": 100
+  },
+  "logging": {
+    "level": "info",
+    "fileEnabled": true,
+    "filePath": "logs/app.log",
+    "maxSize": "20m",
+    "maxFiles": "14d"
+  },
+  "database": {
+    "path": "./data.sqlite"
+  },
+  "apiKeys": {
+    "coingecko": null,
+    "openai": null,
+    "twitter": {
+      "bearerToken": null,
+      "apiKey": null,
+      "apiSecret": null,
+      "accessToken": null,
+      "accessSecret": null
+    }
+  }
+}
