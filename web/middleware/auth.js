@@ -1,29 +1,34 @@
 /**
  * 🔒 Authentication Middleware v5.0
  * - Validates API key from header (x-admin-key) or query (?key=...)
- * - Optional IP whitelisting
- * - Optional rate limiting per IP (to prevent brute force)
- * - Logs unauthorized attempts
+ * - Optional IP whitelisting (allow specific IPs only)
+ * - Optional rate limiting per IP (prevents brute force)
+ * - Logs all unauthorized attempts
+ * - Works with environment variables: ADMIN_API_KEY, ALLOWED_ADMIN_IPS
  */
 module.exports = (options = {}) => {
   const {
     apiKey = process.env.ADMIN_API_KEY,
-    allowedIPs = null,           // Array of allowed IPs (e.g., ['1.2.3.4'])
-    rateLimit = false,           // Enable rate limiting per IP
-    maxAttempts = 5,             // Max unauthorized attempts per IP
-    blockDurationMs = 600000,    // Block IP after maxAttempts (10 minutes)
+    allowedIPs = process.env.ALLOWED_ADMIN_IPS ? process.env.ALLOWED_ADMIN_IPS.split(',') : null,
+    rateLimit = options.rateLimit !== undefined ? options.rateLimit : true,
+    maxAttempts = options.maxAttempts || 5,
+    blockDurationMs = options.blockDurationMs || 600000, // 10 minutes
     logger = console,
   } = options;
 
+  // 🚨 If no API key is configured, block all requests (security)
   if (!apiKey) {
-    logger.warn('⚠️ ADMIN_API_KEY not set – auth middleware will reject all requests!');
+    logger.error('❌ ADMIN_API_KEY is not set! Auth middleware will deny all admin requests.');
   }
 
-  // Rate limiting store for unauthorized attempts (IP -> { count, blockedUntil })
+  // 📊 Rate limiting store (IP -> { count, blockedUntil })
   const attemptStore = new Map();
 
   const getClientIP = (req) => {
-    return req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
+    // Check Cloudflare / proxy headers first
+    const forwarded = req.headers['x-forwarded-for'];
+    if (forwarded) return forwarded.split(',')[0].trim();
+    return req.socket.remoteAddress || req.ip;
   };
 
   const isIPBlocked = (ip) => {
@@ -44,7 +49,7 @@ module.exports = (options = {}) => {
     record.count++;
     if (record.count >= maxAttempts) {
       record.blockedUntil = Date.now() + blockDurationMs;
-      logger.warn(`🚫 IP ${ip} blocked for ${blockDurationMs / 1000}s due to too many auth failures`);
+      logger.warn(`🚫 IP ${ip} blocked for ${Math.round(blockDurationMs / 1000)}s due to too many auth failures`);
     }
     attemptStore.set(ip, record);
   };
@@ -59,26 +64,29 @@ module.exports = (options = {}) => {
   return (req, res, next) => {
     const clientIP = getClientIP(req);
 
-    // 1. IP whitelist check (if enabled)
-    if (allowedIPs && Array.isArray(allowedIPs) && !allowedIPs.includes(clientIP)) {
-      logger.warn(`🔒 Blocked request from non-whitelisted IP: ${clientIP}`);
-      return res.status(403).json({ error: 'Forbidden: IP not allowed' });
+    // 1. IP whitelist check (if any IPs are specified)
+    if (allowedIPs && Array.isArray(allowedIPs) && allowedIPs.length > 0) {
+      if (!allowedIPs.includes(clientIP)) {
+        logger.warn(`🔒 Blocked admin request from non-whitelisted IP: ${clientIP}`);
+        return res.status(403).json({ error: 'Forbidden: IP not allowed' });
+      }
     }
 
     // 2. Rate limit check (if enabled)
     if (rateLimit && isIPBlocked(clientIP)) {
+      logger.warn(`⏱️ Rate‑limited admin request from blocked IP: ${clientIP}`);
       return res.status(429).json({ error: 'Too many failed attempts. Try again later.' });
     }
 
-    // 3. Extract API key from header or query
+    // 3. Extract API key from header or query parameter
     const providedKey = req.headers['x-admin-key'] || req.query.key;
-    if (!providedKey || providedKey !== apiKey) {
+    if (!apiKey || !providedKey || providedKey !== apiKey) {
       recordFailedAttempt(clientIP);
-      logger.warn(`🔑 Unauthorized access attempt from IP ${clientIP}`);
+      logger.warn(`🔑 Unauthorized admin access attempt from IP ${clientIP}`);
       return res.status(401).json({ error: 'Unauthorized: Invalid or missing API key' });
     }
 
-    // 4. Success – reset failed attempts for this IP and proceed
+    // 4. Success – clear failure record and proceed
     resetFailedAttempts(clientIP);
     next();
   };
