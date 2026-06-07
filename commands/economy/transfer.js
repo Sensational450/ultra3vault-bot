@@ -8,7 +8,6 @@ module.exports = {
     ],
   },
   async execute(interaction) {
-    const { eventBus } = interaction.client;
-    eventBus?.emit('command.transfer', { interaction });
+    await interaction.client.orchestrator.onInteraction(interaction);
   },
 };
