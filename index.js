@@ -73,7 +73,7 @@ const VipAgent = require('./agents/vipAgent');
 const PriceFeedAgent = require('./agents/priceFeedAgent');
 const NewsAgent = require('./agents/newsAgent');
 const ReferralAgent = require('./agents/referralAgent');
-const InfoAgent = require('./agents/infoAgent'); // ✅ NEW: handles /ping and /stats
+const InfoAgent = require('./agents/infoAgent'); // ✅ NEW: handles /ping, /stats
 let AiChatAgent = null;
 try {
   if (secrets.openaiApiKey) {
@@ -89,17 +89,13 @@ try {
 // ================= STARTUP =================
 (async () => {
   try {
-    // 1️⃣ Initialise database (runs migrations)
     await db.init();
     logger.info('✅ Database initialized');
 
-    // 2️⃣ Create models (needs db ready)
     const models = new Models(db, eventBus, logger);
-
-    // 3️⃣ Create orchestrator
     orchestrator = new Orchestrator(client, { eventBus, logger, rateLimiter });
 
-    // 4️⃣ Register agents (only after db is ready)
+    // Register all agents
     orchestrator.registerAgent(new ModerationAgent(eventBus, { client, logger, db, models }), 100);
     orchestrator.registerAgent(new EconomyAgent(eventBus, { client, logger, db, models }), 90);
     orchestrator.registerAgent(new VipAgent(eventBus, { client, logger, db, models }), 80);
@@ -113,13 +109,13 @@ try {
 
     logger.info('✅ All agents registered');
 
-    // 5️⃣ Attach Discord events (needs orchestrator)
+    // Attach Discord events
     require('./events/messageCreate')(client, orchestrator, { logger });
     require('./events/interactionCreate')(client, orchestrator, { logger });
     require('./events/guildMemberAdd')(client, orchestrator, { logger });
     require('./events/ready')(client, orchestrator, { logger, registerCommands: require('./commands/register') });
 
-    // 6️⃣ Schedule jobs
+    // Schedule jobs
     const priceUpdater = require('./jobs/priceUpdater')({ eventBus, logger, cache: null });
     const leaderboardReset = require('./jobs/leaderboardReset')({ eventBus, logger, models });
     const subscriptionRenewal = require('./jobs/subscriptionRenewal')({ eventBus, logger, models, client });
@@ -130,7 +126,7 @@ try {
     scheduler.registerJob('subscriptionRenewal', '0 */6 * * *', subscriptionRenewal);
     scheduler.registerJob('cleanupTempData', '0 */2 * * *', cleanupTempData);
 
-    // 7️⃣ Start web server (assign to outer variable)
+    // Start web server
     webServer = new WebServer({
       eventBus,
       logger,
@@ -144,7 +140,7 @@ try {
     await webServer.start();
     logger.info('🌐 Web server started');
 
-    // 8️⃣ Login to Discord
+    // Login to Discord
     await client.login(secrets.token);
     logger.info('🤖 Discord client login initiated');
   } catch (err) {
