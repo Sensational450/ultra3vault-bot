@@ -5,11 +5,10 @@
  * - Listens to payment.success and admin events
  * - Handles role assignment/removal
  * - Auto-expiry via scheduler event
- * - No longer handles `/buy` – that's handled by the command file
+ * - No payment creation logic – handled by commands/vip/buy.js
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
-const { NowPaymentsAPI } = require('../tools/api/nowpayments');
 
 class VipAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -34,25 +33,6 @@ class VipAgent extends BaseAgent {
       },
     };
     this.subCache = new Map();
-
-    // Initialize NowPayments API wrapper only if API keys exist
-    let nowpayments = null;
-    try {
-      if (process.env.NOWPAYMENTS_API_KEY && process.env.NOWPAYMENTS_IPN_SECRET) {
-        nowpayments = new NowPaymentsAPI({
-          apiKey: process.env.NOWPAYMENTS_API_KEY,
-          ipnSecret: process.env.NOWPAYMENTS_IPN_SECRET,
-          sandbox: process.env.NODE_ENV !== 'production',
-          logger: this.logger,
-        });
-        this.logger.info('💳 NowPayments client initialized');
-      } else {
-        this.logger.warn('⚠️ NowPayments API keys missing – payments will not work');
-      }
-    } catch (err) {
-      this.logger.error(`❌ Failed to initialize NowPayments: ${err.message}`);
-    }
-    this.nowpayments = nowpayments;
   }
 
   async init() {
@@ -186,24 +166,6 @@ class VipAgent extends BaseAgent {
     return true;
   }
 
-  // ---------- CREATE NOWPAYMENTS INVOICE (used by command file) ----------
-  async createInvoice(userId, plan) {
-    if (!this.nowpayments) {
-      throw new Error('NowPayments client not initialized. Check API keys.');
-    }
-    const orderId = `${userId}_${plan}`;
-    const amount = plan === '7d' ? 5 : (plan === '14d' ? 9 : 15);
-    const invoice = await this.nowpayments.createInvoice({
-      amount,
-      priceCurrency: 'usd',
-      orderId,
-      orderDescription: `Ultra3Vault ${plan} subscription`,
-      successUrl: 'https://google.com',
-      cancelUrl: 'https://google.com',
-    });
-    return invoice.invoice_url;
-  }
-
   // ---------- EVENT BUS LISTENERS ----------
   setupListeners() {
     this.subscribe('payment.success', async (data) => {
@@ -247,7 +209,6 @@ class VipAgent extends BaseAgent {
       case 'renew':
         await this.cmdRenew(interaction);
         break;
-      // 'buy' is handled by command file – removed from agent
       case 'grantvip':
         if (!member.permissions.has('Administrator')) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
         await this.cmdGrantVip(interaction);
