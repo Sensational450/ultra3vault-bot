@@ -4,6 +4,7 @@
  * - Loads each command's `data` property (name, description, options)
  * - Registers slash commands with Discord (global or guild-specific)
  * - Supports command deletion (optional)
+ * - Clears require cache to always use latest command definitions
  */
 const { REST, Routes } = require('discord.js');
 const fs = require('fs');
@@ -29,22 +30,23 @@ function getAllCommandFiles(dir, fileList = []) {
   return fileList;
 }
 
-// 📦 Load command data from each file
+// 📦 Load command data from each file (with cache clearing)
 async function loadCommands(commandsDir) {
   const commandFiles = getAllCommandFiles(commandsDir);
   const commands = [];
   for (const file of commandFiles) {
     try {
+      // Clear require cache to always get the latest version of the command file
+      delete require.cache[require.resolve(file)];
       const command = require(file);
-      // Expect command.data to be a valid SlashCommandBuilder or plain object
       if (command.data && command.data.name && command.data.description) {
         commands.push(command.data);
-        console.log(`✅ Loaded command: ${command.data.name} (${file})`);
+        console.log(`✅ Loaded command: ${command.data.name} (${path.basename(file)})`);
       } else {
-        console.warn(`⚠️ Skipping ${file}: missing data.name or data.description`);
+        console.warn(`⚠️ Skipping ${path.basename(file)}: missing data.name or data.description`);
       }
     } catch (err) {
-      console.error(`❌ Error loading command from ${file}:`, err);
+      console.error(`❌ Error loading command from ${path.basename(file)}:`, err);
     }
   }
   return commands;
