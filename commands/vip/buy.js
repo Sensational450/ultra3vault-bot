@@ -19,11 +19,12 @@ module.exports = {
     ],
   },
   async execute(interaction) {
+    // ✅ Must defer first
     await interaction.deferReply({ ephemeral: true });
+
     const plan = interaction.options.getString('plan');
     const userId = interaction.user.id;
 
-    // Initialize NowPayments
     const nowpayments = new NowPaymentsAPI({
       apiKey: process.env.NOWPAYMENTS_API_KEY,
       ipnSecret: process.env.NOWPAYMENTS_IPN_SECRET,
