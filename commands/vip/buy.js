@@ -1,3 +1,5 @@
+const { NowPaymentsAPI } = require('../../tools/api/nowpayments');
+
 module.exports = {
   data: {
     name: 'buy',
@@ -17,8 +19,43 @@ module.exports = {
     ],
   },
   async execute(interaction) {
+    // 1️⃣ Defer immediately to avoid interaction timeout
     await interaction.deferReply({ ephemeral: true });
+
     const plan = interaction.options.getString('plan');
-    await interaction.editReply(`✅ You selected plan: ${plan}. Payment system is being configured.`);
+    const userId = interaction.user.id;
+
+    // 2️⃣ Check that required API keys are present
+    if (!process.env.NOWPAYMENTS_API_KEY || !process.env.NOWPAYMENTS_IPN_SECRET) {
+      await interaction.editReply({ content: '❌ Payment system not configured. Please contact administrator.' });
+      return;
+    }
+
+    const nowpayments = new NowPaymentsAPI({
+      apiKey: process.env.NOWPAYMENTS_API_KEY,
+      ipnSecret: process.env.NOWPAYMENTS_IPN_SECRET,
+      sandbox: process.env.NODE_ENV !== 'production',
+      logger: console,
+    });
+
+    try {
+      const amount = plan === '7d' ? 5 : (plan === '14d' ? 9 : 15);
+      const orderId = `${userId}_${plan}`;
+      const invoice = await nowpayments.createInvoice({
+        amount,
+        priceCurrency: 'usd',
+        orderId,
+        orderDescription: `Ultra3Vault ${plan} subscription`,
+        successUrl: 'https://google.com',
+        cancelUrl: 'https://google.com',
+        // webhookUrl intentionally omitted – uses dashboard setting
+      });
+      await interaction.editReply({
+        content: `💰 Invoice created!\nPay here: ${invoice.invoice_url}\n\n_Once payment is confirmed, your VIP role will be automatically assigned._`,
+      });
+    } catch (err) {
+      console.error('Invoice creation failed:', err);
+      await interaction.editReply({ content: `❌ Failed to create payment link: ${err.message}` });
+    }
   },
 };
