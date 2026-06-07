@@ -19,15 +19,13 @@ module.exports = {
     ],
   },
   async execute(interaction) {
-    // 1️⃣ Defer immediately
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ ephemeral: true }); // 👈 must defer
 
     const plan = interaction.options.getString('plan');
     const userId = interaction.user.id;
 
-    // 2️⃣ Check API keys
     if (!process.env.NOWPAYMENTS_API_KEY || !process.env.NOWPAYMENTS_IPN_SECRET) {
-      await interaction.editReply({ content: '❌ Payment system not configured. Please contact the administrator.' });
+      await interaction.editReply({ content: '❌ Payment system not configured.' });
       return;
     }
 
