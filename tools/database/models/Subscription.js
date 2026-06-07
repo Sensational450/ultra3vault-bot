@@ -28,6 +28,27 @@ class SubscriptionModel extends BaseModel {
     );
   }
 
+  // 📋 Get all subscriptions for a user (across guilds)
+  async getByUser(userId) {
+    return await this.db.all(
+      `SELECT guildId, tier, expiresAt, autoRenew FROM subscriptions
+       WHERE userId = ?`,
+      [userId]
+    );
+  }
+
+  // 🔄 Renew subscription (add days to existing expiry)
+  async renew(userId, guildId, additionalDays) {
+    const current = await this.get(userId, guildId);
+    if (!current) return null;
+    const newExpiry = current.expiresAt > Date.now()
+      ? current.expiresAt + additionalDays * 86400000
+      : Date.now() + additionalDays * 86400000;
+    await this.set(userId, guildId, current.tier, newExpiry, current.autoRenew);
+    this._emit('subscription.renewed', { userId, guildId, newExpiry });
+    return newExpiry;
+  }
+
   // ❌ Delete subscription
   async delete(userId, guildId) {
     await this.db.run(
