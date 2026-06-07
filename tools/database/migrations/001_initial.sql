@@ -16,6 +16,27 @@ CREATE TABLE IF NOT EXISTS economy (
   PRIMARY KEY (userId, guildId)
 );
 
+-- Inventory for economy (used by shop)
+CREATE TABLE IF NOT EXISTS economy_inventory (
+  userId TEXT,
+  guildId TEXT,
+  itemId TEXT,
+  quantity INTEGER DEFAULT 0,
+  PRIMARY KEY (userId, guildId, itemId)
+);
+
+-- Shop items configuration (per guild)
+CREATE TABLE IF NOT EXISTS economy_shop (
+  guildId TEXT,
+  itemId TEXT,
+  name TEXT,
+  price INTEGER,
+  type TEXT,
+  roleId TEXT,
+  description TEXT,
+  PRIMARY KEY (guildId, itemId)
+);
+
 -- ================= 🔗 REFERRALS =================
 CREATE TABLE IF NOT EXISTS referral_codes (
   userId TEXT,
@@ -32,6 +53,22 @@ CREATE TABLE IF NOT EXISTS referrals (
   guildId TEXT,
   timestamp INTEGER,
   rewardCoins INTEGER DEFAULT 0
+);
+
+-- Referral stats per user
+CREATE TABLE IF NOT EXISTS referral_stats (
+  userId TEXT,
+  guildId TEXT,
+  totalReferrals INTEGER DEFAULT 0,
+  totalRewardsCoins INTEGER DEFAULT 0,
+  lastReferralAt INTEGER,
+  PRIMARY KEY (userId, guildId)
+);
+
+-- Referral per‑guild configuration
+CREATE TABLE IF NOT EXISTS referral_configs (
+  guildId TEXT PRIMARY KEY,
+  config TEXT
 );
 
 -- ================= 👑 SUBSCRIPTIONS =================
@@ -63,6 +100,12 @@ CREATE TABLE IF NOT EXISTS warnings (
   reason TEXT,
   moderatorId TEXT,
   timestamp INTEGER
+);
+
+-- ================= 🤖 AI CONFIG =================
+CREATE TABLE IF NOT EXISTS ai_config (
+  guildId TEXT PRIMARY KEY,
+  config TEXT
 );
 
 -- ================= 📰 NEWS =================
@@ -106,3 +149,5 @@ CREATE INDEX IF NOT EXISTS idx_warnings_user ON warnings(userId, guildId);
 CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrerId, guildId);
 CREATE INDEX IF NOT EXISTS idx_price_alerts_user ON price_alerts(userId, guildId);
 CREATE INDEX IF NOT EXISTS idx_news_cache_feed ON news_cache(feedUrl);
+CREATE INDEX IF NOT EXISTS idx_referral_stats_guild ON referral_stats(guildId);
+CREATE INDEX IF NOT EXISTS idx_economy_inventory_user ON economy_inventory(userId, guildId);
