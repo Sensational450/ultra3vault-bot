@@ -5,7 +5,7 @@
  * - Listens to payment.success and admin events
  * - Handles role assignment/removal
  * - Auto-expiry via scheduler event
- * - Handles `/buy` command to create a NowPayments invoice
+ * - Handles `/buy` command to create a NowPayments invoice (without sending webhookUrl)
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
@@ -35,7 +35,7 @@ class VipAgent extends BaseAgent {
     };
     this.subCache = new Map();
 
-    // Initialize NowPayments API wrapper only if API key exists
+    // Initialize NowPayments API wrapper only if API keys exist
     let nowpayments = null;
     try {
       if (process.env.NOWPAYMENTS_API_KEY && process.env.NOWPAYMENTS_IPN_SECRET) {
@@ -186,17 +186,14 @@ class VipAgent extends BaseAgent {
     return true;
   }
 
-  // ---------- CREATE NOWPAYMENTS INVOICE (for /buy) ----------
+  // ---------- CREATE NOWPAYMENTS INVOICE (for /buy) – NO WEBHOOK URL SENT ----------
   async createInvoice(userId, plan) {
     if (!this.nowpayments) {
       throw new Error('NowPayments client not initialized. Check API keys.');
     }
-    const webhookUrl = process.env.WEBHOOK_URL || (process.env.RENDER_EXTERNAL_URL ? `${process.env.RENDER_EXTERNAL_URL}/webhook` : null);
-    if (!webhookUrl) {
-      throw new Error('Webhook URL is not configured. Set WEBHOOK_URL or RENDER_EXTERNAL_URL.');
-    }
     const orderId = `${userId}_${plan}`;
     const amount = plan === '7d' ? 5 : (plan === '14d' ? 9 : 15);
+    // Removed webhookUrl parameter – NowPayments will use the URL configured in your dashboard
     const invoice = await this.nowpayments.createInvoice({
       amount,
       priceCurrency: 'usd',
@@ -204,7 +201,7 @@ class VipAgent extends BaseAgent {
       orderDescription: `Ultra3Vault ${plan} subscription`,
       successUrl: 'https://google.com',
       cancelUrl: 'https://google.com',
-      webhookUrl: webhookUrl,
+      // webhookUrl intentionally omitted to avoid "not allowed" error
     });
     return invoice.invoice_url;
   }
@@ -233,7 +230,7 @@ class VipAgent extends BaseAgent {
       await this.grantSubscription(data.userId, data.guildId, data.tier, data.durationDays, 0, 'admin');
     });
 
-    // ✅ Handle /buy slash command (creates NowPayments invoice)
+    // ✅ Handle /buy slash command
     this.subscribe('command.buy', async ({ interaction }) => {
       await this.handleBuyCommand(interaction);
     });
@@ -258,7 +255,6 @@ class VipAgent extends BaseAgent {
         await this.cmdRenew(interaction);
         break;
       case 'buy':
-        // Also handle directly in case event emission fails (backup)
         await this.handleBuyCommand(interaction);
         break;
       case 'grantvip':
@@ -273,7 +269,6 @@ class VipAgent extends BaseAgent {
   }
 
   async handleBuyCommand(interaction) {
-    // The command file already deferred reply, so we just need to edit it
     const plan = interaction.options.getString('plan');
     const validPlans = ['7d', '14d', '30d'];
     if (!validPlans.includes(plan)) {
@@ -286,7 +281,6 @@ class VipAgent extends BaseAgent {
       });
     } catch (err) {
       this.logger.error(`Failed to create invoice: ${err.message}`);
-      // Ensure we send a proper error message to the user
       await interaction.editReply({ content: `❌ Failed to create payment link: ${err.message}` });
     }
   }
