@@ -1,11 +1,10 @@
 /**
- * BaseAgent v3.0
+ * 🧱 BaseAgent v5.0
  * 
  * All domain agents must extend this class.
  * Provides lifecycle hooks, event bus integration, dependency injection,
- * error handling, and logging.
+ * error handling, logging, and optional health checks.
  */
-
 class BaseAgent {
   /**
    * @param {EventBus} eventBus - Global event bus for inter‑agent communication.
@@ -13,11 +12,12 @@ class BaseAgent {
    * @param {Discord.Client} deps.client - Discord.js client instance.
    * @param {Logger} deps.logger - Winston logger instance.
    * @param {SQLite3.Database} deps.db - Database connection.
+   * @param {Object} deps.models - Models layer (User, Economy, Subscription, etc.).
    * @param {Object} deps.cache - LRU cache instance (optional).
    */
   constructor(eventBus, deps) {
     if (new.target === BaseAgent) {
-      throw new Error('BaseAgent is abstract and cannot be instantiated directly.');
+      throw new Error('❌ BaseAgent is abstract and cannot be instantiated directly.');
     }
 
     this.eventBus = eventBus;
@@ -25,6 +25,7 @@ class BaseAgent {
     this.logger = deps.logger;
     this.client = deps.client;
     this.db = deps.db;
+    this.models = deps.models || null;      // v5.0: models layer
     this.cache = deps.cache || null;
 
     /** @type {string} - Agent name (defaults to class name) */
@@ -41,12 +42,12 @@ class BaseAgent {
   }
 
   /**
-   * Override this method to subscribe to events and set up any initialisation logic.
+   * Override to subscribe to events and set up initialisation logic.
    * Called automatically by the constructor.
    * @example
    * setupListeners() {
-   *   this.eventBus.on('payment.success', (data) => this.handlePayment(data));
-   *   this.eventBus.on('job.priceUpdate', () => this.updatePrices());
+   *   this.subscribe('payment.success', (data) => this.handlePayment(data));
+   *   this.subscribe('job.priceUpdate', () => this.updatePrices());
    * }
    */
   setupListeners() {
@@ -55,11 +56,23 @@ class BaseAgent {
 
   /**
    * Async initialisation – override if the agent needs to load data or connect to services.
-   * Called manually by the orchestrator after all agents are registered.
+   * Called by the orchestrator after all agents are registered.
    */
   async init() {
     this.logger.info(`${this.name} initialising...`);
     this.initialised = true;
+  }
+
+  /**
+   * Optional health check – override to return custom health status.
+   * @returns {Promise<Object>} Health data (e.g., { status: 'ok', details: {} })
+   */
+  async healthCheck() {
+    return {
+      agent: this.name,
+      status: this.initialised ? 'healthy' : 'initialising',
+      timestamp: Date.now(),
+    };
   }
 
   /**
@@ -98,21 +111,20 @@ class BaseAgent {
    * Safely subscribe to an event bus event with automatic error logging.
    * @param {string} event - Event name.
    * @param {Function} handler - Async function to handle the event.
+   * @param {number} priority - Priority (higher = called first).
    * @returns {Function} Unsubscribe function.
    */
-  subscribe(event, handler) {
+  subscribe(event, handler, priority = 0) {
     const wrappedHandler = async (data) => {
       try {
         await handler(data);
       } catch (err) {
         this.logger.error(`[${this.name}] Error handling event "${event}": ${err.message}\n${err.stack}`);
-        // Optionally emit error to central error handler
         this.eventBus.emit('agent.error', { agent: this.name, event, error: err });
       }
     };
-    this.eventBus.on(event, wrappedHandler);
+    this.eventBus.on(event, wrappedHandler, priority);
     this._listeners.set(event, wrappedHandler);
-    // Return unsubscribe function
     return () => {
       this.eventBus.off(event, wrappedHandler);
       this._listeners.delete(event);
