@@ -1,7 +1,6 @@
 /**
  * ℹ️ InfoAgent v5.0
- * - Handles basic info commands directly: ping, stats
- * - Assumes interaction is already deferred by interactionCreate.js
+ * - Handles basic info commands: ping, stats
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
@@ -27,17 +26,18 @@ class InfoAgent extends BaseAgent {
   }
 
   async handlePing(interaction) {
-    // interaction already deferred by interactionCreate.js
+    // If already deferred (e.g., by ping.js command file), use editReply
+    const replyMethod = interaction.deferred ? interaction.editReply : interaction.reply;
     const latency = interaction.client.ws.ping;
     const embed = new EmbedBuilder()
       .setTitle('🏓 Pong!')
       .setDescription(`WebSocket latency: **${latency}ms**`)
       .setColor(0x00ae86);
-    await interaction.editReply({ embeds: [embed] });
+    await replyMethod({ embeds: [embed] });
   }
 
   async handleStats(interaction) {
-    // already deferred
+    const replyMethod = interaction.deferred ? interaction.editReply : interaction.reply;
     const totalGuilds = interaction.client.guilds.cache.size;
     const totalUsers = interaction.client.users.cache.size;
     const uptime = process.uptime();
@@ -55,7 +55,7 @@ class InfoAgent extends BaseAgent {
       )
       .setTimestamp()
       .setColor(0x3498db);
-    await interaction.editReply({ embeds: [embed] });
+    await replyMethod({ embeds: [embed] });
   }
 }
 
