@@ -3,9 +3,7 @@ const { EmbedBuilder } = require('discord.js');
 module.exports = {
   data: { name: 'ping', description: '🏓 Check bot latency' },
   async execute(interaction) {
-    // Defer the reply to avoid timeout (important!)
-    await interaction.deferReply();
-
+    await interaction.deferReply(); // 👈 must defer first
     const latency = interaction.client.ws.ping;
     const embed = new EmbedBuilder()
       .setTitle('🏓 Pong!')
