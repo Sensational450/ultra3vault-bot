@@ -3,6 +3,8 @@ const { EmbedBuilder } = require('discord.js');
 module.exports = {
   data: { name: 'shop', description: '🛒 View items for sale' },
   async execute(interaction) {
+    // Defer is optional for simple replies, but safe to include
+    await interaction.deferReply();
     const embed = new EmbedBuilder()
       .setTitle('🛒 Shop')
       .setDescription(
@@ -11,6 +13,6 @@ module.exports = {
         '**Red Name Color** - 2000 coins\nCustom role color'
       )
       .setColor(0xffaa00);
-    await interaction.reply({ embeds: [embed] });
+    await interaction.editReply({ embeds: [embed] });
   },
 };
