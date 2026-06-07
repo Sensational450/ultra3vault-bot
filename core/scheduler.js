@@ -5,49 +5,29 @@ const cron = require('node-cron');
  * - Cron and one‑time delayed jobs
  * - Pause / resume (global and per job)
  * - EventBus integration
- * - Stats
+ * - Retry logic for failed jobs
+ * - Max runs limit (optional)
+ * - Immediate execution option on registration
+ * - Stats and job status
  */
 class Scheduler {
   constructor(eventBus = null, logger = null, options = {}) {
     this.eventBus = eventBus;
     this.logger = logger || console;
     this.timezone = options.timezone || 'UTC';
-    this.jobs = new Map();
+    this.defaultRetries = options.defaultRetries || 0;
+    this.jobs = new Map();       // id -> job metadata
     this.delayedJobs = new Map();
     this.globalPaused = false;
     this.stats = { totalJobs: 0, totalExecutions: 0, totalErrors: 0 };
   }
 
-  registerJob(id, cronExpression, task, options = {}) {
-    if (this.jobs.has(id)) throw new Error(`Job "${id}" already exists.`);
-    const job = cron.schedule(cronExpression, async () => {
-      if (this.globalPaused) return;
-      const data = this.jobs.get(id);
-      if (!data || data.paused) return;
-      await this._executeJob(id, task);
-    }, { scheduled: true, timezone: options.timezone || this.timezone });
-    this.jobs.set(id, { job, cronExpression, task, running: false, paused: false, type: 'cron', options });
-    this.stats.totalJobs++;
-    this._emit('scheduler.job.registered', { id, cronExpression });
-    return id;
+  // ---------- Internal Helpers ----------
+  _emit(event, data) {
+    if (this.eventBus?.emit) this.eventBus.emit(event, data);
   }
 
-  registerDelayedJob(id, delayMs, task) {
-    if (this.jobs.has(id) || this.delayedJobs.has(id)) throw new Error(`Job "${id}" already exists.`);
-    const timeout = setTimeout(async () => {
-      if (this.globalPaused) return;
-      await this._executeJob(id, task);
-      this.delayedJobs.delete(id);
-      this.jobs.delete(id);
-    }, delayMs);
-    this.delayedJobs.set(id, { timeout, task });
-    this.jobs.set(id, { job: null, cronExpression: null, task, running: false, paused: false, type: 'delayed', delayMs });
-    this.stats.totalJobs++;
-    this._emit('scheduler.job.registered', { id, type: 'delayed', delayMs });
-    return id;
-  }
-
-  async _executeJob(id, task) {
+  async _executeJob(id, task, retryCount = 0) {
     const data = this.jobs.get(id);
     if (!data || data.running) {
       if (data?.running) this._emit('scheduler.job.skip', { id, reason: 'already running' });
@@ -55,18 +35,116 @@ class Scheduler {
     }
     data.running = true;
     this.stats.totalExecutions++;
-    this._emit('scheduler.job.start', { id, timestamp: Date.now() });
+    this._emit('scheduler.job.start', { id, timestamp: Date.now(), attempt: retryCount + 1 });
+
     try {
       await task();
       this._emit('scheduler.job.complete', { id, timestamp: Date.now() });
+      // Reset failure count on success
+      data.failures = 0;
     } catch (err) {
       this.stats.totalErrors++;
       this.logger.error(`Scheduler: Job "${id}" failed:`, err);
       this._emit('scheduler.job.error', { id, error: err.message, stack: err.stack });
+
+      data.failures = (data.failures || 0) + 1;
+      const maxRetries = data.retries ?? this.defaultRetries;
+      if (maxRetries > 0 && data.failures <= maxRetries) {
+        const delay = Math.min(1000 * Math.pow(2, data.failures), 30000); // exponential backoff, max 30s
+        this.logger.warn(`⚠️ Job "${id}" failed, retrying in ${delay}ms (attempt ${data.failures}/${maxRetries})`);
+        setTimeout(() => {
+          if (!data.paused && !this.globalPaused) {
+            this._executeJob(id, task, data.failures);
+          }
+        }, delay);
+      } else if (maxRetries > 0) {
+        this.logger.error(`❌ Job "${id}" exhausted all ${maxRetries} retries. Giving up.`);
+        this._emit('scheduler.job.aborted', { id, failures: data.failures });
+      }
     } finally {
       data.running = false;
       if (data.type === 'delayed') this.removeJob(id);
+      if (data.maxRuns && data.runCount) {
+        data.runCount++;
+        if (data.runCount >= data.maxRuns) this.removeJob(id);
+      }
     }
+  }
+
+  // ---------- Public API ----------
+  registerJob(id, cronExpression, task, options = {}) {
+    if (this.jobs.has(id)) throw new Error(`Job "${id}" already exists.`);
+
+    const {
+      timezone = this.timezone,
+      retries = this.defaultRetries,
+      maxRuns = 0,
+      runImmediately = false,
+    } = options;
+
+    const job = cron.schedule(cronExpression, async () => {
+      if (this.globalPaused) return;
+      const data = this.jobs.get(id);
+      if (!data || data.paused) return;
+      if (data.maxRuns && data.runCount >= data.maxRuns) {
+        this.removeJob(id);
+        return;
+      }
+      await this._executeJob(id, task);
+    }, { scheduled: true, timezone });
+
+    this.jobs.set(id, {
+      job,
+      cronExpression,
+      task,
+      running: false,
+      paused: false,
+      type: 'cron',
+      retries,
+      maxRuns,
+      runCount: 0,
+      failures: 0,
+    });
+    this.stats.totalJobs++;
+    this._emit('scheduler.job.registered', { id, cronExpression });
+
+    if (runImmediately) {
+      setImmediate(() => this._executeJob(id, task));
+    }
+    return id;
+  }
+
+  registerDelayedJob(id, delayMs, task, options = {}) {
+    if (this.jobs.has(id) || this.delayedJobs.has(id)) throw new Error(`Job "${id}" already exists.`);
+
+    const { retries = this.defaultRetries, maxRuns = 0 } = options;
+
+    const timeout = setTimeout(async () => {
+      if (this.globalPaused) return;
+      const data = this.jobs.get(id);
+      if (!data || data.paused) return;
+      await this._executeJob(id, task);
+      this.delayedJobs.delete(id);
+      this.jobs.delete(id);
+    }, delayMs);
+
+    this.delayedJobs.set(id, { timeout, task });
+    this.jobs.set(id, {
+      job: null,
+      cronExpression: null,
+      task,
+      running: false,
+      paused: false,
+      type: 'delayed',
+      delayMs,
+      retries,
+      maxRuns,
+      runCount: 0,
+      failures: 0,
+    });
+    this.stats.totalJobs++;
+    this._emit('scheduler.job.registered', { id, type: 'delayed', delayMs });
+    return id;
   }
 
   removeJob(id) {
@@ -101,7 +179,7 @@ class Scheduler {
       else if (data.type === 'delayed' && !data.running) {
         const delay = data.delayMs;
         this.removeJob(id);
-        this.registerDelayedJob(id, delay, data.task);
+        this.registerDelayedJob(id, delay, data.task, { retries: data.retries, maxRuns: data.maxRuns });
       }
     }
     this._emit('scheduler.job.resumed', { id });
@@ -138,6 +216,10 @@ class Scheduler {
       running: data.running,
       cronExpression: data.cronExpression,
       delayMs: data.delayMs,
+      retries: data.retries,
+      failures: data.failures,
+      maxRuns: data.maxRuns,
+      runCount: data.runCount,
     };
   }
 
@@ -160,10 +242,6 @@ class Scheduler {
     this.jobs.clear();
     this.delayedJobs.clear();
     this._emit('scheduler.shutdown');
-  }
-
-  _emit(event, data) {
-    if (this.eventBus?.emit) this.eventBus.emit(event, data);
   }
 }
 
