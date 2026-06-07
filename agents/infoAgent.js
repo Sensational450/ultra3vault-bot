@@ -1,6 +1,7 @@
 /**
  * ℹ️ InfoAgent v5.0
  * - Handles basic info commands directly: ping, stats
+ * - Assumes interaction is already deferred by interactionCreate.js
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
@@ -11,7 +12,6 @@ class InfoAgent extends BaseAgent {
     this.logger.info('ℹ️ InfoAgent ready');
   }
 
-  // Direct handling of slash commands (no event emission needed)
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
     const { commandName } = interaction;
@@ -27,7 +27,7 @@ class InfoAgent extends BaseAgent {
   }
 
   async handlePing(interaction) {
-    await interaction.deferReply({ ephemeral: false });
+    // interaction already deferred by interactionCreate.js
     const latency = interaction.client.ws.ping;
     const embed = new EmbedBuilder()
       .setTitle('🏓 Pong!')
@@ -37,7 +37,7 @@ class InfoAgent extends BaseAgent {
   }
 
   async handleStats(interaction) {
-    await interaction.deferReply({ ephemeral: false });
+    // already deferred
     const totalGuilds = interaction.client.guilds.cache.size;
     const totalUsers = interaction.client.users.cache.size;
     const uptime = process.uptime();
