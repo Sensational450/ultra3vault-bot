@@ -66,13 +66,14 @@ const db = new Database({
 let orchestrator = null;
 let webServer = null;
 
-// ================= AGENT FACTORIES (to be created after DB ready) =================
+// ================= AGENT FACTORIES =================
 const ModerationAgent = require('./agents/moderationAgent');
 const EconomyAgent = require('./agents/economyAgent');
 const VipAgent = require('./agents/vipAgent');
 const PriceFeedAgent = require('./agents/priceFeedAgent');
 const NewsAgent = require('./agents/newsAgent');
 const ReferralAgent = require('./agents/referralAgent');
+const InfoAgent = require('./agents/infoAgent'); // ✅ Re‑added for /ping and /stats
 let AiChatAgent = null;
 try {
   if (secrets.openaiApiKey) {
@@ -94,7 +95,7 @@ try {
     const models = new Models(db, eventBus, logger);
     orchestrator = new Orchestrator(client, { eventBus, logger, rateLimiter });
 
-    // Register all agents (InfoAgent removed – commands handled directly)
+    // Register all agents (including InfoAgent)
     orchestrator.registerAgent(new ModerationAgent(eventBus, { client, logger, db, models }), 100);
     orchestrator.registerAgent(new EconomyAgent(eventBus, { client, logger, db, models }), 90);
     orchestrator.registerAgent(new VipAgent(eventBus, { client, logger, db, models }), 80);
@@ -104,6 +105,7 @@ try {
       orchestrator.registerAgent(new AiChatAgent(eventBus, { client, logger, db, models }), 50);
     }
     orchestrator.registerAgent(new ReferralAgent(eventBus, { client, logger, db, models }), 40);
+    orchestrator.registerAgent(new InfoAgent(eventBus, { client, logger, db, models }), 30); // ✅ InfoAgent with priority 30
 
     logger.info('✅ All agents registered');
 
