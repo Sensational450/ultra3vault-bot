@@ -1,18 +1,20 @@
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const { MigrationRunner } = require('./migrations');
+const secrets = require('../../config/secrets');  // 🔐 Central config
 
 /**
  * 🗄️ Database v5.0
  * - Promise‑based SQLite wrapper
  * - Automatic migration runner on init
+ * - Enables WAL mode for better concurrency
  * - Event bus integration (emits db events)
  * - Logger support
- * - Connection management
+ * - Graceful shutdown
  */
 class Database {
   constructor(options = {}) {
-    this.dbPath = options.dbPath || process.env.DB_PATH || './data.sqlite';
+    this.dbPath = options.dbPath || secrets.dbPath || process.env.DB_PATH || './data.sqlite';
     this.eventBus = options.eventBus || null;
     this.logger = options.logger || console;
     this.migrationsPath = options.migrationsPath || path.join(__dirname, 'migrations');
@@ -40,11 +42,15 @@ class Database {
         this.logger.info(`✅ SQLite database connected: ${this.dbPath}`);
         this._emit('db.connected', { path: this.dbPath });
 
-        // Enable foreign keys
+        // ⚡ Enable WAL mode for better performance & concurrency
+        await this.run('PRAGMA journal_mode = WAL');
+        this.logger.debug('⚡ Journal mode set to WAL');
+
+        // 🔗 Enable foreign keys
         await this.run('PRAGMA foreign_keys = ON');
         this.logger.debug('🔗 Foreign keys enabled');
 
-        // Run migrations
+        // 📦 Run migrations
         await this._runMigrations();
 
         this.isReady = true;
@@ -145,10 +151,12 @@ class Database {
 
   // 📊 Get database stats
   async getStats() {
+    const walStatus = await this.get('PRAGMA journal_mode');
     return {
       path: this.dbPath,
       isReady: this.isReady,
       version: 'v5.0',
+      walMode: walStatus?.journal_mode === 'wal',
     };
   }
 
