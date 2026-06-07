@@ -19,11 +19,17 @@ module.exports = {
     ],
   },
   async execute(interaction) {
-    // ✅ Must defer first
+    // Defer the reply to avoid interaction timeout
     await interaction.deferReply({ ephemeral: true });
 
     const plan = interaction.options.getString('plan');
     const userId = interaction.user.id;
+
+    // Check that required API keys are present
+    if (!process.env.NOWPAYMENTS_API_KEY || !process.env.NOWPAYMENTS_IPN_SECRET) {
+      await interaction.editReply({ content: '❌ Payment system is not configured. Please contact the administrator.' });
+      return;
+    }
 
     const nowpayments = new NowPaymentsAPI({
       apiKey: process.env.NOWPAYMENTS_API_KEY,
