@@ -1,10 +1,8 @@
 /**
- * 📈 PriceFeedAgent v5.0
- * - Fetches cryptocurrency prices from CoinGecko
- * - Sends price change alerts to configured channels
- * - User-defined price alerts (above/below thresholds)
- * - Optional whale transaction alerts (mock, replace with real API)
- * - Uses migrations for database tables (no table creation in agent)
+ * 📈 PriceFeedAgent v5.0 (fixed)
+ * - Fetches prices with API key and delay to avoid rate limits
+ * - Emits events using `this.emit` (baseAgent method)
+ * - Handles missing eventBus gracefully
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
@@ -20,21 +18,20 @@ class PriceFeedAgent extends BaseAgent {
       defaultCoins: ['bitcoin', 'ethereum', 'solana', 'binancecoin'],
       priceChangeThresholdPercent: 2,
     };
-    this.guildConfigs = new Map();        // guildId -> config
-    this.priceCache = new Map();           // coinId -> { usd, lastTimestamp }
-    this.userAlerts = new Map();           // guildId -> Map(userId -> alerts[])
+    this.guildConfigs = new Map();
+    this.priceCache = new Map();
+    this.userAlerts = new Map();
   }
 
   async init() {
     await super.init();
-    await this.loadUserAlertsFromDb();     // load existing alerts (tables exist from migrations)
+    await this.loadUserAlertsFromDb();
     this.subscribe('job.priceUpdate', async () => {
       await this.updateAllPrices();
     });
     this.logger.info('📈 PriceFeedAgent ready');
   }
 
-  // ---------- DATABASE HELPERS (tables already created by migrations) ----------
   async loadUserAlertsFromDb(guildId = null, userId = null) {
     const db = this.deps.db;
     let query = `SELECT id, userId, guildId, coinId, targetPrice, direction, channelId FROM price_alerts`;
@@ -48,7 +45,6 @@ class PriceFeedAgent extends BaseAgent {
     }
     try {
       const rows = await db.all(query, params);
-      // Rebuild in-memory map
       if (guildId) {
         this.userAlerts.set(guildId, new Map());
       } else {
@@ -67,21 +63,19 @@ class PriceFeedAgent extends BaseAgent {
         });
       }
     } catch (err) {
-      this.logger.warn(`Could not load price alerts: ${err.message} – ensure migrations are applied`);
+      this.logger.warn(`Could not load price alerts: ${err.message}`);
     }
   }
 
-  async savePriceHistory(coinId, price) {
-    const db = this.deps.db;
-    await db.run(`INSERT INTO price_history (coinId, price, timestamp) VALUES (?, ?, ?)`,
-      [coinId, price, Date.now()]).catch(() => {});
-  }
-
-  // ---------- PRICE FETCHING ----------
   async fetchPrice(coinId) {
     try {
       const url = `https://api.coingecko.com/api/v3/simple/price?ids=${coinId}&vs_currencies=usd&include_last_updated_at=true`;
-      const res = await axios.get(url, { timeout: 5000 });
+      const headers = {};
+      const params = { ids: coinId, vs_currencies: 'usd', include_last_updated_at: true };
+      if (process.env.COINGECKO_API_KEY) {
+        params.x_cg_demo_api_key = process.env.COINGECKO_API_KEY;
+      }
+      const res = await axios.get(url, { params, timeout: 5000 });
       if (!res.data[coinId]) throw new Error(`No data for ${coinId}`);
       return {
         usd: res.data[coinId].usd,
@@ -91,6 +85,10 @@ class PriceFeedAgent extends BaseAgent {
       this.logger.error(`Price fetch error for ${coinId}: ${err.message}`);
       return null;
     }
+  }
+
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   async updateAllPrices() {
@@ -108,12 +106,18 @@ class PriceFeedAgent extends BaseAgent {
         }
       }
       await this.savePriceHistory(coinId, newPriceData.usd);
+      await this.sleep(1000); // 1 second delay between coins
     }
     await this.checkUserAlerts();
-    await this.checkWhaleTransactions(); // optional
+    await this.checkWhaleTransactions();
   }
 
-  // ---------- PRICE ALERT (global channel) ----------
+  async savePriceHistory(coinId, price) {
+    const db = this.deps.db;
+    await db.run(`INSERT INTO price_history (coinId, price, timestamp) VALUES (?, ?, ?)`,
+      [coinId, price, Date.now()]).catch(() => {});
+  }
+
   async sendPriceAlert(coinId, oldPrice, newPrice, percentChange) {
     const config = await this.getGuildConfig('global');
     const channelId = config.priceAlertChannelId;
@@ -133,14 +137,14 @@ class PriceFeedAgent extends BaseAgent {
     this.emit('price.alert', { coinId, oldPrice, newPrice, percentChange });
   }
 
-  // ---------- USER PRICE ALERTS (custom thresholds) ----------
   async addUserAlert(userId, guildId, coinId, targetPrice, direction, channelId) {
     const db = this.deps.db;
-    const result = await db.run(`INSERT INTO price_alerts (userId, guildId, coinId, targetPrice, direction, channelId, createdAt)
-                                  VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [userId, guildId, coinId, targetPrice, direction, channelId, Date.now()]);
+    const result = await db.run(
+      `INSERT INTO price_alerts (userId, guildId, coinId, targetPrice, direction, channelId, createdAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [userId, guildId, coinId, targetPrice, direction, channelId, Date.now()]
+    );
     const alertId = result.lastID;
-    // Add to in‑memory map
     if (!this.userAlerts.has(guildId)) this.userAlerts.set(guildId, new Map());
     const guildMap = this.userAlerts.get(guildId);
     if (!guildMap.has(userId)) guildMap.set(userId, []);
@@ -150,7 +154,6 @@ class PriceFeedAgent extends BaseAgent {
   async removeUserAlert(userId, guildId, alertId) {
     const db = this.deps.db;
     await db.run(`DELETE FROM price_alerts WHERE id = ? AND userId = ? AND guildId = ?`, [alertId, userId, guildId]);
-    // Reload alerts for this guild/user to keep memory in sync
     await this.loadUserAlertsFromDb(guildId, userId);
   }
 
@@ -184,9 +187,8 @@ class PriceFeedAgent extends BaseAgent {
     }
   }
 
-  // ---------- WHALE ALERT (mock – replace with real API) ----------
   async checkWhaleTransactions() {
-    if (Math.random() < 0.05) { // 5% chance per update cycle for demo
+    if (Math.random() < 0.05) {
       const mockWhale = {
         coin: 'bitcoin',
         amount: Math.floor(Math.random() * 1000) + 100,
@@ -214,7 +216,6 @@ class PriceFeedAgent extends BaseAgent {
     }
   }
 
-  // ---------- SLASH COMMANDS ----------
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
     const { commandName, options } = interaction;
@@ -270,9 +271,7 @@ class PriceFeedAgent extends BaseAgent {
     const userAlerts = this.userAlerts.get(interaction.guild.id)?.get(interaction.user.id) || [];
     if (userAlerts.length === 0) return interaction.reply({ content: 'You have no active price alerts.', ephemeral: true });
     let desc = '';
-    for (const alert of userAlerts) {
-      desc += `**ID:** ${alert.id} | ${alert.coinId} ${alert.direction} $${alert.targetPrice}\n`;
-    }
+    for (const alert of userAlerts) desc += `**ID:** ${alert.id} | ${alert.coinId} ${alert.direction} $${alert.targetPrice}\n`;
     const embed = new EmbedBuilder().setTitle('Your Price Alerts').setDescription(desc).setColor(0x88aaff);
     await interaction.reply({ embeds: [embed], ephemeral: true });
   }
