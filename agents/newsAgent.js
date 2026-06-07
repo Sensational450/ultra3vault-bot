@@ -1,3 +1,11 @@
+/**
+ * 📰 NewsAgent v5.0
+ * - Fetches RSS feeds (crypto, airdrops, etc.)
+ * - Optional Reddit integration
+ * - Per‑guild subscriptions to categories
+ * - Caches last posted item to avoid duplicates
+ * - Uses migrations for table creation (no initDatabase)
+ */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
 const Parser = require('rss-parser');
@@ -7,7 +15,6 @@ class NewsAgent extends BaseAgent {
   constructor(eventBus, deps) {
     super(eventBus, deps);
     this.parser = new Parser();
-    // Configuration
     this.defaultConfig = {
       updateIntervalMinutes: 10,
       maxItemsPerFeed: 5,
@@ -30,60 +37,43 @@ class NewsAgent extends BaseAgent {
         limit: 5,
       },
     };
-    this.guildConfigs = new Map(); // per-guild: { outputChannels, subscriptions }
-    this.lastPostCache = new Map(); // feedUrl -> last item link
-    this.subscriptions = new Map(); // guildId -> Set of category strings (e.g., 'cryptoNews', 'airdrops')
+    this.guildConfigs = new Map();
+    this.lastPostCache = new Map();      // feedUrl -> last item link
+    this.subscriptions = new Map();      // guildId -> Map(category -> channelId)
   }
 
   async init() {
     await super.init();
-    await this.initDatabase();
+    await this.loadSubscriptionsAndCache();
     this.subscribe('job.newsUpdate', async () => {
       await this.fetchAllNews();
     });
-    this.logger.info('NewsAgent ready');
+    this.logger.info('📰 NewsAgent ready');
   }
 
-  async initDatabase() {
+  // ---------- LOAD DATA FROM DB (tables already exist) ----------
+  async loadSubscriptionsAndCache() {
     const db = this.deps.db;
-    db.run(`CREATE TABLE IF NOT EXISTS news_subscriptions (
-      guildId TEXT,
-      category TEXT,
-      channelId TEXT,
-      PRIMARY KEY (guildId, category)
-    )`);
-    db.run(`CREATE TABLE IF NOT EXISTS news_cache (
-      feedUrl TEXT,
-      lastItemLink TEXT,
-      lastPostAt INTEGER,
-      PRIMARY KEY (feedUrl)
-    )`);
-    // Load existing subscriptions from DB
-    const rows = await new Promise((resolve, reject) => {
-      db.all(`SELECT guildId, category, channelId FROM news_subscriptions`, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-      });
-    });
-    for (const row of rows) {
-      if (!this.subscriptions.has(row.guildId)) this.subscriptions.set(row.guildId, new Map());
-      this.subscriptions.get(row.guildId).set(row.category, row.channelId);
-    }
-    // Load cache
-    const cacheRows = await new Promise((resolve, reject) => {
-      db.all(`SELECT feedUrl, lastItemLink FROM news_cache`, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-      });
-    });
-    for (const row of cacheRows) {
-      this.lastPostCache.set(row.feedUrl, row.lastItemLink);
+    try {
+      // Load subscriptions
+      const subsRows = await db.all(`SELECT guildId, category, channelId FROM news_subscriptions`);
+      for (const row of subsRows) {
+        if (!this.subscriptions.has(row.guildId)) this.subscriptions.set(row.guildId, new Map());
+        this.subscriptions.get(row.guildId).set(row.category, row.channelId);
+      }
+      // Load cache
+      const cacheRows = await db.all(`SELECT feedUrl, lastItemLink FROM news_cache`);
+      for (const row of cacheRows) {
+        this.lastPostCache.set(row.feedUrl, row.lastItemLink);
+      }
+    } catch (err) {
+      this.logger.warn(`Could not load news data: ${err.message} – ensure migrations are applied`);
     }
   }
 
-  // ---------- FETCH NEWS FROM ALL SOURCES ----------
+  // ---------- FETCH ALL NEWS ----------
   async fetchAllNews() {
-    const config = await this.getGlobalConfig();
+    const config = this.defaultConfig; // or per‑guild later
     for (const [category, feedUrls] of Object.entries(config.feeds)) {
       for (const feedUrl of feedUrls) {
         await this.fetchFeed(feedUrl, category);
@@ -103,16 +93,14 @@ class NewsAgent extends BaseAgent {
         if (!lastPosted || item.link !== lastPosted) {
           newItems.push(item);
         } else {
-          break; // assuming RSS is in order
+          break;
         }
       }
-      if (newItems.length > 0) {
-        // Reverse to post oldest first
-        newItems.reverse();
+      if (newItems.length) {
+        newItems.reverse(); // oldest first
         for (const item of newItems) {
           await this.sendNews(item, category);
         }
-        // Update cache with latest item
         const latestLink = feed.items[0]?.link;
         if (latestLink) {
           this.lastPostCache.set(feedUrl, latestLink);
@@ -125,7 +113,6 @@ class NewsAgent extends BaseAgent {
   }
 
   async sendNews(item, category) {
-    // Find all guilds subscribed to this category
     const embed = new EmbedBuilder()
       .setTitle(item.title || 'News')
       .setURL(item.link)
@@ -137,12 +124,12 @@ class NewsAgent extends BaseAgent {
       const channelId = subs.get(category);
       if (channelId) {
         const channel = this.client.channels.cache.get(channelId);
-        if (channel && channel.isTextBased()) {
+        if (channel?.isTextBased()) {
           await channel.send({ embeds: [embed] }).catch(err => this.logger.error(`Failed to send news: ${err.message}`));
         }
       }
     }
-    this.eventBus.emit('news.published', { category, title: item.title, link: item.link });
+    this.emit('news.published', { category, title: item.title, link: item.link });
   }
 
   getCategoryColor(category) {
@@ -155,9 +142,9 @@ class NewsAgent extends BaseAgent {
     return colors[category] || 0x607d8b;
   }
 
-  // ---------- REDDIT INTEGRATION (optional) ----------
+  // ---------- REDDIT (optional) ----------
   async fetchReddit() {
-    const config = await this.getGlobalConfig();
+    const config = this.defaultConfig;
     const subreddits = config.reddit.subreddits;
     for (const sub of subreddits) {
       try {
@@ -199,22 +186,21 @@ class NewsAgent extends BaseAgent {
       const channelId = subs.get('reddit');
       if (channelId) {
         const channel = this.client.channels.cache.get(channelId);
-        if (channel) await channel.send({ embeds: [embed] });
+        if (channel) await channel.send({ embeds: [embed] }).catch(() => {});
       }
     }
   }
 
   async saveCacheToDb(feedUrl, lastItemLink) {
     const db = this.deps.db;
-    db.run(`INSERT OR REPLACE INTO news_cache (feedUrl, lastItemLink, lastPostAt) VALUES (?, ?, ?)`,
-      [feedUrl, lastItemLink, Date.now()]);
+    await db.run(`INSERT OR REPLACE INTO news_cache (feedUrl, lastItemLink, lastPostAt) VALUES (?, ?, ?)`,
+      [feedUrl, lastItemLink, Date.now()]).catch(() => {});
   }
 
   // ---------- SLASH COMMANDS ----------
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
-    const { commandName, options, guild, channel } = interaction;
-
+    const { commandName } = interaction;
     switch (commandName) {
       case 'subscribe':
         await this.cmdSubscribe(interaction);
@@ -236,31 +222,26 @@ class NewsAgent extends BaseAgent {
     const category = interaction.options.getString('category');
     const channelTarget = interaction.options.getChannel('channel') || interaction.channel;
     if (!channelTarget.isTextBased()) return interaction.reply({ content: 'Must be a text channel.', ephemeral: true });
-    const validCategories = Object.keys(this.defaultConfig.feeds);
-    validCategories.push('reddit');
+    const validCategories = [...Object.keys(this.defaultConfig.feeds), 'reddit'];
     if (!validCategories.includes(category)) {
       return interaction.reply({ content: `Invalid category. Choose: ${validCategories.join(', ')}`, ephemeral: true });
     }
-    if (!this.subscriptions.has(interaction.guild.id)) {
-      this.subscriptions.set(interaction.guild.id, new Map());
-    }
+    if (!this.subscriptions.has(interaction.guild.id)) this.subscriptions.set(interaction.guild.id, new Map());
     this.subscriptions.get(interaction.guild.id).set(category, channelTarget.id);
-    // Save to DB
     const db = this.deps.db;
-    db.run(`INSERT OR REPLACE INTO news_subscriptions (guildId, category, channelId) VALUES (?, ?, ?)`,
+    await db.run(`INSERT OR REPLACE INTO news_subscriptions (guildId, category, channelId) VALUES (?, ?, ?)`,
       [interaction.guild.id, category, channelTarget.id]);
     await interaction.reply({ content: `✅ Subscribed to **${category}** in ${channelTarget}.`, ephemeral: true });
   }
 
   async cmdUnsubscribe(interaction) {
     const category = interaction.options.getString('category');
-    if (!this.subscriptions.has(interaction.guild.id) ||
-        !this.subscriptions.get(interaction.guild.id).has(category)) {
+    if (!this.subscriptions.has(interaction.guild.id) || !this.subscriptions.get(interaction.guild.id).has(category)) {
       return interaction.reply({ content: `Not subscribed to ${category}.`, ephemeral: true });
     }
     this.subscriptions.get(interaction.guild.id).delete(category);
     const db = this.deps.db;
-    db.run(`DELETE FROM news_subscriptions WHERE guildId = ? AND category = ?`, [interaction.guild.id, category]);
+    await db.run(`DELETE FROM news_subscriptions WHERE guildId = ? AND category = ?`, [interaction.guild.id, category]);
     await interaction.reply({ content: `✅ Unsubscribed from **${category}**.`, ephemeral: true });
   }
 
@@ -288,11 +269,6 @@ class NewsAgent extends BaseAgent {
     };
     await this.sendNews(mockItem, category);
     await interaction.reply({ content: 'Test news sent.', ephemeral: true });
-  }
-
-  async getGlobalConfig() {
-    // Could be extended to per-guild custom feeds
-    return this.defaultConfig;
   }
 
   deny(interaction) {
