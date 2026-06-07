@@ -4,7 +4,7 @@
  * - Per‑guild configuration (enabled, whitelist, model, etc.)
  * - Conversation memory with sliding window and timeout
  * - Rate limiting per user
- * - Uses models layer (if available) or direct DB for config
+ * - Only handles its own commands – does not interfere with others
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
@@ -23,7 +23,7 @@ class AiChatAgent extends BaseAgent {
     }
 
     this.defaultConfig = {
-      enabled: !!this.openaiApiKey, // only enable if key exists
+      enabled: !!this.openaiApiKey,
       channelWhitelist: [],
       roleWhitelist: [],
       maxTokens: 500,
@@ -34,8 +34,8 @@ class AiChatAgent extends BaseAgent {
       memoryTimeoutMinutes: 30,
     };
     this.guildConfigs = new Map();
-    this.memory = new Map();     // userId -> { messages, lastActive }
-    this.rateLimits = new Map(); // userId -> { count, resetTime }
+    this.memory = new Map();
+    this.rateLimits = new Map();
   }
 
   async init() {
@@ -46,7 +46,6 @@ class AiChatAgent extends BaseAgent {
 
   async _loadConfigs() {
     if (!this.deps.models?.AIConfig) {
-      // Fallback to direct DB if no model – create table if missing
       const db = this.deps.db;
       await db.run(`CREATE TABLE IF NOT EXISTS ai_config (
         guildId TEXT PRIMARY KEY,
@@ -57,7 +56,6 @@ class AiChatAgent extends BaseAgent {
         this.guildConfigs.set(row.guildId, JSON.parse(row.config));
       }
     } else {
-      // Use model (if you create one later)
       const configs = await this.deps.models.AIConfig.findAll();
       for (const cfg of configs) {
         this.guildConfigs.set(cfg.guildId, cfg.config);
@@ -68,7 +66,6 @@ class AiChatAgent extends BaseAgent {
   async getGuildConfig(guildId) {
     if (this.guildConfigs.has(guildId)) return this.guildConfigs.get(guildId);
     const config = { ...this.defaultConfig };
-    // Disable if no API key
     if (!this.openaiApiKey) config.enabled = false;
     this.guildConfigs.set(guildId, config);
     await this._saveGuildConfig(guildId, config);
@@ -124,7 +121,7 @@ class AiChatAgent extends BaseAgent {
     this.memory.delete(userId);
   }
 
-  // ---------- AI CALLS (only if OpenAI available) ----------
+  // ---------- AI CALLS ----------
   async askAI(userId, prompt, config, systemPromptOverride = null) {
     if (!this.openai) return '❌ AI service is not configured (missing API key).';
     const system = systemPromptOverride || config.systemPrompt;
@@ -186,10 +183,15 @@ class AiChatAgent extends BaseAgent {
   // ---------- SLASH COMMANDS ----------
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
+
+    // 🔒 Only handle commands that belong to this agent
+    const allowedCommands = ['ask', 'resetai', 'sentiment', 'imagine', 'setai', 'aistats'];
+    if (!allowedCommands.includes(interaction.commandName)) return;
+
     const { commandName, user, guild, member, channel } = interaction;
     const config = await this.getGuildConfig(guild.id);
 
-    // Permission checks (skip for admin commands)
+    // Permission checks (skip for admin command)
     if (commandName !== 'setai') {
       if (!config.enabled && commandName !== 'aistats') {
         return interaction.reply({ content: '❌ AI features are disabled in this server.', ephemeral: true });
