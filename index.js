@@ -73,7 +73,6 @@ const VipAgent = require('./agents/vipAgent');
 const PriceFeedAgent = require('./agents/priceFeedAgent');
 const NewsAgent = require('./agents/newsAgent');
 const ReferralAgent = require('./agents/referralAgent');
-const InfoAgent = require('./agents/infoAgent'); // ✅ NEW: handles /ping, /stats
 let AiChatAgent = null;
 try {
   if (secrets.openaiApiKey) {
@@ -95,7 +94,7 @@ try {
     const models = new Models(db, eventBus, logger);
     orchestrator = new Orchestrator(client, { eventBus, logger, rateLimiter });
 
-    // Register all agents
+    // Register all agents (InfoAgent removed – commands handled directly)
     orchestrator.registerAgent(new ModerationAgent(eventBus, { client, logger, db, models }), 100);
     orchestrator.registerAgent(new EconomyAgent(eventBus, { client, logger, db, models }), 90);
     orchestrator.registerAgent(new VipAgent(eventBus, { client, logger, db, models }), 80);
@@ -105,7 +104,6 @@ try {
       orchestrator.registerAgent(new AiChatAgent(eventBus, { client, logger, db, models }), 50);
     }
     orchestrator.registerAgent(new ReferralAgent(eventBus, { client, logger, db, models }), 40);
-    orchestrator.registerAgent(new InfoAgent(eventBus, { client, logger, db, models }), 30); // ✅ NEW
 
     logger.info('✅ All agents registered');
 
