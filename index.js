@@ -62,8 +62,9 @@ const db = new Database({
   logger,
 });
 
-// ================= ORCHESTRATOR (will be populated after DB ready) =================
+// ================= ORCHESTRATOR & WEB SERVER (outer scope) =================
 let orchestrator = null;
+let webServer = null; // ✅ moved to outer scope for shutdown access
 
 // ================= AGENT FACTORIES (to be created after DB ready) =================
 const ModerationAgent = require('./agents/moderationAgent');
@@ -74,7 +75,6 @@ const NewsAgent = require('./agents/newsAgent');
 const ReferralAgent = require('./agents/referralAgent');
 let AiChatAgent = null;
 try {
-  // Only load AiChatAgent if API key exists (avoid crash)
   if (secrets.openaiApiKey) {
     AiChatAgent = require('./agents/aiChatAgent');
     logger.info('🧠 OpenAI API key found – AiChatAgent will be loaded');
@@ -128,8 +128,8 @@ try {
     scheduler.registerJob('subscriptionRenewal', '0 */6 * * *', subscriptionRenewal);
     scheduler.registerJob('cleanupTempData', '0 */2 * * *', cleanupTempData);
 
-    // 7️⃣ Start web server
-    const webServer = new WebServer({
+    // 7️⃣ Start web server (assign to outer variable)
+    webServer = new WebServer({
       eventBus,
       logger,
       client,
