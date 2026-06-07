@@ -19,15 +19,15 @@ module.exports = {
     ],
   },
   async execute(interaction) {
-    // Defer the reply to avoid interaction timeout
+    // 1️⃣ Defer immediately
     await interaction.deferReply({ ephemeral: true });
 
     const plan = interaction.options.getString('plan');
     const userId = interaction.user.id;
 
-    // Check that required API keys are present
+    // 2️⃣ Check API keys
     if (!process.env.NOWPAYMENTS_API_KEY || !process.env.NOWPAYMENTS_IPN_SECRET) {
-      await interaction.editReply({ content: '❌ Payment system is not configured. Please contact the administrator.' });
+      await interaction.editReply({ content: '❌ Payment system not configured. Please contact the administrator.' });
       return;
     }
 
@@ -54,7 +54,7 @@ module.exports = {
       });
     } catch (err) {
       console.error('Invoice error:', err);
-      await interaction.editReply({ content: '❌ Failed to create payment link. Please try again later.' });
+      await interaction.editReply({ content: `❌ Failed to create payment link: ${err.message}` });
     }
   },
 };
