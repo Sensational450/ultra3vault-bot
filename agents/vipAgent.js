@@ -5,7 +5,7 @@
  * - Listens to payment.success and admin events
  * - Handles role assignment/removal
  * - Auto-expiry via scheduler event
- * - Handles `/buy` command to create a NowPayments invoice (without sending webhookUrl)
+ * - No longer handles `/buy` – that's handled by the command file
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
@@ -47,7 +47,7 @@ class VipAgent extends BaseAgent {
         });
         this.logger.info('💳 NowPayments client initialized');
       } else {
-        this.logger.warn('⚠️ NowPayments API keys missing – /buy command will not work');
+        this.logger.warn('⚠️ NowPayments API keys missing – payments will not work');
       }
     } catch (err) {
       this.logger.error(`❌ Failed to initialize NowPayments: ${err.message}`);
@@ -186,14 +186,13 @@ class VipAgent extends BaseAgent {
     return true;
   }
 
-  // ---------- CREATE NOWPAYMENTS INVOICE (for /buy) – NO WEBHOOK URL SENT ----------
+  // ---------- CREATE NOWPAYMENTS INVOICE (used by command file) ----------
   async createInvoice(userId, plan) {
     if (!this.nowpayments) {
       throw new Error('NowPayments client not initialized. Check API keys.');
     }
     const orderId = `${userId}_${plan}`;
     const amount = plan === '7d' ? 5 : (plan === '14d' ? 9 : 15);
-    // Removed webhookUrl parameter – NowPayments will use the URL configured in your dashboard
     const invoice = await this.nowpayments.createInvoice({
       amount,
       priceCurrency: 'usd',
@@ -201,7 +200,6 @@ class VipAgent extends BaseAgent {
       orderDescription: `Ultra3Vault ${plan} subscription`,
       successUrl: 'https://google.com',
       cancelUrl: 'https://google.com',
-      // webhookUrl intentionally omitted to avoid "not allowed" error
     });
     return invoice.invoice_url;
   }
@@ -229,17 +227,12 @@ class VipAgent extends BaseAgent {
     this.subscribe('admin.vip.grant', async (data) => {
       await this.grantSubscription(data.userId, data.guildId, data.tier, data.durationDays, 0, 'admin');
     });
-
-    // ✅ Handle /buy slash command
-    this.subscribe('command.buy', async ({ interaction }) => {
-      await this.handleBuyCommand(interaction);
-    });
   }
 
-  // ---------- HANDLERS FOR SLASH COMMANDS ----------
+  // ---------- SLASH COMMANDS ----------
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
-    const { commandName, member, guild, options } = interaction;
+    const { commandName, member, guild } = interaction;
 
     switch (commandName) {
       case 'vip':
@@ -254,9 +247,7 @@ class VipAgent extends BaseAgent {
       case 'renew':
         await this.cmdRenew(interaction);
         break;
-      case 'buy':
-        await this.handleBuyCommand(interaction);
-        break;
+      // 'buy' is handled by command file – removed from agent
       case 'grantvip':
         if (!member.permissions.has('Administrator')) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
         await this.cmdGrantVip(interaction);
@@ -265,23 +256,6 @@ class VipAgent extends BaseAgent {
         if (!member.permissions.has('Administrator')) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
         await this.cmdRevokeVip(interaction);
         break;
-    }
-  }
-
-  async handleBuyCommand(interaction) {
-    const plan = interaction.options.getString('plan');
-    const validPlans = ['7d', '14d', '30d'];
-    if (!validPlans.includes(plan)) {
-      return interaction.editReply({ content: '❌ Invalid plan. Choose 7d, 14d, or 30d.' });
-    }
-    try {
-      const invoiceUrl = await this.createInvoice(interaction.user.id, plan);
-      await interaction.editReply({
-        content: `💰 Invoice created!\nPay here: ${invoiceUrl}\n\n_Once payment is confirmed, your VIP role will be automatically assigned._`,
-      });
-    } catch (err) {
-      this.logger.error(`Failed to create invoice: ${err.message}`);
-      await interaction.editReply({ content: `❌ Failed to create payment link: ${err.message}` });
     }
   }
 
