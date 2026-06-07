@@ -1,8 +1,8 @@
 /**
  * 🌐 WebServer v5.0
- * - Express server with webhook, static files, and admin API
- * - Integrated authentication middleware for admin endpoints
- * - Emits events to eventBus for payment handling
+ * - Express server with webhook, static files, admin API
+ * - Integrated with eventBus, logger, and orchestrator
+ * - Emits events for payment success, referral, etc.
  */
 const express = require('express');
 const crypto = require('crypto');
@@ -16,10 +16,11 @@ class WebServer {
     this.logger = options.logger || console;
     this.client = options.client;
     this.db = options.db;
-    this.caches = options.caches || {}; // { cache, userMemory, conversationMemory }
-    this.orchestrator = options.orchestrator; // for stats endpoint
+    this.models = options.models;
+    this.orchestrator = options.orchestrator;
+    this.caches = options.caches || {};
     this.port = options.port || process.env.PORT || 3000;
-    this.webhookSecret = process.env.WEBHOOK_SECRET;
+    this.webhookSecret = process.env.WEBHOOK_SECRET || process.env.NOWPAYMENTS_IPN_SECRET;
     this.adminApiKey = process.env.ADMIN_API_KEY;
     this.allowedAdminIPs = process.env.ALLOWED_ADMIN_IPS ? process.env.ALLOWED_ADMIN_IPS.split(',') : null;
     this.app = express();
@@ -30,7 +31,7 @@ class WebServer {
   }
 
   _setupMiddleware() {
-    // Raw body for signature verification (webhook)
+    // Raw body for signature verification
     this.app.use(express.json({
       verify: (req, res, buf) => {
         req.rawBody = buf;
@@ -64,7 +65,6 @@ class WebServer {
   }
 
   _setupAdminRoutes() {
-    // Create auth middleware
     const auth = authMiddleware({
       apiKey: this.adminApiKey,
       allowedIPs: this.allowedAdminIPs,
@@ -74,7 +74,6 @@ class WebServer {
       logger: this.logger,
     });
 
-    // Create admin router from our module
     const adminRouter = createAdminRouter(
       express,
       this.client,
@@ -84,7 +83,6 @@ class WebServer {
       this.logger
     );
 
-    // Apply auth to all admin routes
     this.app.use('/api/admin', auth, adminRouter);
   }
 
