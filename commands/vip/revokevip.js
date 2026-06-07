@@ -7,7 +7,6 @@ module.exports = {
     ],
   },
   async execute(interaction) {
-    const { eventBus } = interaction.client;
-    eventBus?.emit('command.revokevip', { interaction });
+    await interaction.client.orchestrator.onInteraction(interaction);
   },
 };
