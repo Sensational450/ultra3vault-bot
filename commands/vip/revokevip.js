@@ -1,6 +1,6 @@
 module.exports = {
   data: {
-    name: 'revokevip',
+    name: 'revoke', // change from 'revokevip' to 'revoke'
     description: '🔨 Revoke VIP from a user (Admin only)',
     options: [
       { name: 'user', type: 6, description: 'User', required: true },
