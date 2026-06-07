@@ -64,7 +64,7 @@ const db = new Database({
 
 // ================= ORCHESTRATOR & WEB SERVER (outer scope) =================
 let orchestrator = null;
-let webServer = null; // ✅ moved to outer scope for shutdown access
+let webServer = null;
 
 // ================= AGENT FACTORIES (to be created after DB ready) =================
 const ModerationAgent = require('./agents/moderationAgent');
@@ -73,6 +73,7 @@ const VipAgent = require('./agents/vipAgent');
 const PriceFeedAgent = require('./agents/priceFeedAgent');
 const NewsAgent = require('./agents/newsAgent');
 const ReferralAgent = require('./agents/referralAgent');
+const InfoAgent = require('./agents/infoAgent'); // ✅ NEW: handles /ping and /stats
 let AiChatAgent = null;
 try {
   if (secrets.openaiApiKey) {
@@ -108,6 +109,7 @@ try {
       orchestrator.registerAgent(new AiChatAgent(eventBus, { client, logger, db, models }), 50);
     }
     orchestrator.registerAgent(new ReferralAgent(eventBus, { client, logger, db, models }), 40);
+    orchestrator.registerAgent(new InfoAgent(eventBus, { client, logger, db, models }), 30); // ✅ NEW
 
     logger.info('✅ All agents registered');
 
