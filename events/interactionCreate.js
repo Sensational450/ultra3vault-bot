@@ -14,7 +14,6 @@ module.exports = (client, orchestrator, options = {}) => {
     try {
       if (interaction.isCommand()) {
         logger?.debug(`📡 Slash command: ${interaction.commandName} from ${interaction.user.tag}`);
-        // Do NOT defer here – let the command file handle deferral if needed
         await orchestrator.onInteraction(interaction);
       }
       else if (interaction.isButton() && buttonHandler) {
@@ -36,7 +35,7 @@ module.exports = (client, orchestrator, options = {}) => {
         }
       }
     } catch (err) {
-      logger?.error(`❌ Error in interactionCreate handler: ${err.message}`);
+      logger?.error(`❌ Error in interactionCreate for command ${interaction.commandName || 'unknown'}: ${err.message}`);
       if (!interaction.replied && !interaction.deferred) {
         await interaction.reply({ content: '❌ An error occurred while processing this interaction.', ephemeral: true }).catch(() => {});
       } else if (interaction.deferred && !interaction.replied) {
