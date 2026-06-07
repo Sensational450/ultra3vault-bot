@@ -1,8 +1,8 @@
 /**
- * 📈 PriceFeedAgent v5.0 (fixed)
+ * 📈 PriceFeedAgent v5.0 (final)
  * - Fetches prices with API key and delay to avoid rate limits
- * - Emits events using `this.emit` (baseAgent method)
- * - Handles missing eventBus gracefully
+ * - Uses `this.emit` for all events (baseAgent method)
+ * - Graceful error handling, no direct `eventBus` access
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
@@ -69,13 +69,11 @@ class PriceFeedAgent extends BaseAgent {
 
   async fetchPrice(coinId) {
     try {
-      const url = `https://api.coingecko.com/api/v3/simple/price?ids=${coinId}&vs_currencies=usd&include_last_updated_at=true`;
-      const headers = {};
       const params = { ids: coinId, vs_currencies: 'usd', include_last_updated_at: true };
       if (process.env.COINGECKO_API_KEY) {
         params.x_cg_demo_api_key = process.env.COINGECKO_API_KEY;
       }
-      const res = await axios.get(url, { params, timeout: 5000 });
+      const res = await axios.get('https://api.coingecko.com/api/v3/simple/price', { params, timeout: 5000 });
       if (!res.data[coinId]) throw new Error(`No data for ${coinId}`);
       return {
         usd: res.data[coinId].usd,
@@ -106,7 +104,7 @@ class PriceFeedAgent extends BaseAgent {
         }
       }
       await this.savePriceHistory(coinId, newPriceData.usd);
-      await this.sleep(1000); // 1 second delay between coins
+      await this.sleep(1000);
     }
     await this.checkUserAlerts();
     await this.checkWhaleTransactions();
