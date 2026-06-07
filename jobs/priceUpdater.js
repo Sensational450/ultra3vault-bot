@@ -3,6 +3,8 @@
  * - Fetches current prices for configured coins (e.g., BTC, ETH, SOL)
  * - Emits 'price.update' event for priceFeedAgent to process and send alerts
  * - Optional: caches prices to detect significant changes
+ * - Safe eventBus emission (checks that emit is a function)
+ * - Uses CoinGecko API with optional API key
  * - Designed to be scheduled by core/scheduler.js
  */
 const { CoinGeckoAPI } = require('../tools/api/coingecko');
@@ -11,19 +13,27 @@ class PriceUpdater {
   constructor(options = {}) {
     this.eventBus = options.eventBus;
     this.logger = options.logger || console;
-    this.cache = options.cache || null;      // LRU cache instance (optional)
+    this.cache = options.cache || null;
     this.coins = options.coins || ['bitcoin', 'ethereum', 'solana', 'binancecoin'];
     this.vsCurrency = options.vsCurrency || 'usd';
-    this.changeThresholdPercent = options.changeThresholdPercent || 2; // alert on >2% change
-    
+    this.changeThresholdPercent = options.changeThresholdPercent || 2;
+
     // Initialize CoinGecko API wrapper
     this.coingecko = new CoinGeckoAPI({
       logger: this.logger,
       cache: this.cache,
     });
-    
-    // Store previous prices (key: coinId, value: price)
+
     this.previousPrices = new Map();
+  }
+
+  // ✅ Safe event emitter – checks if eventBus exists and has emit method
+  _emit(event, data) {
+    if (this.eventBus && typeof this.eventBus.emit === 'function') {
+      this.eventBus.emit(event, data);
+    } else {
+      this.logger?.warn(`⚠️ Cannot emit ${event}: eventBus.emit is not a function`);
+    }
   }
 
   /**
@@ -49,7 +59,7 @@ class PriceUpdater {
         this.previousPrices.set(coinId, currentPrice);
 
         // Emit price update event (for real-time feeds)
-        this.eventBus?.emit('price.update', {
+        this._emit('price.update', {
           coinId,
           price: currentPrice,
           timestamp: Date.now(),
@@ -59,7 +69,7 @@ class PriceUpdater {
         if (previousPrice && previousPrice !== currentPrice) {
           const percentChange = ((currentPrice - previousPrice) / previousPrice) * 100;
           if (Math.abs(percentChange) >= this.changeThresholdPercent) {
-            this.eventBus?.emit('price.alert', {
+            this._emit('price.alert', {
               coinId,
               oldPrice: previousPrice,
               newPrice: currentPrice,
@@ -73,13 +83,14 @@ class PriceUpdater {
       this.logger.debug(`✅ Price updater completed – updated ${this.coins.length} coins`);
     } catch (err) {
       this.logger.error(`❌ Price updater failed: ${err.message}`);
-      this.eventBus?.emit('price.error', { error: err.message });
+      this._emit('price.error', { error: err.message });
     }
   }
 }
 
 // 📦 Factory function for scheduler integration
-module.exports = (eventBus, logger, cache) => {
+module.exports = (options = {}) => {
+  const { eventBus, logger, cache } = options;
   const updater = new PriceUpdater({ eventBus, logger, cache });
   return async () => {
     await updater.run();
