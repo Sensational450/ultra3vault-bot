@@ -33,14 +33,26 @@ class VipAgent extends BaseAgent {
         perks: 'All VIP perks + exclusive signals & airdrop alerts',
       },
     };
-    this.subCache = new Map(); // optional cache
-    // Initialize NowPayments API wrapper
-    this.nowpayments = new NowPaymentsAPI({
-      apiKey: process.env.NOWPAYMENTS_API_KEY,
-      ipnSecret: process.env.NOWPAYMENTS_IPN_SECRET,
-      sandbox: process.env.NODE_ENV !== 'production',
-      logger: this.logger,
-    });
+    this.subCache = new Map();
+
+    // Initialize NowPayments API wrapper only if API key exists
+    let nowpayments = null;
+    try {
+      if (process.env.NOWPAYMENTS_API_KEY && process.env.NOWPAYMENTS_IPN_SECRET) {
+        nowpayments = new NowPaymentsAPI({
+          apiKey: process.env.NOWPAYMENTS_API_KEY,
+          ipnSecret: process.env.NOWPAYMENTS_IPN_SECRET,
+          sandbox: process.env.NODE_ENV !== 'production',
+          logger: this.logger,
+        });
+        this.logger.info('💳 NowPayments client initialized');
+      } else {
+        this.logger.warn('⚠️ NowPayments API keys missing – /buy command will not work');
+      }
+    } catch (err) {
+      this.logger.error(`❌ Failed to initialize NowPayments: ${err.message}`);
+    }
+    this.nowpayments = nowpayments;
   }
 
   async init() {
@@ -176,7 +188,13 @@ class VipAgent extends BaseAgent {
 
   // ---------- CREATE NOWPAYMENTS INVOICE (for /buy) ----------
   async createInvoice(userId, plan) {
-    const webhookUrl = process.env.WEBHOOK_URL || `${process.env.RENDER_EXTERNAL_URL}/webhook`;
+    if (!this.nowpayments) {
+      throw new Error('NowPayments client not initialized. Check API keys.');
+    }
+    const webhookUrl = process.env.WEBHOOK_URL || (process.env.RENDER_EXTERNAL_URL ? `${process.env.RENDER_EXTERNAL_URL}/webhook` : null);
+    if (!webhookUrl) {
+      throw new Error('Webhook URL is not configured. Set WEBHOOK_URL or RENDER_EXTERNAL_URL.');
+    }
     const orderId = `${userId}_${plan}`;
     const amount = plan === '7d' ? 5 : (plan === '14d' ? 9 : 15);
     const invoice = await this.nowpayments.createInvoice({
@@ -184,7 +202,7 @@ class VipAgent extends BaseAgent {
       priceCurrency: 'usd',
       orderId,
       orderDescription: `Ultra3Vault ${plan} subscription`,
-      successUrl: 'https://google.com', // optional, can be your site
+      successUrl: 'https://google.com',
       cancelUrl: 'https://google.com',
       webhookUrl: webhookUrl,
     });
@@ -268,7 +286,8 @@ class VipAgent extends BaseAgent {
       });
     } catch (err) {
       this.logger.error(`Failed to create invoice: ${err.message}`);
-      await interaction.editReply({ content: '❌ Failed to create payment link. Please try again later.' });
+      // Ensure we send a proper error message to the user
+      await interaction.editReply({ content: `❌ Failed to create payment link: ${err.message}` });
     }
   }
 
