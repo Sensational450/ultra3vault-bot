@@ -1,7 +1,7 @@
 /**
  * 👑 VipAgent v5.0
  * - Subscription management (VIP / Premium tiers)
- * - Uses models layer (Subscription, User)
+ * - Uses models layer (Subscription)
  * - Listens to payment.success and admin events
  * - Handles role assignment/removal
  * - Auto-expiry via scheduler event
@@ -12,7 +12,7 @@ const { EmbedBuilder } = require('discord.js');
 class VipAgent extends BaseAgent {
   constructor(eventBus, deps) {
     super(eventBus, deps);
-    // Tier definitions (roleIds should be in environment)
+    // Tier definitions (roleIds from environment)
     this.tiers = {
       vip: {
         name: 'VIP',
@@ -34,7 +34,6 @@ class VipAgent extends BaseAgent {
 
   async init() {
     await super.init();
-    // Subscribe to expiry check event (scheduled by core/scheduler)
     this.subscribe('job.subscriptionRenewal', async () => {
       await this.checkExpiredSubscriptions();
     });
@@ -43,16 +42,16 @@ class VipAgent extends BaseAgent {
 
   // ---------- MODELS HELPERS ----------
   async getSubscription(userId, guildId) {
-    return await this.deps.models.Subscription.get(userId, guildId);
+    return await this.models.Subscription.get(userId, guildId);
   }
 
   async setSubscription(userId, guildId, tier, expiresAt, autoRenew = 0) {
-    await this.deps.models.Subscription.set(userId, guildId, tier, expiresAt, autoRenew);
+    await this.models.Subscription.set(userId, guildId, tier, expiresAt, autoRenew);
     this.subCache.delete(`${userId}:${guildId}`);
   }
 
   async deleteSubscription(userId, guildId) {
-    await this.deps.models.Subscription.delete(userId, guildId);
+    await this.models.Subscription.delete(userId, guildId);
     this.subCache.delete(`${userId}:${guildId}`);
   }
 
@@ -84,7 +83,7 @@ class VipAgent extends BaseAgent {
 
   // ---------- EXPIRY HANDLER ----------
   async checkExpiredSubscriptions() {
-    const expired = await this.deps.models.Subscription.getExpired(Date.now());
+    const expired = await this.models.Subscription.getExpired(Date.now());
     for (const sub of expired) {
       await this.expireSubscription(sub.userId, sub.guildId, sub.tier);
     }
@@ -98,12 +97,11 @@ class VipAgent extends BaseAgent {
       if (member) await this.removeRole(member, tier);
     }
     await this.deleteSubscription(userId, guildId);
-    // DM user
     const user = await this.client.users.fetch(userId).catch(() => null);
     if (user) {
       user.send(`⚠️ Your **${this.tiers[tier]?.name || tier}** subscription has expired. Use \`/subscribe\` to renew.`).catch(() => {});
     }
-    this.eventBus.emit('vip.expired', { userId, guildId, tier });
+    this.emit('vip.expired', { userId, guildId, tier });
     this.logger.info(`⌛ Expired ${tier} for user ${userId} in guild ${guildId}`);
   }
 
@@ -130,9 +128,7 @@ class VipAgent extends BaseAgent {
       const member = await guild.members.fetch(userId).catch(() => null);
       if (member) await this.assignRole(member, tier);
     }
-    // Optionally log payment (if you want to store, uncomment)
-    // await this.deps.models.SubscriptionPayment?.create(...)
-    this.eventBus.emit('vip.granted', { userId, guildId, tier, expiresAt });
+    this.emit('vip.granted', { userId, guildId, tier, expiresAt });
     this.logger.info(`🎁 Granted ${tier} to ${userId} until ${new Date(expiresAt).toISOString()}`);
     return expiresAt;
   }
@@ -150,7 +146,7 @@ class VipAgent extends BaseAgent {
         : Date.now() + days * 24 * 60 * 60 * 1000;
       await this.setSubscription(userId, guildId, tier, newExpiry, existing.autoRenew);
     }
-    this.eventBus.emit('vip.renewed', { userId, guildId, tier, newExpiry });
+    this.emit('vip.renewed', { userId, guildId, tier, newExpiry });
     return newExpiry;
   }
 
@@ -163,7 +159,7 @@ class VipAgent extends BaseAgent {
       if (member) await this.removeRole(member, sub.tier);
     }
     await this.deleteSubscription(userId, guildId);
-    this.eventBus.emit('vip.cancelled', { userId, guildId, tier: sub.tier });
+    this.emit('vip.cancelled', { userId, guildId, tier: sub.tier });
     return true;
   }
 
@@ -211,15 +207,11 @@ class VipAgent extends BaseAgent {
         await this.cmdRenew(interaction);
         break;
       case 'grantvip':
-        if (!member.permissions.has('Administrator')) {
-          return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
-        }
+        if (!member.permissions.has('Administrator')) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
         await this.cmdGrantVip(interaction);
         break;
       case 'revokevip':
-        if (!member.permissions.has('Administrator')) {
-          return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
-        }
+        if (!member.permissions.has('Administrator')) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
         await this.cmdRevokeVip(interaction);
         break;
     }
@@ -227,9 +219,7 @@ class VipAgent extends BaseAgent {
 
   async cmdVipStatus(interaction) {
     const sub = await this.getSubscription(interaction.user.id, interaction.guild.id);
-    if (!sub) {
-      return interaction.reply({ content: 'You do not have an active subscription.', ephemeral: true });
-    }
+    if (!sub) return interaction.reply({ content: 'You do not have an active subscription.', ephemeral: true });
     const tierData = this.tiers[sub.tier];
     if (!tierData) return interaction.reply({ content: 'Unknown tier.', ephemeral: true });
     const embed = new EmbedBuilder()
@@ -250,7 +240,7 @@ class VipAgent extends BaseAgent {
       return interaction.reply({ content: `Invalid tier. Choose: ${Object.keys(this.tiers).join(', ')}`, ephemeral: true });
     }
     const tierData = this.tiers[tierOption];
-    this.eventBus.emit('vip.purchase.init', {
+    this.emit('vip.purchase.init', {
       userId: interaction.user.id,
       guildId: interaction.guild.id,
       tier: tierOption,
@@ -264,20 +254,16 @@ class VipAgent extends BaseAgent {
 
   async cmdCancel(interaction) {
     const sub = await this.getSubscription(interaction.user.id, interaction.guild.id);
-    if (!sub) {
-      return interaction.reply({ content: 'You have no active subscription to cancel.', ephemeral: true });
-    }
+    if (!sub) return interaction.reply({ content: 'You have no active subscription to cancel.', ephemeral: true });
     await this.cancelSubscription(interaction.user.id, interaction.guild.id);
     await interaction.reply({ content: `✅ Your ${this.tiers[sub.tier].name} subscription has been cancelled. You will lose access when it expires.`, ephemeral: true });
   }
 
   async cmdRenew(interaction) {
     const sub = await this.getSubscription(interaction.user.id, interaction.guild.id);
-    if (!sub) {
-      return interaction.reply({ content: 'You have no active subscription to renew.', ephemeral: true });
-    }
+    if (!sub) return interaction.reply({ content: 'You have no active subscription to renew.', ephemeral: true });
     const tierData = this.tiers[sub.tier];
-    this.eventBus.emit('vip.renew.init', {
+    this.emit('vip.renew.init', {
       userId: interaction.user.id,
       guildId: interaction.guild.id,
       tier: sub.tier,
@@ -290,9 +276,7 @@ class VipAgent extends BaseAgent {
     const target = interaction.options.getUser('user');
     const tier = interaction.options.getString('tier');
     const days = interaction.options.getInteger('days') || 30;
-    if (!this.tiers[tier]) {
-      return interaction.reply({ content: 'Invalid tier.', ephemeral: true });
-    }
+    if (!this.tiers[tier]) return interaction.reply({ content: 'Invalid tier.', ephemeral: true });
     await this.grantSubscription(target.id, interaction.guild.id, tier, days, 0, 'admin');
     await interaction.reply({ content: `✅ Granted **${this.tiers[tier].name}** to ${target.tag} for ${days} days.`, ephemeral: true });
   }
@@ -300,9 +284,7 @@ class VipAgent extends BaseAgent {
   async cmdRevokeVip(interaction) {
     const target = interaction.options.getUser('user');
     const sub = await this.getSubscription(target.id, interaction.guild.id);
-    if (!sub) {
-      return interaction.reply({ content: `${target.tag} has no active subscription.`, ephemeral: true });
-    }
+    if (!sub) return interaction.reply({ content: `${target.tag} has no active subscription.`, ephemeral: true });
     await this.cancelSubscription(target.id, interaction.guild.id);
     await interaction.reply({ content: `🔰 Revoked ${this.tiers[sub.tier].name} from ${target.tag}.`, ephemeral: true });
   }
