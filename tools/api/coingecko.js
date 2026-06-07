@@ -4,7 +4,8 @@
  * - Get market data (market cap, volume, rank)
  * - Historical price data
  * - Built‑in caching (optional) to reduce API calls
- * - Error handling and rate‑limit awareness
+ * - Now uses the free Demo API key via query parameter `x_cg_demo_api_key`
+ * - Error handling and rate‑limit awareness (retry logic optional)
  */
 const axios = require('axios');
 
@@ -13,23 +14,21 @@ class CoinGeckoAPI {
     this.baseUrl = options.baseUrl || 'https://api.coingecko.com/api/v3';
     this.apiKey = options.apiKey || process.env.COINGECKO_API_KEY;
     this.logger = options.logger || console;
-    this.cache = options.cache || null;        // optional cache instance (e.g., from memory/cache.js)
+    this.cache = options.cache || null;
     this.cacheTtl = options.cacheTtl || 60000; // 1 minute default TTL
     this.timeout = options.timeout || 10000;
   }
 
-  // 🔐 Build headers (if API key is provided)
+  // 🔐 Build headers (optional, not required for Demo API key)
   _getHeaders() {
-    const headers = { 'Content-Type': 'application/json' };
-    if (this.apiKey) headers['x-cg-pro-api-key'] = this.apiKey;
-    return headers;
+    return { 'Content-Type': 'application/json' };
   }
 
-  // 📡 Generic GET request with caching support
+  // 📡 Generic GET request with caching support and API key injection
   async _get(endpoint, params = {}, useCache = true) {
     const url = `${this.baseUrl}${endpoint}`;
     const cacheKey = `${endpoint}:${JSON.stringify(params)}`;
-    
+
     // Check cache
     if (useCache && this.cache) {
       const cached = this.cache.get(cacheKey);
@@ -40,11 +39,18 @@ class CoinGeckoAPI {
     }
 
     try {
+      // Inject API key as query parameter (for free Demo API)
+      const finalParams = { ...params };
+      if (this.apiKey) {
+        finalParams.x_cg_demo_api_key = this.apiKey;
+      }
+
       const response = await axios.get(url, {
         headers: this._getHeaders(),
-        params,
+        params: finalParams,
         timeout: this.timeout,
       });
+
       // Store in cache
       if (useCache && this.cache) {
         this.cache.set(cacheKey, { data: response.data, timestamp: Date.now() });
@@ -58,6 +64,7 @@ class CoinGeckoAPI {
   _handleError(error, context) {
     const status = error.response?.status;
     const message = error.response?.data?.error || error.message;
+
     if (status === 429) {
       this.logger.warn(`⏱️ CoinGecko rate limit hit for ${context}`);
       throw new Error('CoinGecko API rate limit exceeded. Please try again later.');
@@ -68,7 +75,7 @@ class CoinGeckoAPI {
 
   /**
    * 💵 Get current price of one or more coins in USD (or other currency)
-   * @param {string|string[]} coinIds - Single coin ID or array of IDs (e.g., 'bitcoin', ['ethereum','solana'])
+   * @param {string|string[]} coinIds - Single coin ID or array of IDs
    * @param {string} vsCurrency - Target currency (default 'usd')
    * @returns {Promise<Object>} Object mapping coinId to price
    */
@@ -82,9 +89,9 @@ class CoinGeckoAPI {
   }
 
   /**
-   * 📊 Get detailed market data for a coin (price, market cap, volume, rank, change %)
-   * @param {string} coinId - Coin ID (e.g., 'bitcoin')
-   * @param {string} vsCurrency - Target currency (default 'usd')
+   * 📊 Get detailed market data for a coin
+   * @param {string} coinId
+   * @param {string} vsCurrency
    * @returns {Promise<Object>} Market data
    */
   async getMarketData(coinId, vsCurrency = 'usd') {
@@ -118,9 +125,9 @@ class CoinGeckoAPI {
 
   /**
    * 📈 Get historical price (OHLC) for a coin
-   * @param {string} coinId - Coin ID
-   * @param {number} days - Days ago (1, 7, 14, 30, 90, 180, 365, max)
-   * @param {string} vsCurrency - Target currency (default 'usd')
+   * @param {string} coinId
+   * @param {number} days
+   * @param {string} vsCurrency
    * @returns {Promise<Array>} Array of [timestamp, open, high, low, close]
    */
   async getHistoricalOhlc(coinId, days = 7, vsCurrency = 'usd') {
@@ -128,13 +135,13 @@ class CoinGeckoAPI {
       vs_currency: vsCurrency,
       days,
     });
-    return data; // [[timestamp, open, high, low, close], ...]
+    return data;
   }
 
   /**
    * 📈 Get simple historical price (closing price) for a coin
    * @param {string} coinId
-   * @param {number} days - Days ago
+   * @param {number} days
    * @param {string} vsCurrency
    * @returns {Promise<Array>} Array of [timestamp, price]
    */
@@ -143,14 +150,13 @@ class CoinGeckoAPI {
       vs_currency: vsCurrency,
       days,
     });
-    // data.prices: [[timestamp, price], ...]
     return data.prices;
   }
 
   /**
    * 🏆 Get top N cryptocurrencies by market cap
-   * @param {number} limit - Number of coins (default 10, max 250)
-   * @param {string} vsCurrency - Target currency (default 'usd')
+   * @param {number} limit
+   * @param {string} vsCurrency
    * @returns {Promise<Array>} List of coins with basic data
    */
   async getTopCoins(limit = 10, vsCurrency = 'usd') {
@@ -174,7 +180,7 @@ class CoinGeckoAPI {
 
   /**
    * 🔍 Search for coins by name or symbol
-   * @param {string} query - Search term
+   * @param {string} query
    * @returns {Promise<Array>} Matching coins
    */
   async searchCoins(query) {
@@ -193,7 +199,6 @@ class CoinGeckoAPI {
    */
   clearCache() {
     if (this.cache) {
-      // If cache is a Map or LRU with clear method
       if (typeof this.cache.clear === 'function') this.cache.clear();
       else if (this.cache instanceof Map) this.cache.clear();
       this.logger.info('🗑️ CoinGecko cache cleared');
