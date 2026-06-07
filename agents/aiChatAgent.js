@@ -1,74 +1,90 @@
+/**
+ * 🧠 AiChatAgent v5.0
+ * - AI chat, sentiment analysis, image generation (OpenAI)
+ * - Per‑guild configuration (enabled, whitelist, model, etc.)
+ * - Conversation memory with sliding window and timeout
+ * - Rate limiting per user
+ * - Uses models layer (if available) or direct DB for config
+ */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
-const OpenAI = require('openai');
 
 class AiChatAgent extends BaseAgent {
   constructor(eventBus, deps) {
     super(eventBus, deps);
-    this.openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    // Configuration per guild
+    // Lazy‑load OpenAI only if API key is present
+    this.openai = null;
+    this.openaiApiKey = process.env.OPENAI_API_KEY;
+    if (this.openaiApiKey) {
+      const OpenAI = require('openai');
+      this.openai = new OpenAI({ apiKey: this.openaiApiKey });
+    } else {
+      this.logger.warn('⚠️ OPENAI_API_KEY missing – AI features disabled');
+    }
+
     this.defaultConfig = {
-      enabled: true,
-      channelWhitelist: [],      // empty = all channels, otherwise only these channel IDs
-      roleWhitelist: [],          // empty = all roles, otherwise only these role IDs
+      enabled: !!this.openaiApiKey, // only enable if key exists
+      channelWhitelist: [],
+      roleWhitelist: [],
       maxTokens: 500,
       model: 'gpt-3.5-turbo',
       temperature: 0.7,
       systemPrompt: 'You are a helpful assistant in a Discord crypto community. Be friendly and informative.',
-      rateLimitPerUser: 5,        // commands per minute
-      memoryTimeoutMinutes: 30,   // how long to keep conversation memory
+      rateLimitPerUser: 5,
+      memoryTimeoutMinutes: 30,
     };
     this.guildConfigs = new Map();
-    // Conversation memory: userId -> { messages: Array, lastActive: timestamp }
-    this.memory = new Map();
-    // Rate limiting: userId -> { count, resetTime }
-    this.rateLimits = new Map();
+    this.memory = new Map();     // userId -> { messages, lastActive }
+    this.rateLimits = new Map(); // userId -> { count, resetTime }
   }
 
   async init() {
     await super.init();
-    await this.initDatabase();
-    this.logger.info('AiChatAgent ready');
+    await this._loadConfigs();
+    this.logger.info('🧠 AiChatAgent ready' + (this.openai ? '' : ' (disabled – no API key)'));
   }
 
-  async initDatabase() {
-    const db = this.deps.db;
-    db.run(`CREATE TABLE IF NOT EXISTS ai_config (
-      guildId TEXT,
-      config TEXT,  -- JSON
-      PRIMARY KEY (guildId)
-    )`);
-    // Load existing configs
-    const rows = await new Promise((resolve, reject) => {
-      db.all(`SELECT guildId, config FROM ai_config`, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-      });
-    });
-    for (const row of rows) {
-      this.guildConfigs.set(row.guildId, JSON.parse(row.config));
+  async _loadConfigs() {
+    if (!this.deps.models?.AIConfig) {
+      // Fallback to direct DB if no model – create table if missing
+      const db = this.deps.db;
+      await db.run(`CREATE TABLE IF NOT EXISTS ai_config (
+        guildId TEXT PRIMARY KEY,
+        config TEXT
+      )`);
+      const rows = await db.all(`SELECT guildId, config FROM ai_config`);
+      for (const row of rows) {
+        this.guildConfigs.set(row.guildId, JSON.parse(row.config));
+      }
+    } else {
+      // Use model (if you create one later)
+      const configs = await this.deps.models.AIConfig.findAll();
+      for (const cfg of configs) {
+        this.guildConfigs.set(cfg.guildId, cfg.config);
+      }
     }
   }
 
   async getGuildConfig(guildId) {
     if (this.guildConfigs.has(guildId)) return this.guildConfigs.get(guildId);
     const config = { ...this.defaultConfig };
+    // Disable if no API key
+    if (!this.openaiApiKey) config.enabled = false;
     this.guildConfigs.set(guildId, config);
-    // Save to DB async
-    this.saveGuildConfig(guildId, config);
+    await this._saveGuildConfig(guildId, config);
     return config;
   }
 
-  async saveGuildConfig(guildId, config) {
+  async _saveGuildConfig(guildId, config) {
     const db = this.deps.db;
-    db.run(`INSERT OR REPLACE INTO ai_config (guildId, config) VALUES (?, ?)`, [guildId, JSON.stringify(config)]);
+    await db.run(`INSERT OR REPLACE INTO ai_config (guildId, config) VALUES (?, ?)`, [guildId, JSON.stringify(config)]);
   }
 
   async updateGuildConfig(guildId, updates) {
     const config = await this.getGuildConfig(guildId);
     Object.assign(config, updates);
     this.guildConfigs.set(guildId, config);
-    await this.saveGuildConfig(guildId, config);
+    await this._saveGuildConfig(guildId, config);
   }
 
   // ---------- RATE LIMITING ----------
@@ -100,7 +116,6 @@ class AiChatAgent extends BaseAgent {
     let messages = this.getMemory(userId) || [];
     messages.push({ role: 'user', content: userMessage });
     messages.push({ role: 'assistant', content: assistantMessage });
-    // Keep last 10 exchanges to avoid token explosion
     if (messages.length > 20) messages = messages.slice(-20);
     this.memory.set(userId, { messages, lastActive: Date.now() });
   }
@@ -109,8 +124,9 @@ class AiChatAgent extends BaseAgent {
     this.memory.delete(userId);
   }
 
-  // ---------- AI CALL ----------
+  // ---------- AI CALLS (only if OpenAI available) ----------
   async askAI(userId, prompt, config, systemPromptOverride = null) {
+    if (!this.openai) return '❌ AI service is not configured (missing API key).';
     const system = systemPromptOverride || config.systemPrompt;
     const messages = [{ role: 'system', content: system }];
     const history = this.getMemory(userId);
@@ -129,28 +145,30 @@ class AiChatAgent extends BaseAgent {
       return reply;
     } catch (err) {
       this.logger.error(`OpenAI error for user ${userId}: ${err.message}`);
-      return '❌ AI service unavailable. Please try again later.';
+      return '❌ AI service error. Please try again later.';
     }
   }
 
-  async analyzeSentiment(userId, text) {
+  async analyzeSentiment(text) {
+    if (!this.openai) return 'unknown';
     try {
       const response = await this.openai.chat.completions.create({
         model: 'gpt-3.5-turbo',
         messages: [
-          { role: 'system', content: 'Analyze the sentiment of the following text. Respond with only one word: positive, negative, or neutral.' },
+          { role: 'system', content: 'Analyze sentiment. Respond with exactly one word: positive, negative, or neutral.' },
           { role: 'user', content: text },
         ],
         max_tokens: 10,
         temperature: 0,
       });
       return response.choices[0].message.content.toLowerCase();
-    } catch (err) {
+    } catch {
       return 'unknown';
     }
   }
 
   async generateImage(prompt) {
+    if (!this.openai) return null;
     try {
       const response = await this.openai.images.generate({
         model: 'dall-e-3',
@@ -165,20 +183,22 @@ class AiChatAgent extends BaseAgent {
     }
   }
 
-  // ---------- COMMAND HANDLERS ----------
+  // ---------- SLASH COMMANDS ----------
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
-    const { commandName, options, user, guild, member, channel } = interaction;
+    const { commandName, user, guild, member, channel } = interaction;
     const config = await this.getGuildConfig(guild.id);
 
-    // Check if AI is enabled and user has permission
-    if (commandName !== 'setai') { // setai always allowed for admins
-      if (!config.enabled) return interaction.reply({ content: 'AI features are disabled in this server.', ephemeral: true });
+    // Permission checks (skip for admin commands)
+    if (commandName !== 'setai') {
+      if (!config.enabled && commandName !== 'aistats') {
+        return interaction.reply({ content: '❌ AI features are disabled in this server.', ephemeral: true });
+      }
       if (config.channelWhitelist.length && !config.channelWhitelist.includes(channel.id)) {
-        return interaction.reply({ content: 'AI not allowed in this channel.', ephemeral: true });
+        return interaction.reply({ content: '❌ AI not allowed in this channel.', ephemeral: true });
       }
       if (config.roleWhitelist.length && !member.roles.cache.some(r => config.roleWhitelist.includes(r.id))) {
-        return interaction.reply({ content: 'You do not have permission to use AI.', ephemeral: true });
+        return interaction.reply({ content: '❌ You lack permission to use AI.', ephemeral: true });
       }
       if (this.isRateLimited(user.id, config)) {
         return interaction.reply({ content: '⏱️ Slow down! You are using AI too fast.', ephemeral: true });
@@ -218,26 +238,25 @@ class AiChatAgent extends BaseAgent {
       .setDescription(reply)
       .setColor(0x00ae86)
       .setFooter({ text: 'AI response • use /resetai to clear context' });
-    if (reply.length > 2000) {
-      await interaction.editReply({ content: reply.slice(0, 1990) + '...', embeds: [] });
-    } else {
-      await interaction.editReply({ embeds: [embed] });
-    }
+    await interaction.editReply({ embeds: [embed] });
   }
 
   async cmdReset(interaction) {
     await this.clearMemory(interaction.user.id);
-    await interaction.reply({ content: '✅ Your conversation context has been reset.', ephemeral: true });
+    await interaction.reply({ content: '✅ Conversation context reset.', ephemeral: true });
   }
 
   async cmdSentiment(interaction) {
     const text = interaction.options.getString('text');
-    const sentiment = await this.analyzeSentiment(interaction.user.id, text);
+    const sentiment = await this.analyzeSentiment(text);
     const emoji = sentiment === 'positive' ? '😊' : sentiment === 'negative' ? '😠' : '😐';
     await interaction.reply({ content: `${emoji} Sentiment: **${sentiment}**`, ephemeral: true });
   }
 
   async cmdImagine(interaction) {
+    if (!this.openai) {
+      return interaction.reply({ content: '❌ Image generation unavailable (missing API key).', ephemeral: true });
+    }
     await interaction.deferReply();
     const prompt = interaction.options.getString('prompt');
     const url = await this.generateImage(prompt);
@@ -251,10 +270,9 @@ class AiChatAgent extends BaseAgent {
   }
 
   async cmdSetAi(interaction) {
-    const subcommand = interaction.options.getSubcommand();
+    const sub = interaction.options.getSubcommand();
     const config = await this.getGuildConfig(interaction.guild.id);
-
-    switch (subcommand) {
+    switch (sub) {
       case 'enable':
         await this.updateGuildConfig(interaction.guild.id, { enabled: true });
         await interaction.reply({ content: '✅ AI features enabled globally.', ephemeral: true });
@@ -266,49 +284,48 @@ class AiChatAgent extends BaseAgent {
       case 'channel':
         const action = interaction.options.getString('action');
         const channel = interaction.options.getChannel('channel');
-        const whitelist = config.channelWhitelist || [];
+        let whitelist = config.channelWhitelist || [];
         if (action === 'add') {
           if (!whitelist.includes(channel.id)) whitelist.push(channel.id);
           await this.updateGuildConfig(interaction.guild.id, { channelWhitelist: whitelist });
-          await interaction.reply({ content: `Added ${channel} to AI whitelist.`, ephemeral: true });
-        } else if (action === 'remove') {
-          const idx = whitelist.indexOf(channel.id);
-          if (idx !== -1) whitelist.splice(idx, 1);
+          await interaction.reply({ content: `✅ Added ${channel} to AI whitelist.`, ephemeral: true });
+        } else {
+          whitelist = whitelist.filter(id => id !== channel.id);
           await this.updateGuildConfig(interaction.guild.id, { channelWhitelist: whitelist });
-          await interaction.reply({ content: `Removed ${channel} from AI whitelist.`, ephemeral: true });
+          await interaction.reply({ content: `✅ Removed ${channel} from AI whitelist.`, ephemeral: true });
         }
         break;
       case 'model':
         const model = interaction.options.getString('model');
         await this.updateGuildConfig(interaction.guild.id, { model });
-        await interaction.reply({ content: `AI model set to ${model}.`, ephemeral: true });
+        await interaction.reply({ content: `✅ AI model set to ${model}.`, ephemeral: true });
         break;
       case 'system':
-        const systemPrompt = interaction.options.getString('prompt');
-        await this.updateGuildConfig(interaction.guild.id, { systemPrompt });
-        await interaction.reply({ content: 'System prompt updated.', ephemeral: true });
+        const sysPrompt = interaction.options.getString('prompt');
+        await this.updateGuildConfig(interaction.guild.id, { systemPrompt: sysPrompt });
+        await interaction.reply({ content: '✅ System prompt updated.', ephemeral: true });
         break;
     }
   }
 
   async cmdStats(interaction) {
     const config = await this.getGuildConfig(interaction.guild.id);
-    const memCount = this.memory.size;
     const embed = new EmbedBuilder()
       .setTitle('🤖 AI Agent Stats')
       .addFields(
         { name: 'Enabled', value: config.enabled ? 'Yes' : 'No', inline: true },
         { name: 'Model', value: config.model, inline: true },
-        { name: 'Active conversations', value: memCount.toString(), inline: true },
+        { name: 'Active conversations', value: this.memory.size.toString(), inline: true },
         { name: 'Rate limit (per min)', value: config.rateLimitPerUser.toString(), inline: true },
         { name: 'Whitelisted channels', value: config.channelWhitelist.length.toString(), inline: true },
+        { name: 'OpenAI Key', value: this.openaiApiKey ? '✅ Set' : '❌ Missing', inline: true }
       )
       .setColor(0x3498db);
     await interaction.reply({ embeds: [embed], ephemeral: true });
   }
 
   deny(interaction) {
-    interaction.reply({ content: '❌ Admin only command.', ephemeral: true });
+    interaction.reply({ content: '❌ Admin only.', ephemeral: true });
   }
 }
 
