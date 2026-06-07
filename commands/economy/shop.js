@@ -3,7 +3,6 @@ const { EmbedBuilder } = require('discord.js');
 module.exports = {
   data: { name: 'shop', description: '🛒 View items for sale' },
   async execute(interaction) {
-    // No need to defer – reply immediately
     const embed = new EmbedBuilder()
       .setTitle('🛒 Shop')
       .setDescription(
