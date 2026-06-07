@@ -1,4 +1,4 @@
-module.exports = {
+ module.exports = {
   data: {
     name: 'subscribe',
     description: '💎 Subscribe to a VIP tier',
@@ -16,7 +16,6 @@ module.exports = {
     ],
   },
   async execute(interaction) {
-    const { eventBus } = interaction.client;
-    eventBus?.emit('command.subscribe', { interaction });
+    await interaction.client.orchestrator.onInteraction(interaction);
   },
 };
