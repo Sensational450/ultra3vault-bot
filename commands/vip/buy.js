@@ -1,9 +1,4 @@
-/**
- * 💎 VIP Buy Command v5.0
- * - Initiate VIP subscription purchase
- * - Emits 'command.buy' event for vipAgent
- */
-const { EmbedBuilder } = require('discord.js');
+const { NowPaymentsAPI } = require('../../tools/api/nowpayments');
 
 module.exports = {
   data: {
@@ -12,8 +7,8 @@ module.exports = {
     options: [
       {
         name: 'plan',
-        type: 3, // STRING
-        description: 'Subscription plan duration',
+        type: 3,
+        description: 'Subscription plan',
         required: true,
         choices: [
           { name: '7 days', value: '7d' },
@@ -23,15 +18,36 @@ module.exports = {
       },
     ],
   },
-
-  async execute(interaction, deps = {}) {
-    const { eventBus, logger } = deps;
+  async execute(interaction) {
     await interaction.deferReply({ ephemeral: true });
-    if (eventBus) {
-      eventBus.emit('command.buy', { interaction });
-      logger?.debug(`📡 Buy command emitted for user ${interaction.user.id}`);
-    } else {
-      await interaction.editReply({ content: '❌ Purchase system unavailable.' });
+    const plan = interaction.options.getString('plan');
+    const userId = interaction.user.id;
+
+    // Initialize NowPayments
+    const nowpayments = new NowPaymentsAPI({
+      apiKey: process.env.NOWPAYMENTS_API_KEY,
+      ipnSecret: process.env.NOWPAYMENTS_IPN_SECRET,
+      sandbox: process.env.NODE_ENV !== 'production',
+      logger: console,
+    });
+
+    try {
+      const amount = plan === '7d' ? 5 : (plan === '14d' ? 9 : 15);
+      const orderId = `${userId}_${plan}`;
+      const invoice = await nowpayments.createInvoice({
+        amount,
+        priceCurrency: 'usd',
+        orderId,
+        orderDescription: `Ultra3Vault ${plan} subscription`,
+        successUrl: 'https://google.com',
+        cancelUrl: 'https://google.com',
+      });
+      await interaction.editReply({
+        content: `💰 Invoice created!\nPay here: ${invoice.invoice_url}\n\n_Once payment is confirmed, your VIP role will be automatically assigned._`,
+      });
+    } catch (err) {
+      console.error('Invoice error:', err);
+      await interaction.editReply({ content: '❌ Failed to create payment link. Please try again later.' });
     }
   },
 };
