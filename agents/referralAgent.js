@@ -1,3 +1,11 @@
+/**
+ * 🔗 ReferralAgent v5.0
+ * - Referral code generation and redemption
+ * - Tracks referrals, rewards referrer and referee (coins, VIP days)
+ * - Leaderboard and stats
+ * - Uses models.Referral layer (if available) with fallback to direct DB queries
+ * - Table creation removed – relies on migrations
+ */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
 
@@ -7,9 +15,9 @@ class ReferralAgent extends BaseAgent {
     this.defaultConfig = {
       rewardReferrerCoins: 500,
       rewardRefereeCoins: 200,
-      rewardReferrerVipDays: 0,      // optional: grant VIP days to referrer
-      rewardRefereeVipDays: 0,       // optional: grant VIP days to new user
-      maxReferralsPerUser: 50,       // soft limit
+      rewardReferrerVipDays: 0,
+      rewardRefereeVipDays: 0,
+      maxReferralsPerUser: 50,
       codeLength: 8,
       resetLeaderboardWeekly: false,
     };
@@ -18,10 +26,8 @@ class ReferralAgent extends BaseAgent {
 
   async init() {
     await super.init();
-    await this.initDatabase();
-    // Load all configs from DB
+    // Load configs from DB (table already exists via migration)
     await this.loadAllConfigs();
-    // Schedule weekly leaderboard reset if configured
     this.subscribe('job.leaderboardReset', async () => {
       for (const [guildId, config] of this.guildConfigs.entries()) {
         if (config.resetLeaderboardWeekly) {
@@ -29,54 +35,19 @@ class ReferralAgent extends BaseAgent {
         }
       }
     });
-    this.logger.info('ReferralAgent ready');
+    this.logger.info('🔗 ReferralAgent ready');
   }
 
-  async initDatabase() {
-    const db = this.deps.db;
-    // Referral codes table
-    db.run(`CREATE TABLE IF NOT EXISTS referral_codes (
-      userId TEXT,
-      guildId TEXT,
-      code TEXT UNIQUE,
-      createdAt INTEGER,
-      PRIMARY KEY (userId, guildId)
-    )`);
-    // Referral records
-    db.run(`CREATE TABLE IF NOT EXISTS referrals (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      referrerId TEXT,
-      refereeId TEXT,
-      guildId TEXT,
-      timestamp INTEGER,
-      rewardClaimed INTEGER DEFAULT 0  -- 0 = pending, 1 = claimed
-    )`);
-    // Referral stats per user
-    db.run(`CREATE TABLE IF NOT EXISTS referral_stats (
-      userId TEXT,
-      guildId TEXT,
-      totalReferrals INTEGER DEFAULT 0,
-      totalRewardsCoins INTEGER DEFAULT 0,
-      lastReferralAt INTEGER,
-      PRIMARY KEY (userId, guildId)
-    )`);
-    // Guild configs
-    db.run(`CREATE TABLE IF NOT EXISTS referral_configs (
-      guildId TEXT PRIMARY KEY,
-      config TEXT  -- JSON
-    )`);
-  }
-
+  // ---------- CONFIG HELPERS (direct DB, no model needed) ----------
   async loadAllConfigs() {
     const db = this.deps.db;
-    const rows = await new Promise((resolve, reject) => {
-      db.all(`SELECT guildId, config FROM referral_configs`, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-      });
-    });
-    for (const row of rows) {
-      this.guildConfigs.set(row.guildId, JSON.parse(row.config));
+    try {
+      const rows = await db.all(`SELECT guildId, config FROM referral_configs`);
+      for (const row of rows) {
+        this.guildConfigs.set(row.guildId, JSON.parse(row.config));
+      }
+    } catch (err) {
+      this.logger.warn(`Could not load referral configs: ${err.message} – ensure migrations are applied`);
     }
   }
 
@@ -84,9 +55,8 @@ class ReferralAgent extends BaseAgent {
     if (this.guildConfigs.has(guildId)) return this.guildConfigs.get(guildId);
     const config = { ...this.defaultConfig };
     this.guildConfigs.set(guildId, config);
-    // Save to DB
     const db = this.deps.db;
-    db.run(`INSERT OR REPLACE INTO referral_configs (guildId, config) VALUES (?, ?)`, [guildId, JSON.stringify(config)]);
+    await db.run(`INSERT OR REPLACE INTO referral_configs (guildId, config) VALUES (?, ?)`, [guildId, JSON.stringify(config)]);
     return config;
   }
 
@@ -95,107 +65,98 @@ class ReferralAgent extends BaseAgent {
     Object.assign(config, updates);
     this.guildConfigs.set(guildId, config);
     const db = this.deps.db;
-    db.run(`INSERT OR REPLACE INTO referral_configs (guildId, config) VALUES (?, ?)`, [guildId, JSON.stringify(config)]);
+    await db.run(`INSERT OR REPLACE INTO referral_configs (guildId, config) VALUES (?, ?)`, [guildId, JSON.stringify(config)]);
   }
 
-  // ---------- CODE GENERATION ----------
-  generateCode(userId, guildId) {
+  // ---------- CODE GENERATION (using models if available) ----------
+  generateCode() {
     const crypto = require('crypto');
-    const base = crypto.randomBytes(Math.ceil(this.defaultConfig.codeLength / 2)).toString('hex').slice(0, this.defaultConfig.codeLength);
-    return `${base}`.toUpperCase();
+    const len = this.defaultConfig.codeLength;
+    return crypto.randomBytes(Math.ceil(len / 2)).toString('hex').slice(0, len).toUpperCase();
   }
 
   async createReferralCode(userId, guildId) {
-    const db = this.deps.db;
-    // Check if user already has a code
-    const existing = await new Promise((resolve) => {
-      db.get(`SELECT code FROM referral_codes WHERE userId = ? AND guildId = ?`, [userId, guildId], (err, row) => {
-        if (err) resolve(null);
-        else resolve(row);
-      });
-    });
-    if (existing) return existing.code;
-    const code = this.generateCode(userId, guildId);
-    await new Promise((resolve, reject) => {
-      db.run(`INSERT INTO referral_codes (userId, guildId, code, createdAt) VALUES (?, ?, ?, ?)`, [userId, guildId, code, Date.now()], (err) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-    return code;
+    if (this.models?.Referral) {
+      let code = await this.models.Referral.getCodeByUser(userId, guildId);
+      if (!code) {
+        code = this.generateCode();
+        await this.models.Referral.setCode(userId, guildId, code);
+      }
+      return code;
+    } else {
+      // fallback to direct DB
+      const db = this.deps.db;
+      let row = await db.get(`SELECT code FROM referral_codes WHERE userId = ? AND guildId = ?`, [userId, guildId]);
+      if (row) return row.code;
+      const code = this.generateCode();
+      await db.run(`INSERT INTO referral_codes (userId, guildId, code, createdAt) VALUES (?, ?, ?, ?)`,
+        [userId, guildId, code, Date.now()]);
+      return code;
+    }
   }
 
   async getCodeByUser(userId, guildId) {
-    const db = this.deps.db;
-    const row = await new Promise((resolve) => {
-      db.get(`SELECT code FROM referral_codes WHERE userId = ? AND guildId = ?`, [userId, guildId], (err, row) => resolve(row));
-    });
-    return row ? row.code : null;
+    if (this.models?.Referral) {
+      return await this.models.Referral.getCodeByUser(userId, guildId);
+    } else {
+      const db = this.deps.db;
+      const row = await db.get(`SELECT code FROM referral_codes WHERE userId = ? AND guildId = ?`, [userId, guildId]);
+      return row?.code || null;
+    }
   }
 
   async getUserIdByCode(code, guildId) {
-    const db = this.deps.db;
-    const row = await new Promise((resolve) => {
-      db.get(`SELECT userId FROM referral_codes WHERE code = ? AND guildId = ?`, [code, guildId], (err, row) => resolve(row));
-    });
-    return row ? row.userId : null;
+    if (this.models?.Referral) {
+      return await this.models.Referral.getUserByCode(code, guildId);
+    } else {
+      const db = this.deps.db;
+      const row = await db.get(`SELECT userId FROM referral_codes WHERE code = ? AND guildId = ?`, [code, guildId]);
+      return row?.userId || null;
+    }
   }
 
   // ---------- REWARD HANDLING ----------
   async processReferral(referrerId, refereeId, guildId) {
-    // Prevent self-referral
     if (referrerId === refereeId) return false;
-    // Check if referee already used a code
-    const alreadyReferred = await this.hasReferral(refereeId, guildId);
-    if (alreadyReferred) return false;
+    if (await this.hasReferral(refereeId, guildId)) return false;
     const config = await this.getGuildConfig(guildId);
-    // Check referrer limit
     const referrerStats = await this.getReferralStats(referrerId, guildId);
     if (referrerStats.totalReferrals >= config.maxReferralsPerUser) return false;
-    // Record referral
-    const db = this.deps.db;
-    await new Promise((resolve, reject) => {
-      db.run(`INSERT INTO referrals (referrerId, refereeId, guildId, timestamp, rewardClaimed) VALUES (?, ?, ?, ?, ?)`,
-        [referrerId, refereeId, guildId, Date.now(), 0], (err) => {
-          if (err) reject(err);
-          else resolve();
-        });
-    });
-    // Update stats
+
+    if (this.models?.Referral) {
+      await this.models.Referral.recordReferral(referrerId, refereeId, guildId, config.rewardReferrerCoins);
+    } else {
+      const db = this.deps.db;
+      await db.run(`INSERT INTO referrals (referrerId, refereeId, guildId, timestamp, rewardClaimed) VALUES (?, ?, ?, ?, ?)`,
+        [referrerId, refereeId, guildId, Date.now(), 0]);
+    }
     await this.updateStats(referrerId, guildId, 1, config.rewardReferrerCoins);
     await this.updateStats(refereeId, guildId, 0, config.rewardRefereeCoins);
-    // Grant rewards
     await this.grantRewards(referrerId, refereeId, guildId, config);
-    // Mark as claimed
-    await new Promise((resolve) => {
-      db.run(`UPDATE referrals SET rewardClaimed = 1 WHERE referrerId = ? AND refereeId = ? AND guildId = ?`, [referrerId, refereeId, guildId]);
-      resolve();
-    });
+    if (!this.models?.Referral) {
+      const db = this.deps.db;
+      await db.run(`UPDATE referrals SET rewardClaimed = 1 WHERE referrerId = ? AND refereeId = ? AND guildId = ?`,
+        [referrerId, refereeId, guildId]);
+    }
     return true;
   }
 
   async grantRewards(referrerId, refereeId, guildId, config) {
-    // Grant coins to referrer
     if (config.rewardReferrerCoins > 0) {
-      this.eventBus.emit('economy.grant', { userId: referrerId, guildId, amount: config.rewardReferrerCoins, reason: 'referral' });
+      this.emit('economy.grant', { userId: referrerId, guildId, amount: config.rewardReferrerCoins, reason: 'referral' });
     }
-    // Grant coins to referee
     if (config.rewardRefereeCoins > 0) {
-      this.eventBus.emit('economy.grant', { userId: refereeId, guildId, amount: config.rewardRefereeCoins, reason: 'referral_bonus' });
+      this.emit('economy.grant', { userId: refereeId, guildId, amount: config.rewardRefereeCoins, reason: 'referral_bonus' });
     }
-    // Grant VIP days to referrer
     if (config.rewardReferrerVipDays > 0) {
-      this.eventBus.emit('admin.vip.grant', { userId: referrerId, guildId, tier: 'vip', durationDays: config.rewardReferrerVipDays, source: 'referral' });
+      this.emit('admin.vip.grant', { userId: referrerId, guildId, tier: 'vip', durationDays: config.rewardReferrerVipDays, source: 'referral' });
     }
-    // Grant VIP days to referee
     if (config.rewardRefereeVipDays > 0) {
-      this.eventBus.emit('admin.vip.grant', { userId: refereeId, guildId, tier: 'vip', durationDays: config.rewardRefereeVipDays, source: 'referral' });
+      this.emit('admin.vip.grant', { userId: refereeId, guildId, tier: 'vip', durationDays: config.rewardRefereeVipDays, source: 'referral' });
     }
-    // Send DMs
-    const client = this.deps.client;
     try {
-      const referrerUser = await client.users.fetch(referrerId);
-      const refereeUser = await client.users.fetch(refereeId);
+      const referrerUser = await this.client.users.fetch(referrerId);
+      const refereeUser = await this.client.users.fetch(refereeId);
       referrerUser.send(`🎉 You gained a new referral! +${config.rewardReferrerCoins} coins. Total referrals: ${(await this.getReferralStats(referrerId, guildId)).totalReferrals}`).catch(() => {});
       refereeUser.send(`🎁 Welcome! You received ${config.rewardRefereeCoins} bonus coins for using a referral code.`).catch(() => {});
     } catch (err) {}
@@ -203,67 +164,63 @@ class ReferralAgent extends BaseAgent {
   }
 
   async hasReferral(userId, guildId) {
-    const db = this.deps.db;
-    const row = await new Promise((resolve) => {
-      db.get(`SELECT id FROM referrals WHERE refereeId = ? AND guildId = ?`, [userId, guildId], (err, row) => resolve(row));
-    });
-    return !!row;
+    if (this.models?.Referral) {
+      return await this.models.Referral.isReferred(userId, guildId);
+    } else {
+      const db = this.deps.db;
+      const row = await db.get(`SELECT id FROM referrals WHERE refereeId = ? AND guildId = ?`, [userId, guildId]);
+      return !!row;
+    }
   }
 
   async updateStats(userId, guildId, incReferrals, incCoins) {
     const db = this.deps.db;
-    await new Promise((resolve) => {
-      db.run(`INSERT INTO referral_stats (userId, guildId, totalReferrals, totalRewardsCoins, lastReferralAt)
-              VALUES (?, ?, ?, ?, ?)
-              ON CONFLICT(userId, guildId) DO UPDATE SET
-                totalReferrals = totalReferrals + ?,
-                totalRewardsCoins = totalRewardsCoins + ?,
-                lastReferralAt = ?`,
-              [userId, guildId, incReferrals, incCoins, Date.now(), incReferrals, incCoins, Date.now()], (err) => resolve());
-    });
+    await db.run(`INSERT INTO referral_stats (userId, guildId, totalReferrals, totalRewardsCoins, lastReferralAt)
+                  VALUES (?, ?, ?, ?, ?)
+                  ON CONFLICT(userId, guildId) DO UPDATE SET
+                    totalReferrals = totalReferrals + ?,
+                    totalRewardsCoins = totalRewardsCoins + ?,
+                    lastReferralAt = ?`,
+                  [userId, guildId, incReferrals, incCoins, Date.now(), incReferrals, incCoins, Date.now()]);
   }
 
   async getReferralStats(userId, guildId) {
-    const db = this.deps.db;
-    const row = await new Promise((resolve) => {
-      db.get(`SELECT totalReferrals, totalRewardsCoins, lastReferralAt FROM referral_stats WHERE userId = ? AND guildId = ?`, [userId, guildId], (err, row) => resolve(row));
-    });
-    return row || { totalReferrals: 0, totalRewardsCoins: 0, lastReferralAt: 0 };
+    if (this.models?.Referral) {
+      return await this.models.Referral.getReferrerStats(userId, guildId);
+    } else {
+      const db = this.deps.db;
+      const row = await db.get(`SELECT totalReferrals, totalRewardsCoins, lastReferralAt FROM referral_stats WHERE userId = ? AND guildId = ?`, [userId, guildId]);
+      return row || { totalReferrals: 0, totalRewardsCoins: 0, lastReferralAt: 0 };
+    }
   }
 
   async getReferralsList(referrerId, guildId, limit = 10) {
-    const db = this.deps.db;
-    const rows = await new Promise((resolve) => {
-      db.all(`SELECT refereeId, timestamp FROM referrals WHERE referrerId = ? AND guildId = ? ORDER BY timestamp DESC LIMIT ?`, [referrerId, guildId, limit], (err, rows) => resolve(rows));
-    });
-    return rows;
+    if (this.models?.Referral) {
+      return await this.models.Referral.getReferralsByReferrer(referrerId, guildId, limit);
+    } else {
+      const db = this.deps.db;
+      return await db.all(`SELECT refereeId, timestamp FROM referrals WHERE referrerId = ? AND guildId = ? ORDER BY timestamp DESC LIMIT ?`,
+        [referrerId, guildId, limit]);
+    }
   }
 
   async getLeaderboard(guildId, limit = 10) {
     const db = this.deps.db;
-    const rows = await new Promise((resolve) => {
-      db.all(`SELECT userId, totalReferrals FROM referral_stats WHERE guildId = ? ORDER BY totalReferrals DESC LIMIT ?`, [guildId, limit], (err, rows) => resolve(rows));
-    });
-    return rows;
+    return await db.all(`SELECT userId, totalReferrals FROM referral_stats WHERE guildId = ? ORDER BY totalReferrals DESC LIMIT ?`,
+      [guildId, limit]);
   }
 
   async resetLeaderboard(guildId) {
     const db = this.deps.db;
-    await new Promise((resolve) => {
-      db.run(`DELETE FROM referral_stats WHERE guildId = ?`, [guildId], (err) => resolve());
-    });
-    await new Promise((resolve) => {
-      db.run(`DELETE FROM referrals WHERE guildId = ?`, [guildId], (err) => resolve());
-    });
-    // Keep codes but reset stats
+    await db.run(`DELETE FROM referral_stats WHERE guildId = ?`, [guildId]);
+    await db.run(`DELETE FROM referrals WHERE guildId = ?`, [guildId]);
     this.logger.info(`Referral leaderboard reset for guild ${guildId}`);
   }
 
   // ---------- SLASH COMMANDS ----------
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
-    const { commandName, options, user, guild } = interaction;
-
+    const { commandName } = interaction;
     switch (commandName) {
       case 'refer':
         await this.cmdRefer(interaction);
@@ -288,15 +245,14 @@ class ReferralAgent extends BaseAgent {
     const userId = interaction.user.id;
     const guildId = interaction.guild.id;
     let code = await this.getCodeByUser(userId, guildId);
-    if (!code) {
-      code = await this.createReferralCode(userId, guildId);
-    }
+    if (!code) code = await this.createReferralCode(userId, guildId);
+    const stats = await this.getReferralStats(userId, guildId);
     const embed = new EmbedBuilder()
       .setTitle('🔗 Your Referral Link')
       .setDescription(`Share this code with friends: \`${code}\`\nThey can use \`/redeem ${code}\` to get rewards!`)
       .addFields(
-        { name: 'Total Referrals', value: (await this.getReferralStats(userId, guildId)).totalReferrals.toString(), inline: true },
-        { name: 'Total Rewards', value: (await this.getReferralStats(userId, guildId)).totalRewardsCoins.toString(), inline: true }
+        { name: 'Total Referrals', value: stats.totalReferrals.toString(), inline: true },
+        { name: 'Total Rewards', value: stats.totalRewardsCoins.toString(), inline: true }
       )
       .setColor(0x00ae86);
     await interaction.reply({ embeds: [embed], ephemeral: true });
@@ -307,9 +263,7 @@ class ReferralAgent extends BaseAgent {
     const refereeId = interaction.user.id;
     const guildId = interaction.guild.id;
     const referrerId = await this.getUserIdByCode(code, guildId);
-    if (!referrerId) {
-      return interaction.reply({ content: '❌ Invalid referral code.', ephemeral: true });
-    }
+    if (!referrerId) return interaction.reply({ content: '❌ Invalid referral code.', ephemeral: true });
     const success = await this.processReferral(referrerId, refereeId, guildId);
     if (success) {
       await interaction.reply({ content: '✅ Referral code redeemed! You received a bonus. 🎉', ephemeral: true });
@@ -347,27 +301,24 @@ class ReferralAgent extends BaseAgent {
   }
 
   async cmdSetReferral(interaction) {
-    const subcommand = interaction.options.getSubcommand();
+    const sub = interaction.options.getSubcommand();
     const guildId = interaction.guild.id;
     const config = await this.getGuildConfig(guildId);
-    switch (subcommand) {
-      case 'setreward':
-        const type = interaction.options.getString('type');
-        const amount = interaction.options.getInteger('amount');
-        if (type === 'referrer_coins') config.rewardReferrerCoins = amount;
-        else if (type === 'referee_coins') config.rewardRefereeCoins = amount;
-        else if (type === 'referrer_vip_days') config.rewardReferrerVipDays = amount;
-        else if (type === 'referee_vip_days') config.rewardRefereeVipDays = amount;
-        else return interaction.reply({ content: 'Invalid type', ephemeral: true });
-        await this.updateGuildConfig(guildId, config);
-        await interaction.reply({ content: `Updated ${type} to ${amount}.`, ephemeral: true });
-        break;
-      case 'resetweekly':
-        const enable = interaction.options.getBoolean('enable');
-        config.resetLeaderboardWeekly = enable;
-        await this.updateGuildConfig(guildId, config);
-        await interaction.reply({ content: `Weekly leaderboard reset ${enable ? 'enabled' : 'disabled'}.`, ephemeral: true });
-        break;
+    if (sub === 'setreward') {
+      const type = interaction.options.getString('type');
+      const amount = interaction.options.getInteger('amount');
+      if (type === 'referrer_coins') config.rewardReferrerCoins = amount;
+      else if (type === 'referee_coins') config.rewardRefereeCoins = amount;
+      else if (type === 'referrer_vip_days') config.rewardReferrerVipDays = amount;
+      else if (type === 'referee_vip_days') config.rewardRefereeVipDays = amount;
+      else return interaction.reply({ content: 'Invalid type', ephemeral: true });
+      await this.updateGuildConfig(guildId, config);
+      await interaction.reply({ content: `✅ Updated ${type} to ${amount}.`, ephemeral: true });
+    } else if (sub === 'resetweekly') {
+      const enable = interaction.options.getBoolean('enable');
+      config.resetLeaderboardWeekly = enable;
+      await this.updateGuildConfig(guildId, config);
+      await interaction.reply({ content: `Weekly leaderboard reset ${enable ? 'enabled' : 'disabled'}.`, ephemeral: true });
     }
   }
 
