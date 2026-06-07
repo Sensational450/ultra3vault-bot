@@ -1,22 +1,13 @@
-/**
- * 🛒 Shop Command v5.0
- * - Display available items for purchase
- * - Emits 'command.shop' event for economyAgent
- */
-module.exports = {
-  data: {
-    name: 'shop',
-    description: '🛒 View items available for purchase',
-  },
+const { EmbedBuilder } = require('discord.js');
 
-  async execute(interaction, deps = {}) {
-    const { eventBus, logger } = deps;
-    await interaction.deferReply({ ephemeral: false });
-    if (eventBus) {
-      eventBus.emit('command.shop', { interaction });
-      logger?.debug(`📡 Shop command emitted for user ${interaction.user.id}`);
-    } else {
-      await interaction.editReply({ content: '❌ Shop unavailable.' });
-    }
+module.exports = {
+  data: { name: 'shop', description: '🛒 View items for sale' },
+  async execute(interaction) {
+    // No deferral needed – reply immediately
+    const embed = new EmbedBuilder()
+      .setTitle('🛒 Shop')
+      .setDescription('**VIP Role** - 5000 coins\nAccess to VIP channels\n\n**Lottery Ticket** - 100 coins\nEnter weekly lottery\n\n**Red Name Color** - 2000 coins\nCustom role color')
+      .setColor(0xffaa00);
+    await interaction.reply({ embeds: [embed] });
   },
 };
