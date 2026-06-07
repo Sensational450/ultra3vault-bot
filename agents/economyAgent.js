@@ -4,6 +4,7 @@
  * - Uses models layer (Economy) for all database operations
  * - No table creation (handled by migrations)
  * - Emits events for purchases and grants
+ * - NOTE: The `/buy` command is handled by VipAgent (for subscriptions)
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
@@ -54,8 +55,6 @@ class EconomyAgent extends BaseAgent {
 
   // ---------- INVENTORY (simplified – can be extended) ----------
   async addInventory(userId, guildId, itemId, quantity = 1) {
-    // For now, just store in a simple table via direct DB (or create Inventory model)
-    // We'll keep direct db for inventory to avoid complexity; but we'll avoid table creation.
     const db = this.deps.db;
     await db.run(`INSERT INTO economy_inventory (userId, guildId, itemId, quantity)
                   VALUES (?, ?, ?, ?)
@@ -94,9 +93,10 @@ class EconomyAgent extends BaseAgent {
       case 'shop':
         await this.cmdShop(interaction);
         break;
-      case 'buy':
-        await this.cmdBuy(interaction);
-        break;
+      // 🚫 'buy' is removed – handled by VipAgent (VIP subscriptions)
+      // case 'buy':
+      //   await this.cmdBuy(interaction);
+      //   break;
       case 'leaderboard':
       case 'lb':
         await this.cmdLeaderboard(interaction);
@@ -161,32 +161,13 @@ class EconomyAgent extends BaseAgent {
     const embed = new EmbedBuilder()
       .setTitle('🛒 Shop')
       .setDescription(description || 'No items available.')
-      .setFooter({ text: 'Use /buy <item_name> to purchase' })
+      .setFooter({ text: 'Use `/buy <item_name>` to purchase (for economy items)' })
       .setColor(0xffaa00);
     await interaction.reply({ embeds: [embed] });
   }
 
-  async cmdBuy(interaction) {
-    const itemName = interaction.options.getString('item');
-    const userId = interaction.user.id;
-    const guildId = interaction.guild.id;
-    const item = this.shopItems.find(i => i.name.toLowerCase() === itemName.toLowerCase());
-    if (!item) return interaction.reply({ content: 'Item not found.', ephemeral: true });
-    const balance = await this.getBalance(userId, guildId);
-    if (balance < item.price) {
-      return interaction.reply({ content: `Insufficient funds. Need ${item.price} coins.`, ephemeral: true });
-    }
-    await this.removeBalance(userId, guildId, item.price);
-    if (item.type === 'role' && item.roleId) {
-      const member = await interaction.guild.members.fetch(userId);
-      await member.roles.add(item.roleId).catch(() => null);
-      await interaction.reply({ content: `✅ Purchased **${item.name}**! Role assigned.`, ephemeral: true });
-      this.emit('economy.rolePurchased', { userId, guildId, roleId: item.roleId, itemId: item.id });
-    } else if (item.type === 'consumable') {
-      await this.addInventory(userId, guildId, item.id);
-      await interaction.reply({ content: `✅ Purchased **${item.name}**! Check /inventory.`, ephemeral: true });
-    }
-  }
+  // 💡 NOTE: The original cmdBuy method has been removed because the `/buy` command is now exclusively for VIP subscriptions
+  // If you want a separate economy buy command, rename it to `/purchase` or `/shop buy`.
 
   async cmdInventory(interaction) {
     const userId = interaction.user.id;
