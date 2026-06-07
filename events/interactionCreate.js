@@ -1,10 +1,33 @@
-/**
- * 🎮 InteractionCreate Event v5.0
- * - Routes slash commands to orchestrator (no global deferral)
- * - Routes button interactions to buttonHandler (if provided)
- * - Routes select menus and modals (extensible)
- * - Ignores interactions from bots
- */
+const fs = require('fs');
+const path = require('path');
+
+// Cache for command modules (load once)
+const commands = new Map();
+
+function loadCommands(dir) {
+  const files = fs.readdirSync(dir);
+  for (const file of files) {
+    const filePath = path.join(dir, file);
+    const stat = fs.statSync(filePath);
+    if (stat.isDirectory()) {
+      loadCommands(filePath);
+    } else if (file.endsWith('.js') && file !== 'register.js') {
+      try {
+        const cmd = require(filePath);
+        if (cmd.data && cmd.data.name) {
+          commands.set(cmd.data.name, cmd);
+          console.log(`✅ Loaded command: ${cmd.data.name}`);
+        }
+      } catch (err) {
+        console.error(`❌ Error loading command ${file}:`, err);
+      }
+    }
+  }
+}
+
+// Load all commands at startup
+loadCommands(path.join(__dirname, '../commands'));
+
 module.exports = (client, orchestrator, options = {}) => {
   const { logger, buttonHandler } = options;
 
@@ -13,33 +36,39 @@ module.exports = (client, orchestrator, options = {}) => {
 
     try {
       if (interaction.isCommand()) {
-        logger?.debug(`📡 Slash command: ${interaction.commandName} from ${interaction.user.tag}`);
-        await orchestrator.onInteraction(interaction);
+        const cmd = commands.get(interaction.commandName);
+        if (cmd && typeof cmd.execute === 'function') {
+          logger?.debug(`📡 Executing command: ${interaction.commandName}`);
+          await cmd.execute(interaction);
+        } else {
+          logger?.warn(`⚠️ No execute function for command ${interaction.commandName}`);
+          await interaction.reply({ content: '❌ Command not implemented.', ephemeral: true });
+        }
       }
       else if (interaction.isButton() && buttonHandler) {
-        logger?.debug(`🔘 Button interaction: ${interaction.customId} from ${interaction.user.tag}`);
+        logger?.debug(`🔘 Button interaction: ${interaction.customId}`);
         await buttonHandler.handle(interaction);
       }
       else if (interaction.isStringSelectMenu() && buttonHandler) {
-        logger?.debug(`📋 Select menu: ${interaction.customId} from ${interaction.user.tag}`);
+        logger?.debug(`📋 Select menu: ${interaction.customId}`);
         await (buttonHandler.handleSelect?.(interaction) || orchestrator.onInteraction(interaction));
       }
       else if (interaction.isModalSubmit()) {
-        logger?.debug(`🧾 Modal submit: ${interaction.customId} from ${interaction.user.tag}`);
+        logger?.debug(`🧾 Modal submit: ${interaction.customId}`);
         await orchestrator.onInteraction(interaction);
       }
       else {
-        logger?.warn(`⚠️ Unhandled interaction type: ${interaction.type} from ${interaction.user.tag}`);
+        logger?.warn(`⚠️ Unhandled interaction type: ${interaction.type}`);
         if (!interaction.replied && !interaction.deferred) {
-          await interaction.reply({ content: '❌ This interaction type is not supported.', ephemeral: true }).catch(() => {});
+          await interaction.reply({ content: '❌ This interaction type is not supported.', ephemeral: true });
         }
       }
     } catch (err) {
-      logger?.error(`❌ Error in interactionCreate for command ${interaction.commandName || 'unknown'}: ${err.message}`);
+      logger?.error(`❌ Interaction error: ${err.message}`);
       if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({ content: '❌ An error occurred while processing this interaction.', ephemeral: true }).catch(() => {});
+        await interaction.reply({ content: '❌ An error occurred.', ephemeral: true });
       } else if (interaction.deferred && !interaction.replied) {
-        await interaction.editReply({ content: '❌ An error occurred while processing your request.' }).catch(() => {});
+        await interaction.editReply({ content: '❌ An error occurred while processing your request.' });
       }
     }
   });
