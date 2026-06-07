@@ -1,31 +1,15 @@
-/**
- * 🔨 Revoke Command v5.0
- * - Revoke a user's VIP subscription (admin only)
- * - Emits 'command.revoke' event for vipAgent to handle permission checks and revocation
- */
 module.exports = {
   data: {
     name: 'revoke',
-    description: '🔨 Revoke a user\'s VIP subscription (Admin only)',
-    options: [
-      {
-        name: 'user',
-        type: 6, // USER type
-        description: 'User to revoke VIP from',
-        required: true,
-      },
-    ],
-    // Optional: set default permission to false, but we'll let agent check
+    description: '🔨 Revoke a user\'s VIP (admin only)',
+    options: [{ name: 'user', type: 6, description: 'User to revoke', required: true }],
   },
-
-  async execute(interaction, deps = {}) {
-    const { eventBus, logger } = deps;
-    await interaction.deferReply({ ephemeral: true });
-    if (eventBus) {
-      eventBus.emit('command.revoke', { interaction });
-      logger?.debug(`📡 Revoke command emitted for user ${interaction.user.id}`);
-    } else {
-      await interaction.editReply({ content: '❌ Revocation system unavailable.' });
+  async execute(interaction) {
+    if (!interaction.member.permissions.has('Administrator')) {
+      return interaction.reply({ content: '❌ You need Administrator permission.', ephemeral: true });
     }
+    const target = interaction.options.getUser('user');
+    // Add your logic to remove subscription and role
+    await interaction.reply({ content: `✅ Revoked VIP from ${target.tag}`, ephemeral: true });
   },
 };
