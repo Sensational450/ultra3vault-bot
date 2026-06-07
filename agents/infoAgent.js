@@ -1,27 +1,29 @@
 /**
  * ℹ️ InfoAgent v5.0
- * - Handles basic info commands: ping, stats
+ * - Handles basic info commands directly: ping, stats
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
 
 class InfoAgent extends BaseAgent {
-  constructor(eventBus, deps) {
-    super(eventBus, deps);
-  }
-
   async init() {
     await super.init();
     this.logger.info('ℹ️ InfoAgent ready');
   }
 
-  setupListeners() {
-    this.subscribe('command.ping', async ({ interaction }) => {
-      await this.handlePing(interaction);
-    });
-    this.subscribe('command.stats', async ({ interaction }) => {
-      await this.handleStats(interaction);
-    });
+  // Direct handling of slash commands (no event emission needed)
+  async onInteraction(interaction) {
+    if (!interaction.isCommand()) return;
+    const { commandName } = interaction;
+
+    switch (commandName) {
+      case 'ping':
+        await this.handlePing(interaction);
+        break;
+      case 'stats':
+        await this.handleStats(interaction);
+        break;
+    }
   }
 
   async handlePing(interaction) {
@@ -54,10 +56,6 @@ class InfoAgent extends BaseAgent {
       .setTimestamp()
       .setColor(0x3498db);
     await interaction.editReply({ embeds: [embed] });
-  }
-
-  async onInteraction(interaction) {
-    // Not needed – all handled via events
   }
 }
 
