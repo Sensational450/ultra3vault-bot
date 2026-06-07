@@ -5,9 +5,11 @@
  * - Listens to payment.success and admin events
  * - Handles role assignment/removal
  * - Auto-expiry via scheduler event
+ * - Handles `/buy` command to create a NowPayments invoice
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
+const { NowPaymentsAPI } = require('../tools/api/nowpayments');
 
 class VipAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -17,19 +19,28 @@ class VipAgent extends BaseAgent {
       vip: {
         name: 'VIP',
         roleId: process.env.VIP_ROLE_ID,
-        price: 500,
+        priceUSD: 5,
+        priceCoins: 500,
         durationDays: 30,
         perks: 'Access to VIP channels, early news',
       },
       premium: {
         name: 'Premium',
         roleId: process.env.PREMIUM_ROLE_ID,
-        price: 1500,
+        priceUSD: 15,
+        priceCoins: 1500,
         durationDays: 30,
         perks: 'All VIP perks + exclusive signals & airdrop alerts',
       },
     };
     this.subCache = new Map(); // optional cache
+    // Initialize NowPayments API wrapper
+    this.nowpayments = new NowPaymentsAPI({
+      apiKey: process.env.NOWPAYMENTS_API_KEY,
+      ipnSecret: process.env.NOWPAYMENTS_IPN_SECRET,
+      sandbox: process.env.NODE_ENV !== 'production',
+      logger: this.logger,
+    });
   }
 
   async init() {
@@ -163,6 +174,23 @@ class VipAgent extends BaseAgent {
     return true;
   }
 
+  // ---------- CREATE NOWPAYMENTS INVOICE (for /buy) ----------
+  async createInvoice(userId, plan) {
+    const webhookUrl = process.env.WEBHOOK_URL || `${process.env.RENDER_EXTERNAL_URL}/webhook`;
+    const orderId = `${userId}_${plan}`;
+    const amount = plan === '7d' ? 5 : (plan === '14d' ? 9 : 15);
+    const invoice = await this.nowpayments.createInvoice({
+      amount,
+      priceCurrency: 'usd',
+      orderId,
+      orderDescription: `Ultra3Vault ${plan} subscription`,
+      successUrl: 'https://google.com', // optional, can be your site
+      cancelUrl: 'https://google.com',
+      webhookUrl: webhookUrl,
+    });
+    return invoice.invoice_url;
+  }
+
   // ---------- EVENT BUS LISTENERS ----------
   setupListeners() {
     this.subscribe('payment.success', async (data) => {
@@ -186,9 +214,14 @@ class VipAgent extends BaseAgent {
     this.subscribe('admin.vip.grant', async (data) => {
       await this.grantSubscription(data.userId, data.guildId, data.tier, data.durationDays, 0, 'admin');
     });
+
+    // ✅ Handle /buy slash command (creates NowPayments invoice)
+    this.subscribe('command.buy', async ({ interaction }) => {
+      await this.handleBuyCommand(interaction);
+    });
   }
 
-  // ---------- SLASH COMMANDS ----------
+  // ---------- HANDLERS FOR SLASH COMMANDS ----------
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
     const { commandName, member, guild, options } = interaction;
@@ -206,6 +239,10 @@ class VipAgent extends BaseAgent {
       case 'renew':
         await this.cmdRenew(interaction);
         break;
+      case 'buy':
+        // Also handle directly in case event emission fails (backup)
+        await this.handleBuyCommand(interaction);
+        break;
       case 'grantvip':
         if (!member.permissions.has('Administrator')) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
         await this.cmdGrantVip(interaction);
@@ -214,6 +251,24 @@ class VipAgent extends BaseAgent {
         if (!member.permissions.has('Administrator')) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
         await this.cmdRevokeVip(interaction);
         break;
+    }
+  }
+
+  async handleBuyCommand(interaction) {
+    // The command file already deferred reply, so we just need to edit it
+    const plan = interaction.options.getString('plan');
+    const validPlans = ['7d', '14d', '30d'];
+    if (!validPlans.includes(plan)) {
+      return interaction.editReply({ content: '❌ Invalid plan. Choose 7d, 14d, or 30d.' });
+    }
+    try {
+      const invoiceUrl = await this.createInvoice(interaction.user.id, plan);
+      await interaction.editReply({
+        content: `💰 Invoice created!\nPay here: ${invoiceUrl}\n\n_Once payment is confirmed, your VIP role will be automatically assigned._`,
+      });
+    } catch (err) {
+      this.logger.error(`Failed to create invoice: ${err.message}`);
+      await interaction.editReply({ content: '❌ Failed to create payment link. Please try again later.' });
     }
   }
 
@@ -244,10 +299,10 @@ class VipAgent extends BaseAgent {
       userId: interaction.user.id,
       guildId: interaction.guild.id,
       tier: tierOption,
-      price: tierData.price,
+      price: tierData.priceCoins,
     });
     await interaction.reply({
-      content: `💰 Starting purchase of **${tierData.name}** for ${tierData.price} coins. Use /balance to check funds.`,
+      content: `💰 Starting purchase of **${tierData.name}** for ${tierData.priceCoins} coins. Use /balance to check funds.`,
       ephemeral: true,
     });
   }
@@ -267,9 +322,9 @@ class VipAgent extends BaseAgent {
       userId: interaction.user.id,
       guildId: interaction.guild.id,
       tier: sub.tier,
-      price: tierData.price,
+      price: tierData.priceCoins,
     });
-    await interaction.reply({ content: `🔄 Renewing your ${tierData.name} subscription for ${tierData.price} coins.`, ephemeral: true });
+    await interaction.reply({ content: `🔄 Renewing your ${tierData.name} subscription for ${tierData.priceCoins} coins.`, ephemeral: true });
   }
 
   async cmdGrantVip(interaction) {
