@@ -1,10 +1,16 @@
+/**
+ * 💰 EconomyAgent v5.0
+ * - Daily rewards, balance, shop, leaderboard, transfer, inventory
+ * - Uses models layer (Economy) for all database operations
+ * - No table creation (handled by migrations)
+ * - Emits events for purchases and grants
+ */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { EmbedBuilder } = require('discord.js');
 
 class EconomyAgent extends BaseAgent {
   constructor(eventBus, deps) {
     super(eventBus, deps);
-    // Default config (can be overridden per guild)
     this.defaultConfig = {
       currencyName: 'Coins',
       currencySymbol: '💰',
@@ -15,9 +21,8 @@ class EconomyAgent extends BaseAgent {
       shopMessage: 'Use `/shop` to view items!',
     };
     this.guildConfigs = new Map();
-    // Cooldown tracking: userId -> timestamp (ms)
-    this.dailyCooldowns = new Map();
-    // Shop items (can be loaded from DB, but hardcoded example)
+    this.dailyCooldowns = new Map(); // userId -> last claim timestamp
+    // Shop items (could be moved to DB later)
     this.shopItems = [
       { id: 'role_vip', name: 'VIP Role', type: 'role', roleId: process.env.VIP_ROLE_ID, price: 5000, description: 'Access to VIP channels' },
       { id: 'item_lottery', name: 'Lottery Ticket', type: 'consumable', price: 100, description: 'Enter the weekly lottery' },
@@ -27,109 +32,57 @@ class EconomyAgent extends BaseAgent {
 
   async init() {
     await super.init();
-    await this.initDatabase();
-    this.logger.info('EconomyAgent ready');
+    this.logger.info('💰 EconomyAgent ready');
   }
 
-  async initDatabase() {
-    const db = this.deps.db;
-    db.run(`CREATE TABLE IF NOT EXISTS economy (
-      userId TEXT,
-      guildId TEXT,
-      balance INTEGER DEFAULT 0,
-      PRIMARY KEY (userId, guildId)
-    )`);
-    db.run(`CREATE TABLE IF NOT EXISTS economy_inventory (
-      userId TEXT,
-      guildId TEXT,
-      itemId TEXT,
-      quantity INTEGER DEFAULT 0,
-      PRIMARY KEY (userId, guildId, itemId)
-    )`);
-    db.run(`CREATE TABLE IF NOT EXISTS economy_shop (
-      guildId TEXT,
-      itemId TEXT,
-      name TEXT,
-      price INTEGER,
-      type TEXT,
-      roleId TEXT,
-      description TEXT,
-      PRIMARY KEY (guildId, itemId)
-    )`);
-    // Optional: insert default shop items per guild if not exist
-  }
-
+  // ---------- BALANCE HELPERS (using models) ----------
   async getBalance(userId, guildId) {
-    const db = this.deps.db;
-    return new Promise((resolve, reject) => {
-      db.get(`SELECT balance FROM economy WHERE userId = ? AND guildId = ?`, [userId, guildId], (err, row) => {
-        if (err) return reject(err);
-        resolve(row ? row.balance : this.defaultConfig.startBalance);
-      });
-    });
+    return await this.models.Economy.getBalance(userId, guildId);
   }
 
   async setBalance(userId, guildId, amount) {
-    const db = this.deps.db;
-    return new Promise((resolve, reject) => {
-      db.run(`INSERT OR REPLACE INTO economy (userId, guildId, balance) VALUES (?, ?, ?)`, [userId, guildId, amount], (err) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
+    await this.models.Economy.setBalance(userId, guildId, amount);
   }
 
   async addBalance(userId, guildId, amount) {
-    const current = await this.getBalance(userId, guildId);
-    await this.setBalance(userId, guildId, current + amount);
+    await this.models.Economy.addBalance(userId, guildId, amount);
   }
 
   async removeBalance(userId, guildId, amount) {
-    const current = await this.getBalance(userId, guildId);
-    if (current < amount) throw new Error('Insufficient balance');
-    await this.setBalance(userId, guildId, current - amount);
+    await this.models.Economy.addBalance(userId, guildId, -amount);
   }
 
+  // ---------- INVENTORY (simplified – can be extended) ----------
   async addInventory(userId, guildId, itemId, quantity = 1) {
+    // For now, just store in a simple table via direct DB (or create Inventory model)
+    // We'll keep direct db for inventory to avoid complexity; but we'll avoid table creation.
     const db = this.deps.db;
-    await new Promise((resolve, reject) => {
-      db.run(`INSERT INTO economy_inventory (userId, guildId, itemId, quantity)
-              VALUES (?, ?, ?, ?)
-              ON CONFLICT(userId, guildId, itemId) DO UPDATE SET quantity = quantity + ?`,
-              [userId, guildId, itemId, quantity, quantity], (err) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
+    await db.run(`INSERT INTO economy_inventory (userId, guildId, itemId, quantity)
+                  VALUES (?, ?, ?, ?)
+                  ON CONFLICT(userId, guildId, itemId) DO UPDATE SET quantity = quantity + ?`,
+                  [userId, guildId, itemId, quantity, quantity]);
   }
 
   async getInventory(userId, guildId) {
     const db = this.deps.db;
-    return new Promise((resolve, reject) => {
-      db.all(`SELECT itemId, quantity FROM economy_inventory WHERE userId = ? AND guildId = ?`, [userId, guildId], (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-      });
-    });
+    return await db.all(`SELECT itemId, quantity FROM economy_inventory WHERE userId = ? AND guildId = ?`, [userId, guildId]);
   }
 
   // ---------- EVENT BUS ----------
   setupListeners() {
     this.subscribe('economy.purchase', async (data) => {
-      const { userId, guildId, itemId, amount } = data;
-      await this.purchaseItem(userId, guildId, itemId, amount);
+      await this.purchaseItem(data.userId, data.guildId, data.itemId, data.amount);
     });
     this.subscribe('economy.grant', async (data) => {
       await this.addBalance(data.userId, data.guildId, data.amount);
-      this.logger.info(`Granted ${data.amount} to ${data.userId} in ${data.guildId}`);
+      this.logger.info(`Granted ${data.amount} to ${data.userId}`);
     });
   }
 
-  // ---------- COMMAND HANDLERS ----------
+  // ---------- SLASH COMMANDS ----------
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
-    const { commandName, user, guild, options } = interaction;
-
+    const { commandName } = interaction;
     switch (commandName) {
       case 'balance':
       case 'bal':
@@ -162,7 +115,7 @@ class EconomyAgent extends BaseAgent {
     }
   }
 
-  // ---------- DAILY REWARD ----------
+  // ---------- COMMAND IMPLEMENTATIONS ----------
   async cmdDaily(interaction) {
     const userId = interaction.user.id;
     const guildId = interaction.guild.id;
@@ -177,7 +130,6 @@ class EconomyAgent extends BaseAgent {
       const minutes = Math.floor((remaining % (60 * 60 * 1000)) / (60 * 1000));
       return interaction.reply({ content: `⏳ You already claimed your daily reward! Try again in ${hours}h ${minutes}m.`, ephemeral: true });
     }
-
     const reward = Math.floor(Math.random() * (config.dailyRewardMax - config.dailyRewardMin + 1) + config.dailyRewardMin);
     await this.addBalance(userId, guildId, reward);
     this.dailyCooldowns.set(userId, now);
@@ -186,15 +138,13 @@ class EconomyAgent extends BaseAgent {
       .setDescription(`You received **${reward}** ${config.currencySymbol}!`)
       .setColor(0x00ff00);
     await interaction.reply({ embeds: [embed] });
-    this.eventBus.emit('economy.daily', { userId, guildId, amount: reward });
+    this.emit('economy.daily', { userId, guildId, amount: reward });
   }
 
-  // ---------- BALANCE ----------
   async cmdBalance(interaction) {
     const target = interaction.options.getUser('user') || interaction.user;
-    const guildId = interaction.guild.id;
-    const balance = await this.getBalance(target.id, guildId);
-    const config = await this.getGuildConfig(guildId);
+    const balance = await this.getBalance(target.id, interaction.guild.id);
+    const config = await this.getGuildConfig(interaction.guild.id);
     const embed = new EmbedBuilder()
       .setTitle(`${target.displayName}'s Balance`)
       .setDescription(`${config.currencySymbol} ${balance} ${config.currencyName}`)
@@ -202,7 +152,6 @@ class EconomyAgent extends BaseAgent {
     await interaction.reply({ embeds: [embed] });
   }
 
-  // ---------- SHOP ----------
   async cmdShop(interaction) {
     const config = await this.getGuildConfig(interaction.guild.id);
     let description = '';
@@ -223,21 +172,19 @@ class EconomyAgent extends BaseAgent {
     const guildId = interaction.guild.id;
     const item = this.shopItems.find(i => i.name.toLowerCase() === itemName.toLowerCase());
     if (!item) return interaction.reply({ content: 'Item not found.', ephemeral: true });
-
     const balance = await this.getBalance(userId, guildId);
     if (balance < item.price) {
-      return interaction.reply({ content: `Insufficient funds. You need ${item.price} coins.`, ephemeral: true });
+      return interaction.reply({ content: `Insufficient funds. Need ${item.price} coins.`, ephemeral: true });
     }
-
     await this.removeBalance(userId, guildId, item.price);
     if (item.type === 'role' && item.roleId) {
       const member = await interaction.guild.members.fetch(userId);
       await member.roles.add(item.roleId).catch(() => null);
-      await interaction.reply({ content: `✅ You purchased **${item.name}**! Role assigned.`, ephemeral: true });
-      this.eventBus.emit('economy.rolePurchased', { userId, guildId, roleId: item.roleId, itemId: item.id });
+      await interaction.reply({ content: `✅ Purchased **${item.name}**! Role assigned.`, ephemeral: true });
+      this.emit('economy.rolePurchased', { userId, guildId, roleId: item.roleId, itemId: item.id });
     } else if (item.type === 'consumable') {
       await this.addInventory(userId, guildId, item.id);
-      await interaction.reply({ content: `✅ You purchased **${item.name}**! Check your inventory with /inventory.`, ephemeral: true });
+      await interaction.reply({ content: `✅ Purchased **${item.name}**! Check /inventory.`, ephemeral: true });
     }
   }
 
@@ -255,28 +202,20 @@ class EconomyAgent extends BaseAgent {
     await interaction.reply({ embeds: [embed], ephemeral: true });
   }
 
-  // ---------- LEADERBOARD ----------
   async cmdLeaderboard(interaction) {
     const guildId = interaction.guild.id;
-    const db = this.deps.db;
-    const rows = await new Promise((resolve, reject) => {
-      db.all(`SELECT userId, balance FROM economy WHERE guildId = ? ORDER BY balance DESC LIMIT 10`, [guildId], (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-      });
-    });
-    if (rows.length === 0) return interaction.reply('No economy data yet.');
+    const leaderboard = await this.models.Economy.getLeaderboard(guildId, 10);
+    if (leaderboard.length === 0) return interaction.reply('No economy data yet.');
     let description = '';
-    for (let i = 0; i < rows.length; i++) {
-      const user = await this.client.users.fetch(rows[i].userId).catch(() => null);
-      const name = user ? user.username : rows[i].userId;
-      description += `${i+1}. **${name}** – ${rows[i].balance} coins\n`;
+    for (let i = 0; i < leaderboard.length; i++) {
+      const user = await this.client.users.fetch(leaderboard[i].userId).catch(() => null);
+      const name = user ? user.username : leaderboard[i].userId;
+      description += `${i+1}. **${name}** – ${leaderboard[i].balance} coins\n`;
     }
     const embed = new EmbedBuilder().setTitle('🏆 Leaderboard').setDescription(description).setColor(0xffd700);
     await interaction.reply({ embeds: [embed] });
   }
 
-  // ---------- TRANSFER ----------
   async cmdTransfer(interaction) {
     const target = interaction.options.getUser('user');
     const amount = interaction.options.getInteger('amount');
@@ -290,7 +229,6 @@ class EconomyAgent extends BaseAgent {
     await interaction.reply({ content: `✅ Transferred ${amount} coins to ${target.username}.`, ephemeral: true });
   }
 
-  // ---------- GAMBLE (Coin flip) ----------
   async cmdGamble(interaction) {
     const amount = interaction.options.getInteger('amount');
     const userId = interaction.user.id;
@@ -301,14 +239,16 @@ class EconomyAgent extends BaseAgent {
     const win = Math.random() < 0.5;
     if (win) {
       await this.addBalance(userId, guildId, amount);
-      await interaction.reply(`🎉 You won **${amount}** coins! New balance: ${await this.getBalance(userId, guildId)}`);
+      const newBal = await this.getBalance(userId, guildId);
+      await interaction.reply(`🎉 You won **${amount}** coins! New balance: ${newBal}`);
     } else {
       await this.removeBalance(userId, guildId, amount);
-      await interaction.reply(`💀 You lost **${amount}** coins. New balance: ${await this.getBalance(userId, guildId)}`);
+      const newBal = await this.getBalance(userId, guildId);
+      await interaction.reply(`💀 You lost **${amount}** coins. New balance: ${newBal}`);
     }
   }
 
-  // ---------- GUILD CONFIG (placeholder) ----------
+  // ---------- GUILD CONFIG ----------
   async getGuildConfig(guildId) {
     if (this.guildConfigs.has(guildId)) return this.guildConfigs.get(guildId);
     this.guildConfigs.set(guildId, { ...this.defaultConfig });
