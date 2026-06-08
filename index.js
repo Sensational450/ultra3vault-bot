@@ -34,7 +34,7 @@ const client = new Client({
 
 // ================= CORE COMPONENTS =================
 const eventBus = new EventBus();
-client.eventBus = eventBus; // ✅ Attach eventBus to client for command files
+client.eventBus = eventBus;
 
 const logger = new Logger({
   level: process.env.LOG_LEVEL || 'info',
@@ -96,7 +96,7 @@ try {
 
     const models = new Models(db, eventBus, logger);
     orchestrator = new Orchestrator(client, { eventBus, logger, rateLimiter });
-    client.orchestrator = orchestrator; // ✅ Attach orchestrator to client for command files
+    client.orchestrator = orchestrator;
 
     // Register all agents
     orchestrator.registerAgent(new ModerationAgent(eventBus, { client, logger, db, models }), 100);
@@ -123,11 +123,13 @@ try {
     const leaderboardReset = require('./jobs/leaderboardReset')({ eventBus, logger, models });
     const subscriptionRenewal = require('./jobs/subscriptionRenewal')({ eventBus, logger, models, client });
     const cleanupTempData = require('./jobs/cleanupTempData')({ eventBus, logger });
+    const newsUpdater = require('./jobs/newsUpdater')({ eventBus, logger }); // 👈 Add news job
 
     scheduler.registerJob('priceUpdater', '*/1 * * * *', priceUpdater);
     scheduler.registerJob('leaderboardReset', '0 0 * * 0', leaderboardReset);
     scheduler.registerJob('subscriptionRenewal', '0 */6 * * *', subscriptionRenewal);
     scheduler.registerJob('cleanupTempData', '0 */2 * * *', cleanupTempData);
+    scheduler.registerJob('newsUpdater', '*/10 * * * *', newsUpdater); // 👈 Every 10 minutes
 
     // Start web server
     webServer = new WebServer({
