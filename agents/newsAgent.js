@@ -205,6 +205,9 @@ class NewsAgent extends BaseAgent {
       case 'subscribe':
         await this.cmdSubscribe(interaction);
         break;
+      case 'newssubscribe':   // <-- Added support for the new command
+        await this.cmdSubscribe(interaction); // Reuse existing logic (same options)
+        break;
       case 'unsubscribe':
         await this.cmdUnsubscribe(interaction);
         break;
