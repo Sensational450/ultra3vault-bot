@@ -25,8 +25,9 @@ class NewsAgent extends BaseAgent {
           'https://decrypt.co/feed',
         ],
         airdrops: [
-          'https://cryptopanic.com/news/airdrop/feed/',
-          'https://airdrops.io/feed/',
+          // Replaced failing feeds with more reliable alternatives
+          'https://cointelegraph.com/tags/airdrop/feed',
+          'https://cryptopotato.com/category/airdrops/feed/',
         ],
         bitcoinNews: ['https://news.bitcoin.com/feed/'],
         altcoinNews: ['https://cryptopotato.com/feed/'],
@@ -86,7 +87,12 @@ class NewsAgent extends BaseAgent {
 
   async fetchFeed(feedUrl, category) {
     try {
-      const feed = await this.parser.parseURL(feedUrl);
+      // Add a proper User-Agent header to avoid 403 errors
+      const feed = await this.parser.parseURL(feedUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; Ultra3VaultBot/1.0; +https://ultra3vault-bot.onrender.com)'
+        }
+      });
       const lastPosted = this.lastPostCache.get(feedUrl);
       const newItems = [];
       for (const item of feed.items.slice(0, this.defaultConfig.maxItemsPerFeed)) {
@@ -205,7 +211,7 @@ class NewsAgent extends BaseAgent {
       case 'subscribe':
         await this.cmdSubscribe(interaction);
         break;
-      case 'newssubscribe':   // <-- Added support for the new command
+      case 'newssubscribe':   // Added support for the new command
         await this.cmdSubscribe(interaction); // Reuse existing logic (same options)
         break;
       case 'unsubscribe':
