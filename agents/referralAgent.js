@@ -1,10 +1,10 @@
 /**
- * 🔗 ReferralAgent v5.0
+ * 🔗 ReferralAgent v5.0 (Persistent)
  * - Referral code generation and redemption
  * - Tracks referrals, rewards referrer and referee (coins, VIP days)
  * - Leaderboard and stats
  * - Uses models.Referral layer (if available) with fallback to direct DB queries
- * - Table creation removed – relies on migrations
+ * - Guild config stored in referral_configs table (survives restarts)
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
@@ -21,12 +21,18 @@ class ReferralAgent extends BaseAgent {
       codeLength: 8,
       resetLeaderboardWeekly: false,
     };
-    this.guildConfigs = new Map();
+    this.guildConfigs = new Map(); // cache (loaded from DB)
   }
 
   async init() {
     await super.init();
-    // Load configs from DB (table already exists via migration)
+    // Ensure referral_configs table exists (should be from migration, but safe)
+    await this.ensureTable(`
+      CREATE TABLE IF NOT EXISTS referral_configs (
+        guildId TEXT PRIMARY KEY,
+        config TEXT
+      )
+    `);
     await this.loadAllConfigs();
     this.subscribe('job.leaderboardReset', async () => {
       for (const [guildId, config] of this.guildConfigs.entries()) {
@@ -38,16 +44,15 @@ class ReferralAgent extends BaseAgent {
     this.logger.info('🔗 ReferralAgent ready');
   }
 
-  // ---------- CONFIG HELPERS (direct DB, no model needed) ----------
+  // ---------- PERSISTENT CONFIG HELPERS ----------
   async loadAllConfigs() {
-    const db = this.deps.db;
     try {
-      const rows = await db.all(`SELECT guildId, config FROM referral_configs`);
+      const rows = await this.db.all(`SELECT guildId, config FROM referral_configs`);
       for (const row of rows) {
         this.guildConfigs.set(row.guildId, JSON.parse(row.config));
       }
     } catch (err) {
-      this.logger.warn(`Could not load referral configs: ${err.message} – ensure migrations are applied`);
+      this.logger.warn(`Could not load referral configs: ${err.message}`);
     }
   }
 
@@ -55,8 +60,7 @@ class ReferralAgent extends BaseAgent {
     if (this.guildConfigs.has(guildId)) return this.guildConfigs.get(guildId);
     const config = { ...this.defaultConfig };
     this.guildConfigs.set(guildId, config);
-    const db = this.deps.db;
-    await db.run(`INSERT OR REPLACE INTO referral_configs (guildId, config) VALUES (?, ?)`, [guildId, JSON.stringify(config)]);
+    await this.db.run(`INSERT OR REPLACE INTO referral_configs (guildId, config) VALUES (?, ?)`, [guildId, JSON.stringify(config)]);
     return config;
   }
 
@@ -64,11 +68,10 @@ class ReferralAgent extends BaseAgent {
     const config = await this.getGuildConfig(guildId);
     Object.assign(config, updates);
     this.guildConfigs.set(guildId, config);
-    const db = this.deps.db;
-    await db.run(`INSERT OR REPLACE INTO referral_configs (guildId, config) VALUES (?, ?)`, [guildId, JSON.stringify(config)]);
+    await this.db.run(`INSERT OR REPLACE INTO referral_configs (guildId, config) VALUES (?, ?)`, [guildId, JSON.stringify(config)]);
   }
 
-  // ---------- CODE GENERATION (using models if available) ----------
+  // ---------- CODE GENERATION ----------
   generateCode() {
     const crypto = require('crypto');
     const len = this.defaultConfig.codeLength;
@@ -84,12 +87,10 @@ class ReferralAgent extends BaseAgent {
       }
       return code;
     } else {
-      // fallback to direct DB
-      const db = this.deps.db;
-      let row = await db.get(`SELECT code FROM referral_codes WHERE userId = ? AND guildId = ?`, [userId, guildId]);
+      let row = await this.db.get(`SELECT code FROM referral_codes WHERE userId = ? AND guildId = ?`, [userId, guildId]);
       if (row) return row.code;
       const code = this.generateCode();
-      await db.run(`INSERT INTO referral_codes (userId, guildId, code, createdAt) VALUES (?, ?, ?, ?)`,
+      await this.db.run(`INSERT INTO referral_codes (userId, guildId, code, createdAt) VALUES (?, ?, ?, ?)`,
         [userId, guildId, code, Date.now()]);
       return code;
     }
@@ -99,8 +100,7 @@ class ReferralAgent extends BaseAgent {
     if (this.models?.Referral) {
       return await this.models.Referral.getCodeByUser(userId, guildId);
     } else {
-      const db = this.deps.db;
-      const row = await db.get(`SELECT code FROM referral_codes WHERE userId = ? AND guildId = ?`, [userId, guildId]);
+      const row = await this.db.get(`SELECT code FROM referral_codes WHERE userId = ? AND guildId = ?`, [userId, guildId]);
       return row?.code || null;
     }
   }
@@ -109,8 +109,7 @@ class ReferralAgent extends BaseAgent {
     if (this.models?.Referral) {
       return await this.models.Referral.getUserByCode(code, guildId);
     } else {
-      const db = this.deps.db;
-      const row = await db.get(`SELECT userId FROM referral_codes WHERE code = ? AND guildId = ?`, [code, guildId]);
+      const row = await this.db.get(`SELECT userId FROM referral_codes WHERE code = ? AND guildId = ?`, [code, guildId]);
       return row?.userId || null;
     }
   }
@@ -126,16 +125,14 @@ class ReferralAgent extends BaseAgent {
     if (this.models?.Referral) {
       await this.models.Referral.recordReferral(referrerId, refereeId, guildId, config.rewardReferrerCoins);
     } else {
-      const db = this.deps.db;
-      await db.run(`INSERT INTO referrals (referrerId, refereeId, guildId, timestamp, rewardClaimed) VALUES (?, ?, ?, ?, ?)`,
+      await this.db.run(`INSERT INTO referrals (referrerId, refereeId, guildId, timestamp, rewardClaimed) VALUES (?, ?, ?, ?, ?)`,
         [referrerId, refereeId, guildId, Date.now(), 0]);
     }
     await this.updateStats(referrerId, guildId, 1, config.rewardReferrerCoins);
     await this.updateStats(refereeId, guildId, 0, config.rewardRefereeCoins);
     await this.grantRewards(referrerId, refereeId, guildId, config);
     if (!this.models?.Referral) {
-      const db = this.deps.db;
-      await db.run(`UPDATE referrals SET rewardClaimed = 1 WHERE referrerId = ? AND refereeId = ? AND guildId = ?`,
+      await this.db.run(`UPDATE referrals SET rewardClaimed = 1 WHERE referrerId = ? AND refereeId = ? AND guildId = ?`,
         [referrerId, refereeId, guildId]);
     }
     return true;
@@ -167,15 +164,13 @@ class ReferralAgent extends BaseAgent {
     if (this.models?.Referral) {
       return await this.models.Referral.isReferred(userId, guildId);
     } else {
-      const db = this.deps.db;
-      const row = await db.get(`SELECT id FROM referrals WHERE refereeId = ? AND guildId = ?`, [userId, guildId]);
+      const row = await this.db.get(`SELECT id FROM referrals WHERE refereeId = ? AND guildId = ?`, [userId, guildId]);
       return !!row;
     }
   }
 
   async updateStats(userId, guildId, incReferrals, incCoins) {
-    const db = this.deps.db;
-    await db.run(`INSERT INTO referral_stats (userId, guildId, totalReferrals, totalRewardsCoins, lastReferralAt)
+    await this.db.run(`INSERT INTO referral_stats (userId, guildId, totalReferrals, totalRewardsCoins, lastReferralAt)
                   VALUES (?, ?, ?, ?, ?)
                   ON CONFLICT(userId, guildId) DO UPDATE SET
                     totalReferrals = totalReferrals + ?,
@@ -188,8 +183,7 @@ class ReferralAgent extends BaseAgent {
     if (this.models?.Referral) {
       return await this.models.Referral.getReferrerStats(userId, guildId);
     } else {
-      const db = this.deps.db;
-      const row = await db.get(`SELECT totalReferrals, totalRewardsCoins, lastReferralAt FROM referral_stats WHERE userId = ? AND guildId = ?`, [userId, guildId]);
+      const row = await this.db.get(`SELECT totalReferrals, totalRewardsCoins, lastReferralAt FROM referral_stats WHERE userId = ? AND guildId = ?`, [userId, guildId]);
       return row || { totalReferrals: 0, totalRewardsCoins: 0, lastReferralAt: 0 };
     }
   }
@@ -198,26 +192,23 @@ class ReferralAgent extends BaseAgent {
     if (this.models?.Referral) {
       return await this.models.Referral.getReferralsByReferrer(referrerId, guildId, limit);
     } else {
-      const db = this.deps.db;
-      return await db.all(`SELECT refereeId, timestamp FROM referrals WHERE referrerId = ? AND guildId = ? ORDER BY timestamp DESC LIMIT ?`,
+      return await this.db.all(`SELECT refereeId, timestamp FROM referrals WHERE referrerId = ? AND guildId = ? ORDER BY timestamp DESC LIMIT ?`,
         [referrerId, guildId, limit]);
     }
   }
 
   async getLeaderboard(guildId, limit = 10) {
-    const db = this.deps.db;
-    return await db.all(`SELECT userId, totalReferrals FROM referral_stats WHERE guildId = ? ORDER BY totalReferrals DESC LIMIT ?`,
+    return await this.db.all(`SELECT userId, totalReferrals FROM referral_stats WHERE guildId = ? ORDER BY totalReferrals DESC LIMIT ?`,
       [guildId, limit]);
   }
 
   async resetLeaderboard(guildId) {
-    const db = this.deps.db;
-    await db.run(`DELETE FROM referral_stats WHERE guildId = ?`, [guildId]);
-    await db.run(`DELETE FROM referrals WHERE guildId = ?`, [guildId]);
+    await this.db.run(`DELETE FROM referral_stats WHERE guildId = ?`, [guildId]);
+    await this.db.run(`DELETE FROM referrals WHERE guildId = ?`, [guildId]);
     this.logger.info(`Referral leaderboard reset for guild ${guildId}`);
   }
 
-  // ---------- SLASH COMMANDS ----------
+  // ---------- SLASH COMMANDS (unchanged) ----------
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
     const { commandName } = interaction;
