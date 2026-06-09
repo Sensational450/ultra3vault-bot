@@ -1,9 +1,10 @@
 /**
- * 🧠 AiChatAgent v5.0
+ * 🧠 AiChatAgent v5.0 (Persistent)
  * - AI chat, sentiment analysis, image generation (OpenAI)
  * - Per‑guild configuration (enabled, whitelist, model, etc.)
- * - Conversation memory with sliding window and timeout
- * - Rate limiting per user
+ * - Conversation memory stored in DB (survives restarts)
+ * - Rate limiting stored in DB (survives restarts)
+ * - Optional VIP/Premium only restriction
  * - Only handles its own commands – does not interfere with others
  */
 const BaseAgent = require('./baseAgent');
@@ -32,16 +33,38 @@ class AiChatAgent extends BaseAgent {
       systemPrompt: 'You are a helpful assistant in a Discord crypto community. Be friendly and informative.',
       rateLimitPerUser: 5,
       memoryTimeoutMinutes: 30,
+      requireSubscription: false, // set to true to restrict to VIP/Premium
     };
     this.guildConfigs = new Map();
-    this.memory = new Map();
-    this.rateLimits = new Map();
+    // We won't keep in‑memory maps for memory and rate limits – we'll use DB
   }
 
   async init() {
     await super.init();
+    await this._ensureTables();
     await this._loadConfigs();
     this.logger.info('🧠 AiChatAgent ready' + (this.openai ? '' : ' (disabled – no API key)'));
+  }
+
+  async _ensureTables() {
+    const db = this.deps.db;
+    // Conversation memory table
+    await db.run(`CREATE TABLE IF NOT EXISTS ai_conversations (
+      userId TEXT,
+      guildId TEXT,
+      role TEXT,
+      content TEXT,
+      timestamp INTEGER,
+      PRIMARY KEY (userId, guildId, timestamp)
+    )`);
+    // Rate limits table
+    await db.run(`CREATE TABLE IF NOT EXISTS ai_rate_limits (
+      userId TEXT,
+      guildId TEXT,
+      resetTime INTEGER,
+      count INTEGER,
+      PRIMARY KEY (userId, guildId)
+    )`);
   }
 
   async _loadConfigs() {
@@ -84,49 +107,64 @@ class AiChatAgent extends BaseAgent {
     await this._saveGuildConfig(guildId, config);
   }
 
-  // ---------- RATE LIMITING ----------
-  isRateLimited(userId, config) {
+  // ---------- SUBSCRIPTION CHECK ----------
+  async hasActiveSubscription(userId, guildId) {
+    if (!this.models?.Subscription) return false;
+    const sub = await this.models.Subscription.get(userId, guildId);
+    return sub && sub.expiresAt > Date.now();
+  }
+
+  // ---------- PERSISTENT RATE LIMITING ----------
+  async isRateLimited(userId, guildId, config) {
+    const db = this.deps.db;
     const now = Date.now();
-    const record = this.rateLimits.get(userId);
-    if (!record || now > record.resetTime) {
-      this.rateLimits.set(userId, { count: 1, resetTime: now + 60000 });
+    let row = await db.get(`SELECT count, resetTime FROM ai_rate_limits WHERE userId = ? AND guildId = ?`, [userId, guildId]);
+    if (!row || now > row.resetTime) {
+      await db.run(`INSERT OR REPLACE INTO ai_rate_limits (userId, guildId, count, resetTime) VALUES (?, ?, 1, ?)`,
+        [userId, guildId, now + 60000]);
       return false;
     }
-    if (record.count >= config.rateLimitPerUser) return true;
-    record.count++;
+    if (row.count >= config.rateLimitPerUser) return true;
+    await db.run(`UPDATE ai_rate_limits SET count = count + 1 WHERE userId = ? AND guildId = ?`, [userId, guildId]);
     return false;
   }
 
-  // ---------- CONVERSATION MEMORY ----------
-  getMemory(userId) {
-    const mem = this.memory.get(userId);
-    if (!mem) return null;
-    const timeout = (this.defaultConfig.memoryTimeoutMinutes || 30) * 60 * 1000;
-    if (Date.now() - mem.lastActive > timeout) {
-      this.memory.delete(userId);
-      return null;
-    }
-    return mem.messages;
+  // ---------- PERSISTENT CONVERSATION MEMORY ----------
+  async getMemory(userId, guildId, timeoutMinutes = 30) {
+    const db = this.deps.db;
+    const cutoff = Date.now() - timeoutMinutes * 60 * 1000;
+    const rows = await db.all(
+      `SELECT role, content FROM ai_conversations
+       WHERE userId = ? AND guildId = ? AND timestamp > ?
+       ORDER BY timestamp ASC LIMIT 20`,
+      [userId, guildId, cutoff]
+    );
+    // Also clean up old entries older than timeout
+    await db.run(`DELETE FROM ai_conversations WHERE userId = ? AND guildId = ? AND timestamp < ?`,
+      [userId, guildId, cutoff]);
+    return rows.map(row => ({ role: row.role, content: row.content }));
   }
 
-  updateMemory(userId, userMessage, assistantMessage) {
-    let messages = this.getMemory(userId) || [];
-    messages.push({ role: 'user', content: userMessage });
-    messages.push({ role: 'assistant', content: assistantMessage });
-    if (messages.length > 20) messages = messages.slice(-20);
-    this.memory.set(userId, { messages, lastActive: Date.now() });
+  async updateMemory(userId, guildId, userMessage, assistantMessage) {
+    const db = this.deps.db;
+    const now = Date.now();
+    await db.run(`INSERT INTO ai_conversations (userId, guildId, role, content, timestamp) VALUES (?, ?, 'user', ?, ?)`,
+      [userId, guildId, userMessage, now]);
+    await db.run(`INSERT INTO ai_conversations (userId, guildId, role, content, timestamp) VALUES (?, ?, 'assistant', ?, ?)`,
+      [userId, guildId, assistantMessage, now]);
   }
 
-  async clearMemory(userId) {
-    this.memory.delete(userId);
+  async clearMemory(userId, guildId) {
+    const db = this.deps.db;
+    await db.run(`DELETE FROM ai_conversations WHERE userId = ? AND guildId = ?`, [userId, guildId]);
   }
 
   // ---------- AI CALLS ----------
-  async askAI(userId, prompt, config, systemPromptOverride = null) {
+  async askAI(userId, guildId, prompt, config, systemPromptOverride = null) {
     if (!this.openai) return '❌ AI service is not configured (missing API key).';
     const system = systemPromptOverride || config.systemPrompt;
     const messages = [{ role: 'system', content: system }];
-    const history = this.getMemory(userId);
+    const history = await this.getMemory(userId, guildId, config.memoryTimeoutMinutes);
     if (history) messages.push(...history);
     messages.push({ role: 'user', content: prompt });
 
@@ -138,7 +176,7 @@ class AiChatAgent extends BaseAgent {
         temperature: config.temperature,
       });
       const reply = response.choices[0].message.content;
-      this.updateMemory(userId, prompt, reply);
+      await this.updateMemory(userId, guildId, prompt, reply);
       return reply;
     } catch (err) {
       this.logger.error(`OpenAI error for user ${userId}: ${err.message}`);
@@ -184,7 +222,6 @@ class AiChatAgent extends BaseAgent {
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
 
-    // 🔒 Only handle commands that belong to this agent
     const allowedCommands = ['ask', 'resetai', 'sentiment', 'imagine', 'setai', 'aistats'];
     if (!allowedCommands.includes(interaction.commandName)) return;
 
@@ -202,8 +239,11 @@ class AiChatAgent extends BaseAgent {
       if (config.roleWhitelist.length && !member.roles.cache.some(r => config.roleWhitelist.includes(r.id))) {
         return interaction.reply({ content: '❌ You lack permission to use AI.', ephemeral: true });
       }
-      if (this.isRateLimited(user.id, config)) {
+      if (await this.isRateLimited(user.id, guild.id, config)) {
         return interaction.reply({ content: '⏱️ Slow down! You are using AI too fast.', ephemeral: true });
+      }
+      if (config.requireSubscription && !(await this.hasActiveSubscription(user.id, guild.id))) {
+        return interaction.reply({ content: '❌ This AI feature is for VIP/Premium members only. Use `/buy` to upgrade!', ephemeral: true });
       }
     }
 
@@ -234,7 +274,7 @@ class AiChatAgent extends BaseAgent {
     await interaction.deferReply();
     const prompt = interaction.options.getString('prompt');
     const systemOverride = interaction.options.getString('system') || null;
-    const reply = await this.askAI(interaction.user.id, prompt, config, systemOverride);
+    const reply = await this.askAI(interaction.user.id, interaction.guild.id, prompt, config, systemOverride);
     const embed = new EmbedBuilder()
       .setAuthor({ name: interaction.user.tag, iconURL: interaction.user.displayAvatarURL() })
       .setDescription(reply)
@@ -244,7 +284,7 @@ class AiChatAgent extends BaseAgent {
   }
 
   async cmdReset(interaction) {
-    await this.clearMemory(interaction.user.id);
+    await this.clearMemory(interaction.user.id, interaction.guild.id);
     await interaction.reply({ content: '✅ Conversation context reset.', ephemeral: true });
   }
 
@@ -312,15 +352,17 @@ class AiChatAgent extends BaseAgent {
 
   async cmdStats(interaction) {
     const config = await this.getGuildConfig(interaction.guild.id);
+    const convCount = (await this.deps.db.get(`SELECT COUNT(DISTINCT userId) as count FROM ai_conversations WHERE guildId = ?`, [interaction.guild.id]))?.count || 0;
     const embed = new EmbedBuilder()
       .setTitle('🤖 AI Agent Stats')
       .addFields(
         { name: 'Enabled', value: config.enabled ? 'Yes' : 'No', inline: true },
         { name: 'Model', value: config.model, inline: true },
-        { name: 'Active conversations', value: this.memory.size.toString(), inline: true },
+        { name: 'Active conversations', value: convCount.toString(), inline: true },
         { name: 'Rate limit (per min)', value: config.rateLimitPerUser.toString(), inline: true },
         { name: 'Whitelisted channels', value: config.channelWhitelist.length.toString(), inline: true },
-        { name: 'OpenAI Key', value: this.openaiApiKey ? '✅ Set' : '❌ Missing', inline: true }
+        { name: 'OpenAI Key', value: this.openaiApiKey ? '✅ Set' : '❌ Missing', inline: true },
+        { name: 'VIP/Premium only', value: config.requireSubscription ? 'Yes' : 'No', inline: true }
       )
       .setColor(0x3498db);
     await interaction.reply({ embeds: [embed], ephemeral: true });
