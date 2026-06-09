@@ -1,11 +1,11 @@
 /**
- * 🛡️ ModerationAgent v5.0
+ * 🛡️ ModerationAgent v5.0 (Persistent)
  * - Auto‑mod (scam, profanity, links, spam)
  * - Warning system with persistent storage (models.Warning)
+ * - Guild configuration stored in DB (survives restarts)
  * - Mute, kick, ban, purge commands
- * - Raid detection
+ * - Raid detection (in‑memory only)
  * - Log channel support
- * - Uses models layer for warnings (fallback to in‑memory if models missing)
  */
 const BaseAgent = require('./baseAgent');
 const { PermissionsBitField, EmbedBuilder } = require('discord.js');
@@ -13,11 +13,8 @@ const { PermissionsBitField, EmbedBuilder } = require('discord.js');
 class ModerationAgent extends BaseAgent {
   constructor(eventBus, deps) {
     super(eventBus, deps);
-    this.guildConfigs = new Map();
-    // In‑memory fallback (if models not available)
-    this.warningsMemory = new Map(); // guildId -> Map(userId -> Array)
-    this.spamTracker = new Map();
-    this.raidTracker = new Map();
+    this.spamTracker = new Map();      // temporary: reset on restart (acceptable)
+    this.raidTracker = new Map();      // temporary
     this.defaultConfig = {
       modLogChannel: null,
       modRoleId: null,
@@ -39,6 +36,15 @@ class ModerationAgent extends BaseAgent {
 
   async init() {
     await super.init();
+    // Ensure guild configs table exists (should be created by migration 004)
+    await this.ensureTable(`
+      CREATE TABLE IF NOT EXISTS guild_configs (
+        guildId TEXT,
+        configKey TEXT,
+        config TEXT,
+        PRIMARY KEY (guildId, configKey)
+      )
+    `);
     this.logger.info('🛡️ ModerationAgent ready');
   }
 
@@ -50,6 +56,31 @@ class ModerationAgent extends BaseAgent {
     this.subscribe('guild.join', async (data) => {
       await this.handleJoinForRaid(data.guildId);
     });
+  }
+
+  // ---------- PERSISTENT GUILD CONFIG (using guild_configs table) ----------
+  async getGuildConfig(guildId) {
+    const row = await this.db.get(
+      `SELECT config FROM guild_configs WHERE guildId = ? AND configKey = 'moderation'`,
+      [guildId]
+    );
+    if (row) return JSON.parse(row.config);
+    // Save default and return
+    const defaultConfig = { ...this.defaultConfig };
+    await this.db.run(
+      `INSERT INTO guild_configs (guildId, configKey, config) VALUES (?, 'moderation', ?)`,
+      [guildId, JSON.stringify(defaultConfig)]
+    );
+    return defaultConfig;
+  }
+
+  async updateGuildConfig(guildId, updates) {
+    const config = await this.getGuildConfig(guildId);
+    Object.assign(config, updates);
+    await this.db.run(
+      `INSERT OR REPLACE INTO guild_configs (guildId, configKey, config) VALUES (?, 'moderation', ?)`,
+      [guildId, JSON.stringify(config)]
+    );
   }
 
   // ---------- AUTO-MOD ----------
@@ -70,7 +101,6 @@ class ModerationAgent extends BaseAgent {
     if (action) await this.autoModAction(message, action);
   }
 
-  // ---------- SLASH COMMANDS ----------
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
     const { commandName, member, guild } = interaction;
@@ -96,7 +126,7 @@ class ModerationAgent extends BaseAgent {
     await this.handleJoinForRaid(member.guild.id);
   }
 
-  // ---------- DETECTION HELPERS ----------
+  // ---------- DETECTION HELPERS (unchanged) ----------
   isScam(content) {
     const patterns = [/discord\.gift/i, /steamcommunity\.com\/gift/i, /free\s+nitro/i, /free\s+boost/i, /(?:giveaway|gift)\s+.*\s+click\s+here/i];
     return patterns.some(p => p.test(content));
@@ -135,21 +165,14 @@ class ModerationAgent extends BaseAgent {
     return record.count > config.spamThreshold;
   }
 
-  // ---------- WARNING SYSTEM (using models if available) ----------
+  // ---------- PERSISTENT WARNING SYSTEM (using models) ----------
   async addWarning(guildId, userId, reason, modId) {
-    let warningCount;
-    if (this.models?.Warning) {
-      await this.models.Warning.add(userId, guildId, reason, modId);
-      warningCount = await this.models.Warning.getCount(userId, guildId);
-    } else {
-      // Fallback to in‑memory
-      if (!this.warningsMemory.has(guildId)) this.warningsMemory.set(guildId, new Map());
-      const guildWarnings = this.warningsMemory.get(guildId);
-      if (!guildWarnings.has(userId)) guildWarnings.set(userId, []);
-      const userWarnings = guildWarnings.get(userId);
-      userWarnings.push({ reason, modId, timestamp: Date.now() });
-      warningCount = userWarnings.length;
+    if (!this.models?.Warning) {
+      this.logger.error('Warning model not available – cannot persist warnings');
+      return;
     }
+    await this.models.Warning.add(userId, guildId, reason, modId);
+    const warningCount = await this.models.Warning.getCount(userId, guildId);
     const config = await this.getGuildConfig(guildId);
     if (warningCount >= config.maxWarnings) {
       await this.applyMute(guildId, userId, config.muteDurationMs, `Reached ${config.maxWarnings} warnings`);
@@ -158,19 +181,13 @@ class ModerationAgent extends BaseAgent {
   }
 
   async getWarnings(userId, guildId) {
-    if (this.models?.Warning) {
-      return await this.models.Warning.get(userId, guildId);
-    } else {
-      return this.warningsMemory.get(guildId)?.get(userId) || [];
-    }
+    if (!this.models?.Warning) return [];
+    return await this.models.Warning.get(userId, guildId);
   }
 
   async clearWarnings(userId, guildId) {
-    if (this.models?.Warning) {
-      await this.models.Warning.clear(userId, guildId);
-    } else {
-      this.warningsMemory.get(guildId)?.delete(userId);
-    }
+    if (!this.models?.Warning) return;
+    await this.models.Warning.clear(userId, guildId);
   }
 
   async applyMute(guildId, userId, durationMs, reason) {
@@ -206,7 +223,7 @@ class ModerationAgent extends BaseAgent {
     }
   }
 
-  // ---------- RAID DETECTION ----------
+  // ---------- RAID DETECTION (in‑memory) ----------
   async handleJoinForRaid(guildId) {
     const now = Date.now();
     if (!this.raidTracker.has(guildId)) this.raidTracker.set(guildId, { joinTimes: [], active: false });
@@ -293,19 +310,7 @@ class ModerationAgent extends BaseAgent {
     await interaction.reply({ content: `📝 Mod log set to ${channel}.`, ephemeral: true });
   }
 
-  // ---------- CONFIG HELPERS ----------
-  async getGuildConfig(guildId) {
-    if (this.guildConfigs.has(guildId)) return this.guildConfigs.get(guildId);
-    this.guildConfigs.set(guildId, { ...this.defaultConfig });
-    return this.guildConfigs.get(guildId);
-  }
-
-  async updateGuildConfig(guildId, updates) {
-    const config = await this.getGuildConfig(guildId);
-    Object.assign(config, updates);
-    this.guildConfigs.set(guildId, config);
-  }
-
+  // ---------- LOG HELPER ----------
   async logToModChannel(guildId, payload) {
     const config = await this.getGuildConfig(guildId);
     const channelId = config.modLogChannel;
