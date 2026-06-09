@@ -1,7 +1,7 @@
 /**
- * 👑 VipAgent v5.0
+ * 👑 VipAgent v5.0 (Persistent)
  * - Subscription management (VIP / Premium tiers)
- * - Uses models layer (Subscription)
+ * - Uses models layer (Subscription) – fully persistent
  * - Listens to payment.success and admin events
  * - Handles role assignment/removal
  * - Auto-expiry via scheduler event
@@ -32,7 +32,7 @@ class VipAgent extends BaseAgent {
         perks: 'All VIP perks + exclusive signals & airdrop alerts',
       },
     };
-    this.subCache = new Map();
+    // No in‑memory cache needed – all data is in DB
   }
 
   async init() {
@@ -43,19 +43,17 @@ class VipAgent extends BaseAgent {
     this.logger.info('👑 VipAgent ready');
   }
 
-  // ---------- MODELS HELPERS ----------
+  // ---------- MODELS HELPERS (persistent) ----------
   async getSubscription(userId, guildId) {
     return await this.models.Subscription.get(userId, guildId);
   }
 
   async setSubscription(userId, guildId, tier, expiresAt, autoRenew = 0) {
     await this.models.Subscription.set(userId, guildId, tier, expiresAt, autoRenew);
-    this.subCache.delete(`${userId}:${guildId}`);
   }
 
   async deleteSubscription(userId, guildId) {
     await this.models.Subscription.delete(userId, guildId);
-    this.subCache.delete(`${userId}:${guildId}`);
   }
 
   // ---------- ROLE MANAGEMENT ----------
