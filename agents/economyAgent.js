@@ -5,6 +5,7 @@
  * - No table creation (handled by migrations)
  * - Emits events for purchases and grants
  * - NOTE: The `/buy` command is handled by VipAgent (for subscriptions)
+ * - Daily cooldown stored in DB to survive restarts
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
@@ -22,7 +23,7 @@ class EconomyAgent extends BaseAgent {
       shopMessage: 'Use `/shop` to view items!',
     };
     this.guildConfigs = new Map();
-    this.dailyCooldowns = new Map(); // userId -> last claim timestamp
+    // No more in-memory cooldown map – use DB
     // Shop items (could be moved to DB later)
     this.shopItems = [
       { id: 'role_vip', name: 'VIP Role', type: 'role', roleId: process.env.VIP_ROLE_ID, price: 5000, description: 'Access to VIP channels' },
@@ -33,7 +34,39 @@ class EconomyAgent extends BaseAgent {
 
   async init() {
     await super.init();
+    // Ensure cooldown table exists (migration should already create it)
+    await this._ensureCooldownTable();
     this.logger.info('💰 EconomyAgent ready');
+  }
+
+  async _ensureCooldownTable() {
+    const db = this.deps.db;
+    await db.run(`CREATE TABLE IF NOT EXISTS user_cooldowns (
+      userId TEXT,
+      guildId TEXT,
+      command TEXT,
+      lastUsed INTEGER,
+      PRIMARY KEY (userId, guildId, command)
+    )`).catch(err => this.logger.warn(`Cooldown table ensure: ${err.message}`));
+  }
+
+  // ---------- COOLDOWN HELPERS (DB) ----------
+  async getLastDaily(userId, guildId) {
+    const db = this.deps.db;
+    const row = await db.get(
+      `SELECT lastUsed FROM user_cooldowns WHERE userId = ? AND guildId = ? AND command = 'daily'`,
+      [userId, guildId]
+    );
+    return row ? row.lastUsed : 0;
+  }
+
+  async setLastDaily(userId, guildId, timestamp) {
+    const db = this.deps.db;
+    await db.run(
+      `INSERT OR REPLACE INTO user_cooldowns (userId, guildId, command, lastUsed)
+       VALUES (?, ?, 'daily', ?)`,
+      [userId, guildId, timestamp]
+    );
   }
 
   // ---------- BALANCE HELPERS (using models) ----------
@@ -53,7 +86,7 @@ class EconomyAgent extends BaseAgent {
     await this.models.Economy.addBalance(userId, guildId, -amount);
   }
 
-  // ---------- INVENTORY (simplified – can be extended) ----------
+  // ---------- INVENTORY ----------
   async addInventory(userId, guildId, itemId, quantity = 1) {
     const db = this.deps.db;
     await db.run(`INSERT INTO economy_inventory (userId, guildId, itemId, quantity)
@@ -94,9 +127,6 @@ class EconomyAgent extends BaseAgent {
         await this.cmdShop(interaction);
         break;
       // 🚫 'buy' is removed – handled by VipAgent (VIP subscriptions)
-      // case 'buy':
-      //   await this.cmdBuy(interaction);
-      //   break;
       case 'leaderboard':
       case 'lb':
         await this.cmdLeaderboard(interaction);
@@ -121,7 +151,7 @@ class EconomyAgent extends BaseAgent {
     const guildId = interaction.guild.id;
     const config = await this.getGuildConfig(guildId);
     const now = Date.now();
-    const lastDaily = this.dailyCooldowns.get(userId) || 0;
+    const lastDaily = await this.getLastDaily(userId, guildId);
     const cooldownMs = config.dailyCooldownHours * 60 * 60 * 1000;
 
     if (now - lastDaily < cooldownMs) {
@@ -132,7 +162,7 @@ class EconomyAgent extends BaseAgent {
     }
     const reward = Math.floor(Math.random() * (config.dailyRewardMax - config.dailyRewardMin + 1) + config.dailyRewardMin);
     await this.addBalance(userId, guildId, reward);
-    this.dailyCooldowns.set(userId, now);
+    await this.setLastDaily(userId, guildId, now);
     const embed = new EmbedBuilder()
       .setTitle('🎁 Daily Reward')
       .setDescription(`You received **${reward}** ${config.currencySymbol}!`)
@@ -165,9 +195,6 @@ class EconomyAgent extends BaseAgent {
       .setColor(0xffaa00);
     await interaction.reply({ embeds: [embed] });
   }
-
-  // 💡 NOTE: The original cmdBuy method has been removed because the `/buy` command is now exclusively for VIP subscriptions
-  // If you want a separate economy buy command, rename it to `/purchase` or `/shop buy`.
 
   async cmdInventory(interaction) {
     const userId = interaction.user.id;
