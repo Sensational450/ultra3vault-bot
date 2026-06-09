@@ -1,8 +1,10 @@
 /**
- * 📈 PriceFeedAgent v5.0 (final)
+ * 📈 PriceFeedAgent v5.0 (Persistent)
  * - Fetches prices with API key and delay to avoid rate limits
  * - Uses `this.emit` for all events (baseAgent method)
- * - Graceful error handling, no direct `eventBus` access
+ * - Guild configuration stored in DB (price/whale channels)
+ * - Price cache restored from DB on startup
+ * - User alerts stored in DB (already persistent)
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
@@ -18,22 +20,75 @@ class PriceFeedAgent extends BaseAgent {
       defaultCoins: ['bitcoin', 'ethereum', 'solana', 'binancecoin'],
       priceChangeThresholdPercent: 2,
     };
-    this.guildConfigs = new Map();
-    this.priceCache = new Map();
-    this.userAlerts = new Map();
+    this.priceCache = new Map();          // coinId -> { usd, lastUpdatedAt }
+    this.userAlerts = new Map();          // loaded from DB on init
   }
 
   async init() {
     await super.init();
+    // Ensure guild_configs table exists (migration 004 already does, but safe)
+    await this.ensureTable(`
+      CREATE TABLE IF NOT EXISTS guild_configs (
+        guildId TEXT,
+        configKey TEXT,
+        config TEXT,
+        PRIMARY KEY (guildId, configKey)
+      )
+    `);
     await this.loadUserAlertsFromDb();
+    await this.restorePriceCacheFromHistory();
     this.subscribe('job.priceUpdate', async () => {
       await this.updateAllPrices();
     });
     this.logger.info('📈 PriceFeedAgent ready');
   }
 
+  // ---------- PERSISTENT GUILD CONFIG (using guild_configs table) ----------
+  async getGuildConfig(guildId) {
+    const row = await this.db.get(
+      `SELECT config FROM guild_configs WHERE guildId = ? AND configKey = 'pricefeed'`,
+      [guildId]
+    );
+    if (row) return JSON.parse(row.config);
+    // Save default and return
+    const defaultConfig = { ...this.defaultConfig };
+    await this.db.run(
+      `INSERT INTO guild_configs (guildId, configKey, config) VALUES (?, 'pricefeed', ?)`,
+      [guildId, JSON.stringify(defaultConfig)]
+    );
+    return defaultConfig;
+  }
+
+  async updateGuildConfig(guildId, updates) {
+    const config = await this.getGuildConfig(guildId);
+    Object.assign(config, updates);
+    await this.db.run(
+      `INSERT OR REPLACE INTO guild_configs (guildId, configKey, config) VALUES (?, 'pricefeed', ?)`,
+      [guildId, JSON.stringify(config)]
+    );
+  }
+
+  // ---------- RESTORE PRICE CACHE FROM HISTORY ----------
+  async restorePriceCacheFromHistory() {
+    try {
+      // Get latest price per coin from price_history
+      const rows = await this.db.all(`
+        SELECT coinId, price, timestamp FROM price_history
+        WHERE timestamp IN (
+          SELECT MAX(timestamp) FROM price_history GROUP BY coinId
+        )
+      `);
+      for (const row of rows) {
+        this.priceCache.set(row.coinId, { usd: row.price, lastUpdatedAt: row.timestamp / 1000 });
+      }
+      this.logger.debug(`Restored price cache for ${this.priceCache.size} coins`);
+    } catch (err) {
+      this.logger.warn(`Could not restore price cache: ${err.message}`);
+    }
+  }
+
+  // ---------- USER ALERTS (already DB, but reload on init) ----------
   async loadUserAlertsFromDb(guildId = null, userId = null) {
-    const db = this.deps.db;
     let query = `SELECT id, userId, guildId, coinId, targetPrice, direction, channelId FROM price_alerts`;
     let params = [];
     if (guildId && userId) {
@@ -44,7 +99,7 @@ class PriceFeedAgent extends BaseAgent {
       params = [guildId];
     }
     try {
-      const rows = await db.all(query, params);
+      const rows = await this.db.all(query, params);
       if (guildId) {
         this.userAlerts.set(guildId, new Map());
       } else {
@@ -67,6 +122,7 @@ class PriceFeedAgent extends BaseAgent {
     }
   }
 
+  // ---------- PRICE FETCHING ----------
   async fetchPrice(coinId) {
     try {
       const params = { ids: coinId, vs_currencies: 'usd', include_last_updated_at: true };
@@ -90,7 +146,7 @@ class PriceFeedAgent extends BaseAgent {
   }
 
   async updateAllPrices() {
-    const config = await this.getGuildConfig('global');
+    const config = await this.getGuildConfig('global'); // global config (shared across guilds)
     const coins = config.defaultCoins;
     for (const coinId of coins) {
       const newPriceData = await this.fetchPrice(coinId);
@@ -111,8 +167,7 @@ class PriceFeedAgent extends BaseAgent {
   }
 
   async savePriceHistory(coinId, price) {
-    const db = this.deps.db;
-    await db.run(`INSERT INTO price_history (coinId, price, timestamp) VALUES (?, ?, ?)`,
+    await this.db.run(`INSERT INTO price_history (coinId, price, timestamp) VALUES (?, ?, ?)`,
       [coinId, price, Date.now()]).catch(() => {});
   }
 
@@ -135,9 +190,9 @@ class PriceFeedAgent extends BaseAgent {
     this.emit('price.alert', { coinId, oldPrice, newPrice, percentChange });
   }
 
+  // ---------- USER ALERTS (unchanged, already DB-backed) ----------
   async addUserAlert(userId, guildId, coinId, targetPrice, direction, channelId) {
-    const db = this.deps.db;
-    const result = await db.run(
+    const result = await this.db.run(
       `INSERT INTO price_alerts (userId, guildId, coinId, targetPrice, direction, channelId, createdAt)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [userId, guildId, coinId, targetPrice, direction, channelId, Date.now()]
@@ -150,8 +205,7 @@ class PriceFeedAgent extends BaseAgent {
   }
 
   async removeUserAlert(userId, guildId, alertId) {
-    const db = this.deps.db;
-    await db.run(`DELETE FROM price_alerts WHERE id = ? AND userId = ? AND guildId = ?`, [alertId, userId, guildId]);
+    await this.db.run(`DELETE FROM price_alerts WHERE id = ? AND userId = ? AND guildId = ?`, [alertId, userId, guildId]);
     await this.loadUserAlertsFromDb(guildId, userId);
   }
 
@@ -185,6 +239,7 @@ class PriceFeedAgent extends BaseAgent {
     }
   }
 
+  // ---------- WHALE ALERTS (mock) ----------
   async checkWhaleTransactions() {
     if (Math.random() < 0.05) {
       const mockWhale = {
@@ -214,6 +269,7 @@ class PriceFeedAgent extends BaseAgent {
     }
   }
 
+  // ---------- SLASH COMMANDS ----------
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
     const { commandName, options } = interaction;
@@ -283,25 +339,15 @@ class PriceFeedAgent extends BaseAgent {
   async cmdSetPriceChannel(interaction) {
     const channel = interaction.options.getChannel('channel');
     if (!channel.isTextBased()) return interaction.reply({ content: 'Text channel required.', ephemeral: true });
-    const config = await this.getGuildConfig(interaction.guild.id);
-    config.priceAlertChannelId = channel.id;
-    this.guildConfigs.set(interaction.guild.id, config);
+    await this.updateGuildConfig(interaction.guild.id, { priceAlertChannelId: channel.id });
     await interaction.reply({ content: `Price alert channel set to ${channel}.`, ephemeral: true });
   }
 
   async cmdSetWhaleChannel(interaction) {
     const channel = interaction.options.getChannel('channel');
     if (!channel.isTextBased()) return interaction.reply({ content: 'Text channel required.', ephemeral: true });
-    const config = await this.getGuildConfig(interaction.guild.id);
-    config.whaleAlertChannelId = channel.id;
-    this.guildConfigs.set(interaction.guild.id, config);
+    await this.updateGuildConfig(interaction.guild.id, { whaleAlertChannelId: channel.id });
     await interaction.reply({ content: `Whale alert channel set to ${channel}.`, ephemeral: true });
-  }
-
-  async getGuildConfig(guildId) {
-    if (this.guildConfigs.has(guildId)) return this.guildConfigs.get(guildId);
-    this.guildConfigs.set(guildId, { ...this.defaultConfig });
-    return this.guildConfigs.get(guildId);
   }
 
   deny(interaction) {
