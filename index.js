@@ -13,6 +13,7 @@ const { Database } = require('./tools/database/db');
 const Models = require('./tools/database/models');
 const { WebServer } = require('./web/server');
 const secrets = require('./config/secrets');
+const axios = require('axios');
 
 // ================= UNHANDLED ERROR HANDLERS =================
 process.on('uncaughtException', (err) => {
@@ -123,13 +124,37 @@ try {
     const leaderboardReset = require('./jobs/leaderboardReset')({ eventBus, logger, models });
     const subscriptionRenewal = require('./jobs/subscriptionRenewal')({ eventBus, logger, models, client });
     const cleanupTempData = require('./jobs/cleanupTempData')({ eventBus, logger });
-    const newsUpdater = require('./jobs/newsUpdater')({ eventBus, logger }); // 👈 Add news job
+    const newsUpdater = require('./jobs/newsUpdater')({ eventBus, logger });
 
     scheduler.registerJob('priceUpdater', '*/1 * * * *', priceUpdater);
     scheduler.registerJob('leaderboardReset', '0 0 * * 0', leaderboardReset);
     scheduler.registerJob('subscriptionRenewal', '0 */6 * * *', subscriptionRenewal);
     scheduler.registerJob('cleanupTempData', '0 */2 * * *', cleanupTempData);
-    scheduler.registerJob('newsUpdater', '*/10 * * * *', newsUpdater); // 👈 Every 10 minutes
+    scheduler.registerJob('newsUpdater', '*/10 * * * *', newsUpdater);
+
+    // ================= SELF-PING JOB (keep Render free tier awake) =================
+    if (process.env.RENDER_EXTERNAL_URL) {
+      scheduler.registerJob('selfPing', '*/10 * * * *', async () => {
+        try {
+          await axios.get(`${process.env.RENDER_EXTERNAL_URL}/api`);
+          logger.debug('🔁 Self-ping sent to keep service awake');
+        } catch (err) {
+          logger.debug(`Self-ping failed: ${err.message}`);
+        }
+      });
+    }
+
+    // ================= DISCORD RECONNECTION HANDLERS =================
+    client.on('shardDisconnect', (event, id) => {
+      logger.warn(`🔌 Shard ${id} disconnected. Attempting to reconnect...`);
+      setTimeout(() => client.login(secrets.token), 5000);
+    });
+    client.on('shardReconnecting', (id) => {
+      logger.info(`🔄 Shard ${id} is reconnecting...`);
+    });
+    client.on('shardResume', (id, replayedEvents) => {
+      logger.info(`✅ Shard ${id} resumed (${replayedEvents} events replayed)`);
+    });
 
     // Start web server
     webServer = new WebServer({
