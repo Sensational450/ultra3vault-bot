@@ -1,9 +1,9 @@
 /**
- * 📰 NewsAgent v5.0
+ * 📰 NewsAgent v5.0 (Persistent)
  * - Fetches RSS feeds (crypto, airdrops, etc.)
  * - Optional Reddit integration
- * - Per‑guild subscriptions to categories
- * - Caches last posted item to avoid duplicates
+ * - Per‑guild subscriptions to categories (stored in DB)
+ * - Caches last posted item to avoid duplicates (stored in DB)
  * - Uses migrations for table creation (no initDatabase)
  */
 const BaseAgent = require('./baseAgent');
@@ -25,7 +25,6 @@ class NewsAgent extends BaseAgent {
           'https://decrypt.co/feed',
         ],
         airdrops: [
-          // Replaced failing feeds with more reliable alternatives
           'https://cointelegraph.com/tags/airdrop/feed',
           'https://cryptopotato.com/category/airdrops/feed/',
         ],
@@ -38,7 +37,7 @@ class NewsAgent extends BaseAgent {
         limit: 5,
       },
     };
-    this.guildConfigs = new Map();
+    // In‑memory cache (loaded from DB on init)
     this.lastPostCache = new Map();      // feedUrl -> last item link
     this.subscriptions = new Map();      // guildId -> Map(category -> channelId)
   }
@@ -52,18 +51,19 @@ class NewsAgent extends BaseAgent {
     this.logger.info('📰 NewsAgent ready');
   }
 
-  // ---------- LOAD DATA FROM DB (tables already exist) ----------
+  // ---------- LOAD DATA FROM DB (persistent) ----------
   async loadSubscriptionsAndCache() {
-    const db = this.deps.db;
     try {
       // Load subscriptions
-      const subsRows = await db.all(`SELECT guildId, category, channelId FROM news_subscriptions`);
+      const subsRows = await this.db.all(`SELECT guildId, category, channelId FROM news_subscriptions`);
+      this.subscriptions.clear();
       for (const row of subsRows) {
         if (!this.subscriptions.has(row.guildId)) this.subscriptions.set(row.guildId, new Map());
         this.subscriptions.get(row.guildId).set(row.category, row.channelId);
       }
       // Load cache
-      const cacheRows = await db.all(`SELECT feedUrl, lastItemLink FROM news_cache`);
+      const cacheRows = await this.db.all(`SELECT feedUrl, lastItemLink FROM news_cache`);
+      this.lastPostCache.clear();
       for (const row of cacheRows) {
         this.lastPostCache.set(row.feedUrl, row.lastItemLink);
       }
@@ -74,7 +74,7 @@ class NewsAgent extends BaseAgent {
 
   // ---------- FETCH ALL NEWS ----------
   async fetchAllNews() {
-    const config = this.defaultConfig; // or per‑guild later
+    const config = this.defaultConfig;
     for (const [category, feedUrls] of Object.entries(config.feeds)) {
       for (const feedUrl of feedUrls) {
         await this.fetchFeed(feedUrl, category);
@@ -87,11 +87,8 @@ class NewsAgent extends BaseAgent {
 
   async fetchFeed(feedUrl, category) {
     try {
-      // Add a proper User-Agent header to avoid 403 errors
       const feed = await this.parser.parseURL(feedUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; Ultra3VaultBot/1.0; +https://ultra3vault-bot.onrender.com)'
-        }
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Ultra3VaultBot/1.0; +https://ultra3vault-bot.onrender.com)' }
       });
       const lastPosted = this.lastPostCache.get(feedUrl);
       const newItems = [];
@@ -198,8 +195,7 @@ class NewsAgent extends BaseAgent {
   }
 
   async saveCacheToDb(feedUrl, lastItemLink) {
-    const db = this.deps.db;
-    await db.run(`INSERT OR REPLACE INTO news_cache (feedUrl, lastItemLink, lastPostAt) VALUES (?, ?, ?)`,
+    await this.db.run(`INSERT OR REPLACE INTO news_cache (feedUrl, lastItemLink, lastPostAt) VALUES (?, ?, ?)`,
       [feedUrl, lastItemLink, Date.now()]).catch(() => {});
   }
 
@@ -209,10 +205,8 @@ class NewsAgent extends BaseAgent {
     const { commandName } = interaction;
     switch (commandName) {
       case 'subscribe':
+      case 'newssubscribe':
         await this.cmdSubscribe(interaction);
-        break;
-      case 'newssubscribe':   // Added support for the new command
-        await this.cmdSubscribe(interaction); // Reuse existing logic (same options)
         break;
       case 'unsubscribe':
         await this.cmdUnsubscribe(interaction);
@@ -237,8 +231,7 @@ class NewsAgent extends BaseAgent {
     }
     if (!this.subscriptions.has(interaction.guild.id)) this.subscriptions.set(interaction.guild.id, new Map());
     this.subscriptions.get(interaction.guild.id).set(category, channelTarget.id);
-    const db = this.deps.db;
-    await db.run(`INSERT OR REPLACE INTO news_subscriptions (guildId, category, channelId) VALUES (?, ?, ?)`,
+    await this.db.run(`INSERT OR REPLACE INTO news_subscriptions (guildId, category, channelId) VALUES (?, ?, ?)`,
       [interaction.guild.id, category, channelTarget.id]);
     await interaction.reply({ content: `✅ Subscribed to **${category}** in ${channelTarget}.`, ephemeral: true });
   }
@@ -249,8 +242,7 @@ class NewsAgent extends BaseAgent {
       return interaction.reply({ content: `Not subscribed to ${category}.`, ephemeral: true });
     }
     this.subscriptions.get(interaction.guild.id).delete(category);
-    const db = this.deps.db;
-    await db.run(`DELETE FROM news_subscriptions WHERE guildId = ? AND category = ?`, [interaction.guild.id, category]);
+    await this.db.run(`DELETE FROM news_subscriptions WHERE guildId = ? AND category = ?`, [interaction.guild.id, category]);
     await interaction.reply({ content: `✅ Unsubscribed from **${category}**.`, ephemeral: true });
   }
 
