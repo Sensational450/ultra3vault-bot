@@ -1,9 +1,9 @@
 /**
- * 🧱 BaseAgent v5.0
+ * 🧱 BaseAgent v5.1 – with persistence helpers
  * 
  * All domain agents must extend this class.
  * Provides lifecycle hooks, event bus integration, dependency injection,
- * error handling, logging, and optional health checks.
+ * error handling, logging, optional health checks, and common DB helpers.
  */
 class BaseAgent {
   /**
@@ -25,48 +25,25 @@ class BaseAgent {
     this.logger = deps.logger;
     this.client = deps.client;
     this.db = deps.db;
-    this.models = deps.models || null;      // v5.0: models layer
+    this.models = deps.models || null;
     this.cache = deps.cache || null;
 
-    /** @type {string} - Agent name (defaults to class name) */
     this.name = this.constructor.name;
-
-    /** @type {boolean} - Whether the agent has finished initialising */
     this.initialised = false;
-
-    /** @type {Map<string, Function>} - Track event listeners for cleanup */
     this._listeners = new Map();
 
-    // Automatically call setupListeners after construction
     this.setupListeners();
   }
 
-  /**
-   * Override to subscribe to events and set up initialisation logic.
-   * Called automatically by the constructor.
-   * @example
-   * setupListeners() {
-   *   this.subscribe('payment.success', (data) => this.handlePayment(data));
-   *   this.subscribe('job.priceUpdate', () => this.updatePrices());
-   * }
-   */
   setupListeners() {
-    // To be implemented by child classes
+    // Override in child classes
   }
 
-  /**
-   * Async initialisation – override if the agent needs to load data or connect to services.
-   * Called by the orchestrator after all agents are registered.
-   */
   async init() {
     this.logger.info(`${this.name} initialising...`);
     this.initialised = true;
   }
 
-  /**
-   * Optional health check – override to return custom health status.
-   * @returns {Promise<Object>} Health data (e.g., { status: 'ok', details: {} })
-   */
   async healthCheck() {
     return {
       agent: this.name,
@@ -75,45 +52,11 @@ class BaseAgent {
     };
   }
 
-  /**
-   * Called when the bot receives a message.
-   * @param {Discord.Message} message - The message object.
-   */
-  async onMessage(message) {
-    // Override in child class
-  }
+  async onMessage(message) {} // override
+  async onInteraction(interaction) {} // override
+  async onGuildMemberAdd(member) {} // override
+  async onReady() {} // override
 
-  /**
-   * Called when an interaction (slash command, button, select menu) is created.
-   * @param {Discord.Interaction} interaction - The interaction object.
-   */
-  async onInteraction(interaction) {
-    // Override in child class
-  }
-
-  /**
-   * Called when a new member joins the guild.
-   * @param {Discord.GuildMember} member - The joined member.
-   */
-  async onGuildMemberAdd(member) {
-    // Override in child class
-  }
-
-  /**
-   * Called when the Discord client becomes ready.
-   * Use this for any post‑login setup.
-   */
-  async onReady() {
-    // Override in child class
-  }
-
-  /**
-   * Safely subscribe to an event bus event with automatic error logging.
-   * @param {string} event - Event name.
-   * @param {Function} handler - Async function to handle the event.
-   * @param {number} priority - Priority (higher = called first).
-   * @returns {Function} Unsubscribe function.
-   */
   subscribe(event, handler, priority = 0) {
     const wrappedHandler = async (data) => {
       try {
@@ -131,19 +74,10 @@ class BaseAgent {
     };
   }
 
-  /**
-   * Emit an event to the event bus.
-   * @param {string} event - Event name.
-   * @param {any} data - Payload.
-   */
   emit(event, data) {
     this.eventBus.emit(event, data);
   }
 
-  /**
-   * Clean up all event listeners subscribed via `subscribe()`.
-   * Called automatically if the agent is destroyed.
-   */
   destroy() {
     this.logger.info(`${this.name} destroying...`);
     for (const [event, handler] of this._listeners.entries()) {
@@ -151,6 +85,81 @@ class BaseAgent {
     }
     this._listeners.clear();
     this.initialised = false;
+  }
+
+  // ================= PERSISTENCE HELPERS =================
+
+  /**
+   * Generic cooldown getter (e.g., for daily rewards, command cooldowns)
+   * @param {string} userId - Discord user ID.
+   * @param {string} guildId - Discord guild ID.
+   * @param {string} command - Command name (e.g., 'daily').
+   * @returns {Promise<number>} Timestamp of last use (0 if never).
+   */
+  async getCooldown(userId, guildId, command) {
+    const row = await this.db.get(
+      `SELECT lastUsed FROM user_cooldowns WHERE userId = ? AND guildId = ? AND command = ?`,
+      [userId, guildId, command]
+    );
+    return row ? row.lastUsed : 0;
+  }
+
+  /**
+   * Generic cooldown setter.
+   * @param {string} userId
+   * @param {string} guildId
+   * @param {string} command
+   * @param {number} timestamp - Unix timestamp (ms).
+   */
+  async setCooldown(userId, guildId, command, timestamp) {
+    await this.db.run(
+      `INSERT OR REPLACE INTO user_cooldowns (userId, guildId, command, lastUsed)
+       VALUES (?, ?, ?, ?)`,
+      [userId, guildId, command, timestamp]
+    );
+  }
+
+  /**
+   * Get guild‑specific configuration from the `guild_configs` table.
+   * @param {string} guildId
+   * @param {string} configKey - e.g., 'economy', 'ai', 'moderation'.
+   * @param {Object} defaultConfig - Default config object if none exists.
+   * @returns {Promise<Object>}
+   */
+  async getGuildConfig(guildId, configKey, defaultConfig = {}) {
+    const row = await this.db.get(
+      `SELECT config FROM guild_configs WHERE guildId = ? AND configKey = ?`,
+      [guildId, configKey]
+    );
+    if (row) return JSON.parse(row.config);
+    // Save default and return it
+    await this.setGuildConfig(guildId, configKey, defaultConfig);
+    return defaultConfig;
+  }
+
+  /**
+   * Set guild‑specific configuration.
+   * @param {string} guildId
+   * @param {string} configKey
+   * @param {Object} config
+   */
+  async setGuildConfig(guildId, configKey, config) {
+    await this.db.run(
+      `INSERT OR REPLACE INTO guild_configs (guildId, configKey, config) VALUES (?, ?, ?)`,
+      [guildId, configKey, JSON.stringify(config)]
+    );
+  }
+
+  /**
+   * Ensure a table exists (safe wrapper for CREATE TABLE IF NOT EXISTS).
+   * @param {string} sql - CREATE TABLE statement.
+   */
+  async ensureTable(sql) {
+    try {
+      await this.db.exec(sql);
+    } catch (err) {
+      this.logger.error(`[${this.name}] Failed to ensure table: ${err.message}`);
+    }
   }
 }
 
