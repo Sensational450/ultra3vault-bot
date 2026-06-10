@@ -119,7 +119,7 @@ try {
     require('./events/guildMemberAdd')(client, orchestrator, { logger });
     require('./events/ready')(client, orchestrator, { logger, registerCommands: require('./commands/register') });
 
-    // Schedule jobs
+    // ================= SCHEDULED JOBS =================
     const priceUpdater = require('./jobs/priceUpdater')({ eventBus, logger, cache: null });
     const leaderboardReset = require('./jobs/leaderboardReset')({ eventBus, logger, models });
     const subscriptionRenewal = require('./jobs/subscriptionRenewal')({ eventBus, logger, models, client });
@@ -131,6 +131,22 @@ try {
     scheduler.registerJob('subscriptionRenewal', '0 */6 * * *', subscriptionRenewal);
     scheduler.registerJob('cleanupTempData', '0 */2 * * *', cleanupTempData);
     scheduler.registerJob('newsUpdater', '*/10 * * * *', newsUpdater);
+
+    // Weekly leaderboard **posting** job (every Monday at 09:00 UTC)
+    const leaderboardChannelId = process.env.LEADERBOARD_CHANNEL_ID;
+    if (leaderboardChannelId) {
+      const weeklyLeaderboard = require('./jobs/weeklyLeaderboard')({
+        eventBus,
+        logger,
+        models,
+        client,
+        channelId: leaderboardChannelId,
+      });
+      scheduler.registerJob('weeklyLeaderboard', '0 9 * * 1', weeklyLeaderboard);
+      logger.info('📅 Weekly leaderboard posting job scheduled');
+    } else {
+      logger.warn('⚠️ LEADERBOARD_CHANNEL_ID not set – weekly leaderboard posting disabled');
+    }
 
     // ================= SELF-PING JOB (keep Render free tier awake) =================
     if (process.env.RENDER_EXTERNAL_URL) {
