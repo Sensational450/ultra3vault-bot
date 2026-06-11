@@ -1,10 +1,8 @@
 /**
- * 📰 NewsAgent v5.0 (Stable – only reliable feeds + auto‑subscription)
- * - Fetches RSS feeds (crypto, airdrops)
+ * 📰 NewsAgent v5.0 (Stable – auto‑subscribes to all categories)
+ * - Fetches RSS feeds (crypto, airdrops, bitcoin, altcoin)
+ * - Auto‑subscribes to all categories on startup using DEFAULT_NEWS_CHANNEL_ID
  * - Handles malformed responses gracefully
- * - Per‑guild subscriptions to categories (stored in DB)
- * - Caches last posted item to avoid duplicates
- * - Auto‑subscribes to default channel if no subscriptions exist
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
@@ -20,16 +18,16 @@ class NewsAgent extends BaseAgent {
       maxItemsPerFeed: 5,
       feeds: {
         cryptoNews: [
-          'https://cointelegraph.com/rss',          // known good
+          'https://cointelegraph.com/rss',
         ],
         airdrops: [
           'https://cointelegraph.com/tags/airdrop/feed',
         ],
-        bitcoinNews: [],   // temporarily disable
-        altcoinNews: [],   // temporarily disable
+        bitcoinNews: ['https://news.bitcoin.com/feed/'],
+        altcoinNews: ['https://cryptopotato.com/feed/'],
       },
       reddit: {
-        enabled: false,
+        enabled: false,   // enable if you want Reddit posts
         subreddits: ['cryptocurrency', 'bitcoin', 'ethereum'],
         limit: 5,
       },
@@ -41,7 +39,7 @@ class NewsAgent extends BaseAgent {
   async init() {
     await super.init();
     await this.loadSubscriptionsAndCache();
-    await this.ensureDefaultSubscriptions(); // 👈 auto‑restore subscriptions
+    await this.ensureDefaultSubscriptions(); // 👈 auto‑subscribe to all categories
     this.subscribe('job.newsUpdate', async () => {
       this.logger.debug('🔄 News job triggered – fetching all news');
       await this.fetchAllNews();
@@ -50,8 +48,7 @@ class NewsAgent extends BaseAgent {
   }
 
   /**
-   * Auto‑subscribe to default categories if no subscriptions exist for the guild.
-   * Uses environment variable DEFAULT_NEWS_CHANNEL_ID (channel ID).
+   * Auto‑subscribe to ALL categories using the default channel ID.
    */
   async ensureDefaultSubscriptions() {
     const defaultChannelId = process.env.DEFAULT_NEWS_CHANNEL_ID;
@@ -61,20 +58,25 @@ class NewsAgent extends BaseAgent {
     }
     const guild = this.client.guilds.cache.first();
     if (!guild) return;
-    // Check if there are any subscriptions already for this guild
+
     const existing = this.subscriptions.get(guild.id);
     if (existing && existing.size > 0) {
-      this.logger.debug(`Guild ${guild.id} already has news subscriptions – not auto‑subscribing`);
+      this.logger.debug(`Guild ${guild.id} already has subscriptions – not auto‑subscribing`);
       return;
     }
+
     const channel = this.client.channels.cache.get(defaultChannelId);
     if (!channel || !channel.isTextBased()) {
       this.logger.warn(`Default news channel ${defaultChannelId} not found or not text‑based`);
       return;
     }
-    // Choose which categories to auto‑subscribe (only the ones you want)
-    const defaultCategories = ['cryptoNews']; // add 'airdrops', 'bitcoinNews' as needed
-    for (const category of defaultCategories) {
+
+    // All available categories (excluding 'reddit' unless you enable it)
+    const allCategories = ['cryptoNews', 'airdrops', 'bitcoinNews', 'altcoinNews'];
+    // Optionally add 'reddit' if you want Reddit posts
+    // const allCategories = ['cryptoNews', 'airdrops', 'bitcoinNews', 'altcoinNews', 'reddit'];
+
+    for (const category of allCategories) {
       if (!this.subscriptions.has(guild.id)) this.subscriptions.set(guild.id, new Map());
       this.subscriptions.get(guild.id).set(category, defaultChannelId);
       await this.db.run(
@@ -121,9 +123,8 @@ class NewsAgent extends BaseAgent {
       const feed = await this.parser.parseURL(feedUrl, {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Ultra3VaultBot/1.0; +https://ultra3vault-bot.onrender.com)' }
       });
-      // Guard against malformed feed
       if (!feed.items || !Array.isArray(feed.items)) {
-        this.logger.warn(`Feed ${feedUrl} returned no items array (maybe empty or invalid XML)`);
+        this.logger.warn(`Feed ${feedUrl} returned no items array`);
         return;
       }
       const lastPosted = this.lastPostCache.get(feedUrl);
@@ -137,7 +138,7 @@ class NewsAgent extends BaseAgent {
       }
       if (newItems.length) {
         this.logger.info(`📰 Found ${newItems.length} new items for ${feedUrl}`);
-        newItems.reverse(); // oldest first
+        newItems.reverse();
         for (const item of newItems) {
           await this.sendNews(item, category);
         }
@@ -151,7 +152,6 @@ class NewsAgent extends BaseAgent {
       }
     } catch (err) {
       this.logger.error(`❌ RSS fetch error for ${feedUrl} (${category}): ${err.message}`);
-      if (err.response) this.logger.error(`   Status: ${err.response.status}`);
     }
   }
 
