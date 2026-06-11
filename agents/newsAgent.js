@@ -1,9 +1,10 @@
 /**
- * 📰 NewsAgent v5.0 (Stable – only reliable feeds)
+ * 📰 NewsAgent v5.0 (Stable – only reliable feeds + auto‑subscription)
  * - Fetches RSS feeds (crypto, airdrops)
  * - Handles malformed responses gracefully
  * - Per‑guild subscriptions to categories (stored in DB)
  * - Caches last posted item to avoid duplicates
+ * - Auto‑subscribes to default channel if no subscriptions exist
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
@@ -40,11 +41,48 @@ class NewsAgent extends BaseAgent {
   async init() {
     await super.init();
     await this.loadSubscriptionsAndCache();
+    await this.ensureDefaultSubscriptions(); // 👈 auto‑restore subscriptions
     this.subscribe('job.newsUpdate', async () => {
       this.logger.debug('🔄 News job triggered – fetching all news');
       await this.fetchAllNews();
     });
     this.logger.info('📰 NewsAgent ready');
+  }
+
+  /**
+   * Auto‑subscribe to default categories if no subscriptions exist for the guild.
+   * Uses environment variable DEFAULT_NEWS_CHANNEL_ID (channel ID).
+   */
+  async ensureDefaultSubscriptions() {
+    const defaultChannelId = process.env.DEFAULT_NEWS_CHANNEL_ID;
+    if (!defaultChannelId) {
+      this.logger.debug('No DEFAULT_NEWS_CHANNEL_ID set – skipping auto‑subscription');
+      return;
+    }
+    const guild = this.client.guilds.cache.first();
+    if (!guild) return;
+    // Check if there are any subscriptions already for this guild
+    const existing = this.subscriptions.get(guild.id);
+    if (existing && existing.size > 0) {
+      this.logger.debug(`Guild ${guild.id} already has news subscriptions – not auto‑subscribing`);
+      return;
+    }
+    const channel = this.client.channels.cache.get(defaultChannelId);
+    if (!channel || !channel.isTextBased()) {
+      this.logger.warn(`Default news channel ${defaultChannelId} not found or not text‑based`);
+      return;
+    }
+    // Choose which categories to auto‑subscribe (only the ones you want)
+    const defaultCategories = ['cryptoNews']; // add 'airdrops', 'bitcoinNews' as needed
+    for (const category of defaultCategories) {
+      if (!this.subscriptions.has(guild.id)) this.subscriptions.set(guild.id, new Map());
+      this.subscriptions.get(guild.id).set(category, defaultChannelId);
+      await this.db.run(
+        `INSERT OR REPLACE INTO news_subscriptions (guildId, category, channelId) VALUES (?, ?, ?)`,
+        [guild.id, category, defaultChannelId]
+      );
+      this.logger.info(`✅ Auto-subscribed ${category} to ${channel.name} (${defaultChannelId})`);
+    }
   }
 
   async loadSubscriptionsAndCache() {
