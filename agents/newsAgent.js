@@ -1,18 +1,18 @@
 /**
- * 📰 NewsAgent v5.0 (API‑based – stable, no RSS)
- * - Fetches crypto news from cryptocurrency.cv API (free, no key)
+ * 📰 NewsAgent v5.0 (API‑based, modular)
+ * - Fetches crypto news using CryptocurrencyCvAPI (from tools/api)
  * - Auto‑subscribes to cryptoNews using DEFAULT_NEWS_CHANNEL_ID
  * - Per‑guild subscriptions stored in DB
  * - Safe error handling – never crashes
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
-const axios = require('axios');
+const { CryptocurrencyCvAPI } = require('../tools/api/cryptocurrencyCv');
 
 class NewsAgent extends BaseAgent {
   constructor(eventBus, deps) {
     super(eventBus, deps);
-    this.apiUrl = 'https://api.cryptocurrency.cv/latest?limit=5';
+    this.api = new CryptocurrencyCvAPI({ logger: this.logger });
     // In‑memory cache: key = `${guildId}:${category}` -> last posted link
     this.lastPostCache = new Map();
     this.subscriptions = new Map();   // guildId -> Map(category -> channelId)
@@ -72,8 +72,7 @@ class NewsAgent extends BaseAgent {
 
   async fetchAndSendNews() {
     try {
-      const response = await axios.get(this.apiUrl, { timeout: 10000 });
-      const articles = response.data?.data || [];
+      const articles = await this.api.getLatestNews(5);
       if (!articles.length) {
         this.logger.debug('No articles from API');
         return;
@@ -105,9 +104,9 @@ class NewsAgent extends BaseAgent {
     const embed = new EmbedBuilder()
       .setTitle(article.title || 'Crypto News')
       .setURL(article.link)
-      .setDescription(article.description || article.contentSnippet || '')
+      .setDescription(article.description || '')
       .setColor(0x1e88e5)
-      .setFooter({ text: `Source: ${article.source || 'cryptocurrency.cv'} • ${new Date().toLocaleString()}` });
+      .setFooter({ text: `Source: ${article.source} • ${new Date().toLocaleString()}` });
     if (article.image) embed.setImage(article.image);
     await channel.send({ embeds: [embed] }).catch(err => this.logger.error(`Failed to send: ${err.message}`));
   }
