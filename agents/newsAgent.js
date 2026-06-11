@@ -1,8 +1,8 @@
 /**
- * 📰 NewsAgent v5.0 (Stable – auto‑subscribes to all categories)
- * - Fetches RSS feeds (crypto, airdrops, bitcoin, altcoin)
+ * 📰 NewsAgent v5.0 (Stable – feeds disabled by default, auto‑subscribes)
  * - Auto‑subscribes to all categories on startup using DEFAULT_NEWS_CHANNEL_ID
- * - Handles malformed responses gracefully
+ * - No RSS feeds are fetched unless you add URLs to the feeds arrays below.
+ * - Safe error handling – never crashes the bot.
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
@@ -17,17 +17,13 @@ class NewsAgent extends BaseAgent {
       updateIntervalMinutes: 10,
       maxItemsPerFeed: 5,
       feeds: {
-        cryptoNews: [
-          'https://cointelegraph.com/rss',
-        ],
-        airdrops: [
-          'https://cointelegraph.com/tags/airdrop/feed',
-        ],
-        bitcoinNews: ['https://news.bitcoin.com/feed/'],
-        altcoinNews: ['https://cryptopotato.com/feed/'],
+        cryptoNews: [],      // add working feeds here later (e.g., 'https://cointelegraph.com/rss')
+        airdrops: [],
+        bitcoinNews: [],
+        altcoinNews: [],
       },
       reddit: {
-        enabled: false,   // enable if you want Reddit posts
+        enabled: false,
         subreddits: ['cryptocurrency', 'bitcoin', 'ethereum'],
         limit: 5,
       },
@@ -39,12 +35,12 @@ class NewsAgent extends BaseAgent {
   async init() {
     await super.init();
     await this.loadSubscriptionsAndCache();
-    await this.ensureDefaultSubscriptions(); // 👈 auto‑subscribe to all categories
+    await this.ensureDefaultSubscriptions();
     this.subscribe('job.newsUpdate', async () => {
       this.logger.debug('🔄 News job triggered – fetching all news');
       await this.fetchAllNews();
     });
-    this.logger.info('📰 NewsAgent ready');
+    this.logger.info('📰 NewsAgent ready (feeds disabled – add URLs in feeds object to enable)');
   }
 
   /**
@@ -73,9 +69,6 @@ class NewsAgent extends BaseAgent {
 
     // All available categories (excluding 'reddit' unless you enable it)
     const allCategories = ['cryptoNews', 'airdrops', 'bitcoinNews', 'altcoinNews'];
-    // Optionally add 'reddit' if you want Reddit posts
-    // const allCategories = ['cryptoNews', 'airdrops', 'bitcoinNews', 'altcoinNews', 'reddit'];
-
     for (const category of allCategories) {
       if (!this.subscriptions.has(guild.id)) this.subscriptions.set(guild.id, new Map());
       this.subscriptions.get(guild.id).set(category, defaultChannelId);
@@ -151,6 +144,7 @@ class NewsAgent extends BaseAgent {
         this.logger.debug(`No new items for ${feedUrl}`);
       }
     } catch (err) {
+      // Catch any error – prevents crash
       this.logger.error(`❌ RSS fetch error for ${feedUrl} (${category}): ${err.message}`);
     }
   }
@@ -193,7 +187,7 @@ class NewsAgent extends BaseAgent {
     return colors[category] || 0x607d8b;
   }
 
-  // ---------- REDDIT (optional, unchanged) ----------
+  // ---------- REDDIT (optional) ----------
   async fetchReddit() {
     const config = this.defaultConfig;
     const subreddits = config.reddit.subreddits;
@@ -247,7 +241,7 @@ class NewsAgent extends BaseAgent {
       [feedUrl, lastItemLink, Date.now()]).catch(() => {});
   }
 
-  // ---------- SLASH COMMANDS (unchanged) ----------
+  // ---------- SLASH COMMANDS ----------
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
     const { commandName } = interaction;
