@@ -1,47 +1,21 @@
 /**
- * 📰 NewsAgent v5.0 (Stable – feeds enabled with reliable sources)
- * - Auto‑subscribes to all categories on startup using DEFAULT_NEWS_CHANNEL_ID
- * - Uses proven RSS feeds that are less likely to be blocked.
- * - Safe error handling – never crashes the bot.
+ * 📰 NewsAgent v5.0 (API‑based – stable, no RSS)
+ * - Fetches crypto news from cryptocurrency.cv API (free, no key)
+ * - Auto‑subscribes to cryptoNews using DEFAULT_NEWS_CHANNEL_ID
+ * - Per‑guild subscriptions stored in DB
+ * - Safe error handling – never crashes
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
-const Parser = require('rss-parser');
 const axios = require('axios');
 
 class NewsAgent extends BaseAgent {
   constructor(eventBus, deps) {
     super(eventBus, deps);
-    this.parser = new Parser();
-    this.defaultConfig = {
-      updateIntervalMinutes: 10,
-      maxItemsPerFeed: 5,
-      feeds: {
-        // Reliable feeds (June 2025)
-        cryptoNews: [
-          'https://www.coindesk.com/arc/outboundfeeds/rss/',    // CoinDesk
-          'https://www.theblock.co/rss',                       // The Block
-          'https://news.bitcoin.com/feed/',                    // Bitcoin.com News
-          'https://blockonomi.com/feed/',                      // Blockonomi
-        ],
-        airdrops: [
-          'https://cointelegraph.com/tags/airdrop/feed',       // may work but less reliable
-        ],
-        bitcoinNews: [
-          'https://news.bitcoin.com/feed/',                   // duplicate but fine
-        ],
-        altcoinNews: [
-          'https://cryptopotato.com/feed/',                   // sometimes works
-        ],
-      },
-      reddit: {
-        enabled: false,
-        subreddits: ['cryptocurrency', 'bitcoin', 'ethereum'],
-        limit: 5,
-      },
-    };
+    this.apiUrl = 'https://api.cryptocurrency.cv/latest?limit=5';
+    // In‑memory cache: key = `${guildId}:${category}` -> last posted link
     this.lastPostCache = new Map();
-    this.subscriptions = new Map();
+    this.subscriptions = new Map();   // guildId -> Map(category -> channelId)
   }
 
   async init() {
@@ -49,47 +23,32 @@ class NewsAgent extends BaseAgent {
     await this.loadSubscriptionsAndCache();
     await this.ensureDefaultSubscriptions();
     this.subscribe('job.newsUpdate', async () => {
-      this.logger.debug('🔄 News job triggered – fetching all news');
-      await this.fetchAllNews();
+      this.logger.debug('🔄 News job triggered – fetching from API');
+      await this.fetchAndSendNews();
     });
-    this.logger.info('📰 NewsAgent ready – fetching from multiple RSS feeds');
+    this.logger.info('📰 NewsAgent ready (API mode – stable)');
   }
 
-  /**
-   * Auto‑subscribe to ALL categories using the default channel ID.
-   */
   async ensureDefaultSubscriptions() {
     const defaultChannelId = process.env.DEFAULT_NEWS_CHANNEL_ID;
-    if (!defaultChannelId) {
-      this.logger.debug('No DEFAULT_NEWS_CHANNEL_ID set – skipping auto‑subscription');
-      return;
-    }
+    if (!defaultChannelId) return;
     const guild = this.client.guilds.cache.first();
     if (!guild) return;
-
     const existing = this.subscriptions.get(guild.id);
-    if (existing && existing.size > 0) {
-      this.logger.debug(`Guild ${guild.id} already has subscriptions – not auto‑subscribing`);
-      return;
-    }
-
+    if (existing && existing.size > 0) return;
     const channel = this.client.channels.cache.get(defaultChannelId);
     if (!channel || !channel.isTextBased()) {
-      this.logger.warn(`Default news channel ${defaultChannelId} not found or not text‑based`);
+      this.logger.warn(`Default news channel ${defaultChannelId} not found`);
       return;
     }
-
-    // All available categories (excluding 'reddit' unless you enable it)
-    const allCategories = ['cryptoNews', 'airdrops', 'bitcoinNews', 'altcoinNews'];
-    for (const category of allCategories) {
-      if (!this.subscriptions.has(guild.id)) this.subscriptions.set(guild.id, new Map());
-      this.subscriptions.get(guild.id).set(category, defaultChannelId);
-      await this.db.run(
-        `INSERT OR REPLACE INTO news_subscriptions (guildId, category, channelId) VALUES (?, ?, ?)`,
-        [guild.id, category, defaultChannelId]
-      );
-      this.logger.info(`✅ Auto-subscribed ${category} to ${channel.name} (${defaultChannelId})`);
-    }
+    const category = 'cryptoNews';
+    if (!this.subscriptions.has(guild.id)) this.subscriptions.set(guild.id, new Map());
+    this.subscriptions.get(guild.id).set(category, defaultChannelId);
+    await this.db.run(
+      `INSERT OR REPLACE INTO news_subscriptions (guildId, category, channelId) VALUES (?, ?, ?)`,
+      [guild.id, category, defaultChannelId]
+    );
+    this.logger.info(`✅ Auto-subscribed ${category} to ${channel.name}`);
   }
 
   async loadSubscriptionsAndCache() {
@@ -100,6 +59,7 @@ class NewsAgent extends BaseAgent {
         if (!this.subscriptions.has(row.guildId)) this.subscriptions.set(row.guildId, new Map());
         this.subscriptions.get(row.guildId).set(row.category, row.channelId);
       }
+      // Load cache (store last posted link per guild+category)
       const cacheRows = await this.db.all(`SELECT feedUrl, lastItemLink FROM news_cache`);
       this.lastPostCache.clear();
       for (const row of cacheRows) {
@@ -110,150 +70,56 @@ class NewsAgent extends BaseAgent {
     }
   }
 
-  async fetchAllNews() {
-    const config = this.defaultConfig;
-    for (const [category, feedUrls] of Object.entries(config.feeds)) {
-      for (const feedUrl of feedUrls) {
-        await this.fetchFeed(feedUrl, category);
-      }
-    }
-    if (config.reddit.enabled) {
-      await this.fetchReddit();
-    }
-  }
-
-  async fetchFeed(feedUrl, category) {
+  async fetchAndSendNews() {
     try {
-      this.logger.debug(`📡 Fetching RSS: ${feedUrl} (${category})`);
-      const feed = await this.parser.parseURL(feedUrl, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Ultra3VaultBot/1.0; +https://ultra3vault-bot.onrender.com)' }
-      });
-      if (!feed.items || !Array.isArray(feed.items)) {
-        this.logger.warn(`Feed ${feedUrl} returned no items array`);
+      const response = await axios.get(this.apiUrl, { timeout: 10000 });
+      const articles = response.data?.data || [];
+      if (!articles.length) {
+        this.logger.debug('No articles from API');
         return;
       }
-      const lastPosted = this.lastPostCache.get(feedUrl);
-      const newItems = [];
-      for (const item of feed.items.slice(0, this.defaultConfig.maxItemsPerFeed)) {
-        if (!lastPosted || item.link !== lastPosted) {
-          newItems.push(item);
-        } else {
-          break;
-        }
-      }
-      if (newItems.length) {
-        this.logger.info(`📰 Found ${newItems.length} new items for ${feedUrl}`);
-        newItems.reverse(); // oldest first
-        for (const item of newItems) {
-          await this.sendNews(item, category);
-        }
-        const latestLink = feed.items[0]?.link;
-        if (latestLink) {
-          this.lastPostCache.set(feedUrl, latestLink);
-          await this.saveCacheToDb(feedUrl, latestLink);
-        }
-      } else {
-        this.logger.debug(`No new items for ${feedUrl}`);
+      // For each subscription, post the latest article if it's new
+      for (const [guildId, subs] of this.subscriptions.entries()) {
+        const channelId = subs.get('cryptoNews');
+        if (!channelId) continue;
+        const cacheKey = `${guildId}:cryptoNews`;
+        const lastLink = this.lastPostCache.get(cacheKey);
+        // Find the first article that is not the last posted
+        const newArticle = articles.find(a => a.link !== lastLink);
+        if (!newArticle) continue;
+        await this.sendNews(newArticle, guildId, channelId);
+        this.lastPostCache.set(cacheKey, newArticle.link);
+        await this.saveCacheToDb(cacheKey, newArticle.link);
       }
     } catch (err) {
-      // Catch any error – prevents crash
-      this.logger.error(`❌ RSS fetch error for ${feedUrl} (${category}): ${err.message}`);
+      this.logger.error(`❌ News API error: ${err.message}`);
     }
   }
 
-  async sendNews(item, category) {
+  async sendNews(article, guildId, channelId) {
+    const channel = this.client.channels.cache.get(channelId);
+    if (!channel || !channel.isTextBased()) {
+      this.logger.warn(`Channel ${channelId} not found or not text-based`);
+      return;
+    }
     const embed = new EmbedBuilder()
-      .setTitle(item.title || 'News')
-      .setURL(item.link)
-      .setDescription(item.contentSnippet || item.content || 'No description')
-      .setColor(this.getCategoryColor(category))
-      .setFooter({ text: `Category: ${category} • ${new Date(item.isoDate || Date.now()).toLocaleString()}` });
-    if (item.enclosure?.url) embed.setImage(item.enclosure.url);
-    for (const [guildId, subs] of this.subscriptions.entries()) {
-      const channelId = subs.get(category);
-      if (channelId) {
-        const channel = this.client.channels.cache.get(channelId);
-        if (!channel) {
-          this.logger.warn(`Channel ${channelId} not found in cache for category ${category}`);
-          continue;
-        }
-        if (!channel.isTextBased()) {
-          this.logger.warn(`Channel ${channelId} is not text‑based`);
-          continue;
-        }
-        await channel.send({ embeds: [embed] }).catch(err => {
-          this.logger.error(`Failed to send news to ${channelId}: ${err.message}`);
-        });
-      }
-    }
-    this.emit('news.published', { category, title: item.title, link: item.link });
+      .setTitle(article.title || 'Crypto News')
+      .setURL(article.link)
+      .setDescription(article.description || article.contentSnippet || '')
+      .setColor(0x1e88e5)
+      .setFooter({ text: `Source: ${article.source || 'cryptocurrency.cv'} • ${new Date().toLocaleString()}` });
+    if (article.image) embed.setImage(article.image);
+    await channel.send({ embeds: [embed] }).catch(err => this.logger.error(`Failed to send: ${err.message}`));
   }
 
-  getCategoryColor(category) {
-    const colors = {
-      cryptoNews: 0x1e88e5,
-      airdrops: 0x43a047,
-      bitcoinNews: 0xf9a825,
-      altcoinNews: 0x8e24aa,
-    };
-    return colors[category] || 0x607d8b;
+  async saveCacheToDb(key, value) {
+    await this.db.run(
+      `INSERT OR REPLACE INTO news_cache (feedUrl, lastItemLink, lastPostAt) VALUES (?, ?, ?)`,
+      [key, value, Date.now()]
+    ).catch(() => {});
   }
 
-  // ---------- REDDIT (optional, unchanged) ----------
-  async fetchReddit() {
-    const config = this.defaultConfig;
-    const subreddits = config.reddit.subreddits;
-    for (const sub of subreddits) {
-      try {
-        const url = `https://www.reddit.com/r/${sub}/new.json?limit=${config.reddit.limit}`;
-        const res = await axios.get(url, { headers: { 'User-Agent': 'DiscordBot/1.0' } });
-        const posts = res.data.data.children;
-        for (const post of posts) {
-          const data = post.data;
-          const feedUrl = `reddit:${sub}`;
-          const lastPosted = this.lastPostCache.get(feedUrl);
-          if (!lastPosted || data.name !== lastPosted) {
-            await this.sendRedditPost(data, sub);
-            this.lastPostCache.set(feedUrl, data.name);
-            await this.saveCacheToDb(feedUrl, data.name);
-          } else {
-            break;
-          }
-        }
-      } catch (err) {
-        this.logger.error(`Reddit fetch error for r/${sub}: ${err.message}`);
-      }
-    }
-  }
-
-  async sendRedditPost(post, subreddit) {
-    const embed = new EmbedBuilder()
-      .setTitle(post.title)
-      .setURL(`https://reddit.com${post.permalink}`)
-      .setDescription(post.selftext?.slice(0, 200) || '')
-      .addFields(
-        { name: '👍 Upvotes', value: post.score.toString(), inline: true },
-        { name: '💬 Comments', value: post.num_comments.toString(), inline: true },
-        { name: 'Subreddit', value: `r/${subreddit}`, inline: true }
-      )
-      .setColor(0xff4500)
-      .setFooter({ text: `Posted by u/${post.author}` });
-    if (post.url && (post.url.endsWith('.jpg') || post.url.endsWith('.png'))) embed.setImage(post.url);
-    for (const [guildId, subs] of this.subscriptions.entries()) {
-      const channelId = subs.get('reddit');
-      if (channelId) {
-        const channel = this.client.channels.cache.get(channelId);
-        if (channel) await channel.send({ embeds: [embed] }).catch(() => {});
-      }
-    }
-  }
-
-  async saveCacheToDb(feedUrl, lastItemLink) {
-    await this.db.run(`INSERT OR REPLACE INTO news_cache (feedUrl, lastItemLink, lastPostAt) VALUES (?, ?, ?)`,
-      [feedUrl, lastItemLink, Date.now()]).catch(() => {});
-  }
-
-  // ---------- SLASH COMMANDS (unchanged) ----------
+  // ---------- SLASH COMMANDS (simplified) ----------
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
     const { commandName } = interaction;
@@ -279,14 +145,16 @@ class NewsAgent extends BaseAgent {
     const category = interaction.options.getString('category');
     const channelTarget = interaction.options.getChannel('channel') || interaction.channel;
     if (!channelTarget.isTextBased()) return interaction.reply({ content: 'Must be a text channel.', ephemeral: true });
-    const validCategories = [...Object.keys(this.defaultConfig.feeds), 'reddit'];
-    if (!validCategories.includes(category)) {
-      return interaction.reply({ content: `Invalid category. Choose: ${validCategories.join(', ')}`, ephemeral: true });
+    // Only support 'cryptoNews' category
+    if (category !== 'cryptoNews') {
+      return interaction.reply({ content: 'Only `cryptoNews` category is supported in API mode.', ephemeral: true });
     }
     if (!this.subscriptions.has(interaction.guild.id)) this.subscriptions.set(interaction.guild.id, new Map());
     this.subscriptions.get(interaction.guild.id).set(category, channelTarget.id);
-    await this.db.run(`INSERT OR REPLACE INTO news_subscriptions (guildId, category, channelId) VALUES (?, ?, ?)`,
-      [interaction.guild.id, category, channelTarget.id]);
+    await this.db.run(
+      `INSERT OR REPLACE INTO news_subscriptions (guildId, category, channelId) VALUES (?, ?, ?)`,
+      [interaction.guild.id, category, channelTarget.id]
+    );
     await interaction.reply({ content: `✅ Subscribed to **${category}** in ${channelTarget}.`, ephemeral: true });
   }
 
@@ -315,14 +183,18 @@ class NewsAgent extends BaseAgent {
   }
 
   async cmdTestNews(interaction) {
-    const category = interaction.options.getString('category') || 'cryptoNews';
     const mockItem = {
       title: 'Test News Article',
       link: 'https://example.com',
-      contentSnippet: 'This is a test news post from your bot.',
-      isoDate: new Date().toISOString(),
+      description: 'This is a test news post from your bot.',
+      source: 'Ultra3Vault Test',
     };
-    await this.sendNews(mockItem, category);
+    const category = 'cryptoNews';
+    const channelId = this.subscriptions.get(interaction.guild.id)?.get(category);
+    if (!channelId) {
+      return interaction.reply({ content: 'No subscription found. Run `/newssubscribe` first.', ephemeral: true });
+    }
+    await this.sendNews(mockItem, interaction.guild.id, channelId);
     await interaction.reply({ content: 'Test news sent.', ephemeral: true });
   }
 
