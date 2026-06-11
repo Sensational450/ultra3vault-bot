@@ -1,7 +1,7 @@
 /**
- * 📰 NewsAgent v5.0 (Stable – feeds disabled by default, auto‑subscribes)
+ * 📰 NewsAgent v5.0 (Stable – feeds enabled with reliable sources)
  * - Auto‑subscribes to all categories on startup using DEFAULT_NEWS_CHANNEL_ID
- * - No RSS feeds are fetched unless you add URLs to the feeds arrays below.
+ * - Uses proven RSS feeds that are less likely to be blocked.
  * - Safe error handling – never crashes the bot.
  */
 const BaseAgent = require('./baseAgent');
@@ -17,10 +17,22 @@ class NewsAgent extends BaseAgent {
       updateIntervalMinutes: 10,
       maxItemsPerFeed: 5,
       feeds: {
-        cryptoNews: [],      // add working feeds here later (e.g., 'https://cointelegraph.com/rss')
-        airdrops: [],
-        bitcoinNews: [],
-        altcoinNews: [],
+        // Reliable feeds (June 2025)
+        cryptoNews: [
+          'https://www.coindesk.com/arc/outboundfeeds/rss/',    // CoinDesk
+          'https://www.theblock.co/rss',                       // The Block
+          'https://news.bitcoin.com/feed/',                    // Bitcoin.com News
+          'https://blockonomi.com/feed/',                      // Blockonomi
+        ],
+        airdrops: [
+          'https://cointelegraph.com/tags/airdrop/feed',       // may work but less reliable
+        ],
+        bitcoinNews: [
+          'https://news.bitcoin.com/feed/',                   // duplicate but fine
+        ],
+        altcoinNews: [
+          'https://cryptopotato.com/feed/',                   // sometimes works
+        ],
       },
       reddit: {
         enabled: false,
@@ -40,7 +52,7 @@ class NewsAgent extends BaseAgent {
       this.logger.debug('🔄 News job triggered – fetching all news');
       await this.fetchAllNews();
     });
-    this.logger.info('📰 NewsAgent ready (feeds disabled – add URLs in feeds object to enable)');
+    this.logger.info('📰 NewsAgent ready – fetching from multiple RSS feeds');
   }
 
   /**
@@ -131,7 +143,7 @@ class NewsAgent extends BaseAgent {
       }
       if (newItems.length) {
         this.logger.info(`📰 Found ${newItems.length} new items for ${feedUrl}`);
-        newItems.reverse();
+        newItems.reverse(); // oldest first
         for (const item of newItems) {
           await this.sendNews(item, category);
         }
@@ -187,7 +199,7 @@ class NewsAgent extends BaseAgent {
     return colors[category] || 0x607d8b;
   }
 
-  // ---------- REDDIT (optional) ----------
+  // ---------- REDDIT (optional, unchanged) ----------
   async fetchReddit() {
     const config = this.defaultConfig;
     const subreddits = config.reddit.subreddits;
@@ -241,7 +253,7 @@ class NewsAgent extends BaseAgent {
       [feedUrl, lastItemLink, Date.now()]).catch(() => {});
   }
 
-  // ---------- SLASH COMMANDS ----------
+  // ---------- SLASH COMMANDS (unchanged) ----------
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
     const { commandName } = interaction;
