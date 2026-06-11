@@ -1,5 +1,5 @@
 /**
- * 📰 NewsAgent v5.0 (Persistent)
+ * 📰 NewsAgent v5.0 (Persistent – with better error logging & reliable feeds)
  * - Fetches RSS feeds (crypto, airdrops, etc.)
  * - Optional Reddit integration
  * - Per‑guild subscriptions to categories (stored in DB)
@@ -19,14 +19,13 @@ class NewsAgent extends BaseAgent {
       updateIntervalMinutes: 10,
       maxItemsPerFeed: 5,
       feeds: {
+        // Only reliable feeds that are known to work
         cryptoNews: [
           'https://cointelegraph.com/rss',
-          'https://cryptoslate.com/feed/',
-          'https://decrypt.co/feed',
+          'https://cryptopotato.com/feed/',
         ],
         airdrops: [
           'https://cointelegraph.com/tags/airdrop/feed',
-          'https://cryptopotato.com/category/airdrops/feed/',
         ],
         bitcoinNews: ['https://news.bitcoin.com/feed/'],
         altcoinNews: ['https://cryptopotato.com/feed/'],
@@ -37,7 +36,6 @@ class NewsAgent extends BaseAgent {
         limit: 5,
       },
     };
-    // In‑memory cache (loaded from DB on init)
     this.lastPostCache = new Map();      // feedUrl -> last item link
     this.subscriptions = new Map();      // guildId -> Map(category -> channelId)
   }
@@ -46,6 +44,7 @@ class NewsAgent extends BaseAgent {
     await super.init();
     await this.loadSubscriptionsAndCache();
     this.subscribe('job.newsUpdate', async () => {
+      this.logger.debug('🔄 News job triggered – fetching all news');
       await this.fetchAllNews();
     });
     this.logger.info('📰 NewsAgent ready');
@@ -54,14 +53,12 @@ class NewsAgent extends BaseAgent {
   // ---------- LOAD DATA FROM DB (persistent) ----------
   async loadSubscriptionsAndCache() {
     try {
-      // Load subscriptions
       const subsRows = await this.db.all(`SELECT guildId, category, channelId FROM news_subscriptions`);
       this.subscriptions.clear();
       for (const row of subsRows) {
         if (!this.subscriptions.has(row.guildId)) this.subscriptions.set(row.guildId, new Map());
         this.subscriptions.get(row.guildId).set(row.category, row.channelId);
       }
-      // Load cache
       const cacheRows = await this.db.all(`SELECT feedUrl, lastItemLink FROM news_cache`);
       this.lastPostCache.clear();
       for (const row of cacheRows) {
@@ -87,6 +84,7 @@ class NewsAgent extends BaseAgent {
 
   async fetchFeed(feedUrl, category) {
     try {
+      this.logger.debug(`📡 Fetching RSS: ${feedUrl} (${category})`);
       const feed = await this.parser.parseURL(feedUrl, {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Ultra3VaultBot/1.0; +https://ultra3vault-bot.onrender.com)' }
       });
@@ -100,6 +98,7 @@ class NewsAgent extends BaseAgent {
         }
       }
       if (newItems.length) {
+        this.logger.info(`📰 Found ${newItems.length} new items for ${feedUrl}`);
         newItems.reverse(); // oldest first
         for (const item of newItems) {
           await this.sendNews(item, category);
@@ -109,9 +108,13 @@ class NewsAgent extends BaseAgent {
           this.lastPostCache.set(feedUrl, latestLink);
           await this.saveCacheToDb(feedUrl, latestLink);
         }
+      } else {
+        this.logger.debug(`No new items for ${feedUrl}`);
       }
     } catch (err) {
-      this.logger.error(`RSS fetch error for ${feedUrl}: ${err.message}`);
+      this.logger.error(`❌ RSS fetch error for ${feedUrl} (${category}): ${err.message}`);
+      // Optional: log status code if available
+      if (err.response) this.logger.error(`   Status: ${err.response.status}`);
     }
   }
 
@@ -127,9 +130,17 @@ class NewsAgent extends BaseAgent {
       const channelId = subs.get(category);
       if (channelId) {
         const channel = this.client.channels.cache.get(channelId);
-        if (channel?.isTextBased()) {
-          await channel.send({ embeds: [embed] }).catch(err => this.logger.error(`Failed to send news: ${err.message}`));
+        if (!channel) {
+          this.logger.warn(`Channel ${channelId} not found in cache for category ${category}`);
+          continue;
         }
+        if (!channel.isTextBased()) {
+          this.logger.warn(`Channel ${channelId} is not text‑based`);
+          continue;
+        }
+        await channel.send({ embeds: [embed] }).catch(err => {
+          this.logger.error(`Failed to send news to ${channelId}: ${err.message}`);
+        });
       }
     }
     this.emit('news.published', { category, title: item.title, link: item.link });
@@ -145,7 +156,7 @@ class NewsAgent extends BaseAgent {
     return colors[category] || 0x607d8b;
   }
 
-  // ---------- REDDIT (optional) ----------
+  // ---------- REDDIT (optional, unchanged) ----------
   async fetchReddit() {
     const config = this.defaultConfig;
     const subreddits = config.reddit.subreddits;
@@ -199,7 +210,7 @@ class NewsAgent extends BaseAgent {
       [feedUrl, lastItemLink, Date.now()]).catch(() => {});
   }
 
-  // ---------- SLASH COMMANDS ----------
+  // ---------- SLASH COMMANDS (unchanged) ----------
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
     const { commandName } = interaction;
