@@ -124,14 +124,13 @@ try {
     const leaderboardReset = require('./jobs/leaderboardReset')({ eventBus, logger, models });
     const subscriptionRenewal = require('./jobs/subscriptionRenewal')({ eventBus, logger, models, client });
     const cleanupTempData = require('./jobs/cleanupTempData')({ eventBus, logger });
-    // 🛑 News job disabled – feeds are empty to prevent crashes; re‑enable later when working feeds are found.
-    // const newsUpdater = require('./jobs/newsUpdater')({ eventBus, logger });
+    const newsUpdater = require('./jobs/newsUpdater')({ eventBus, logger }); // ✅ News job re‑enabled
 
     scheduler.registerJob('priceUpdater', '*/1 * * * *', priceUpdater);
     scheduler.registerJob('leaderboardReset', '0 0 * * 0', leaderboardReset);
     scheduler.registerJob('subscriptionRenewal', '0 */6 * * *', subscriptionRenewal);
     scheduler.registerJob('cleanupTempData', '0 */2 * * *', cleanupTempData);
-    // scheduler.registerJob('newsUpdater', '*/10 * * * *', newsUpdater);
+    scheduler.registerJob('newsUpdater', '*/10 * * * *', newsUpdater); // ✅ Runs every 10 minutes
 
     // Weekly leaderboard **posting** job (every Monday at 09:00 UTC)
     const leaderboardChannelId = process.env.LEADERBOARD_CHANNEL_ID;
