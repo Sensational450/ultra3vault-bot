@@ -1,19 +1,20 @@
 /**
- * 📰 NewsAgent v5.0 (NewsData.io + fallback)
- * - Fetches crypto news from NewsData.io API (requires NEWSDATA_API_KEY)
- * - Falls back to cryptocurrency.cv if NewsData.io fails or key missing
+ * 📰 NewsAgent v5.0 (GNews API + RSS fallback)
+ * - Fetches crypto news from GNews API (requires GNEWS_API_KEY)
+ * - Falls back to Cointelegraph RSS if GNews fails
  * - Auto‑subscribes to cryptoNews using DEFAULT_NEWS_CHANNEL_ID
  * - Safe error handling – never crashes
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
 const axios = require('axios');
+const Parser = require('rss-parser');
 
 class NewsAgent extends BaseAgent {
   constructor(eventBus, deps) {
     super(eventBus, deps);
-    this.newsDataKey = process.env.NEWSDATA_API_KEY;
-    this.fallbackUrl = 'https://api.cryptocurrency.cv/latest?limit=5';
+    this.gnewsKey = process.env.GNEWS_API_KEY;
+    this.fallbackRssUrl = 'https://cointelegraph.com/rss';
     this.lastPostCache = new Map();   // key = `${guildId}:${category}` -> last posted link
     this.subscriptions = new Map();   // guildId -> Map(category -> channelId)
   }
@@ -26,7 +27,7 @@ class NewsAgent extends BaseAgent {
       this.logger.debug('🔄 News job triggered – fetching news');
       await this.fetchAndSendNews();
     });
-    this.logger.info('📰 NewsAgent ready (NewsData.io)');
+    this.logger.info('📰 NewsAgent ready (GNews + RSS fallback)');
   }
 
   async ensureDefaultSubscriptions() {
@@ -70,44 +71,48 @@ class NewsAgent extends BaseAgent {
   }
 
   /**
-   * Fetch news from primary source (NewsData.io) or fallback
+   * Fetch news from GNews API, fallback to RSS
    */
   async fetchNews() {
-    // Try NewsData.io first if API key exists
-    if (this.newsDataKey) {
+    // Try GNews first if API key exists
+    if (this.gnewsKey) {
       try {
-        const url = `https://newsdata.io/api/1/news?apikey=${this.newsDataKey}&category=cryptocurrency&language=en&size=5`;
+        const url = `https://gnews.io/api/v4/search?q=cryptocurrency&lang=en&max=5&token=${this.gnewsKey}`;
         const response = await axios.get(url, { timeout: 10000 });
-        const articles = response.data?.results || [];
+        const articles = response.data?.articles || [];
         if (articles.length) {
           return articles.map(a => ({
             title: a.title,
-            link: a.link,
+            link: a.url,
             description: a.description || '',
-            source: a.source_id || 'newsdata.io',
-            publishedAt: a.pubDate,
-            image: a.image_url || null,
+            source: a.source?.name || 'GNews',
+            publishedAt: a.publishedAt,
+            image: a.image || null,
           }));
+        } else {
+          this.logger.warn('GNews returned no articles');
         }
       } catch (err) {
-        this.logger.warn(`NewsData.io error: ${err.message}`);
+        this.logger.error(`GNews API error: ${err.message}`);
       }
     }
 
-    // Fallback to cryptocurrency.cv
+    // Fallback to Cointelegraph RSS
     try {
-      const response = await axios.get(this.fallbackUrl, { timeout: 10000 });
-      const articles = response.data?.data || [];
-      return articles.map(a => ({
-        title: a.title,
-        link: a.link,
-        description: a.description || a.contentSnippet || '',
-        source: a.source || 'cryptocurrency.cv',
-        publishedAt: a.published_at || new Date().toISOString(),
-        image: a.image || null,
+      const parser = new Parser();
+      const feed = await parser.parseURL(this.fallbackRssUrl, {
+        headers: { 'User-Agent': 'Ultra3VaultBot/1.0' }
+      });
+      return feed.items.slice(0, 5).map(item => ({
+        title: item.title,
+        link: item.link,
+        description: item.contentSnippet || '',
+        source: 'Cointelegraph',
+        publishedAt: item.isoDate,
+        image: null,
       }));
     } catch (err) {
-      this.logger.error(`Fallback news API error: ${err.message}`);
+      this.logger.error(`RSS fallback error: ${err.message}`);
       return [];
     }
   }
@@ -118,7 +123,6 @@ class NewsAgent extends BaseAgent {
       this.logger.debug('No articles from any source');
       return;
     }
-    // For each subscription, post the latest unseen article
     for (const [guildId, subs] of this.subscriptions.entries()) {
       const channelId = subs.get('cryptoNews');
       if (!channelId) continue;
