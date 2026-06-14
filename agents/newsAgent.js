@@ -1,5 +1,5 @@
 /**
- * 📰 NewsAgent v5.0 (Multi‑API + RSS fallback)
+ * 📰 NewsAgent v5.0 (Multi‑API + RSS fallback with real images)
  * - Fetches crypto news from: GNews → NewsData.io → Currents API → RSS (Cointelegraph)
  * - Requires API keys: GNEWS_API_KEY, NEWSDATA_API_KEY, CURRENTS_API_KEY (optional)
  * - Auto‑subscribes to cryptoNews using DEFAULT_NEWS_CHANNEL_ID
@@ -77,7 +77,7 @@ class NewsAgent extends BaseAgent {
    * 1. GNews API (if key exists)
    * 2. NewsData.io API (if key exists)
    * 3. Currents API (if key exists)
-   * 4. Cointelegraph RSS (fallback)
+   * 4. Cointelegraph RSS (fallback) with real image extraction
    */
   async fetchNews() {
     // 1️⃣ GNews API
@@ -140,7 +140,7 @@ class NewsAgent extends BaseAgent {
             description: a.description || '',
             source: a.author || 'Currents API',
             publishedAt: a.published,
-            image: null,
+            image: null, // Currents API does not provide images
           }));
         } else {
           this.logger.warn('Currents API returned no articles');
@@ -150,21 +150,36 @@ class NewsAgent extends BaseAgent {
       }
     }
 
-    // 4️⃣ RSS fallback (Cointelegraph)
+    // 4️⃣ RSS fallback (Cointelegraph) - extract real images
     try {
       const parser = new Parser();
       const feed = await parser.parseURL(this.fallbackRssUrl, {
         headers: { 'User-Agent': 'Ultra3VaultBot/1.0' }
       });
       this.logger.debug('✅ Fetched news from RSS fallback (Cointelegraph)');
-      return feed.items.slice(0, 5).map(item => ({
-        title: item.title,
-        link: item.link,
-        description: item.contentSnippet || '',
-        source: 'Cointelegraph',
-        publishedAt: item.isoDate,
-        image: null,
-      }));
+      return feed.items.slice(0, 5).map(item => {
+        // Try to extract image from common RSS fields
+        let image = null;
+        if (item.enclosure?.url && item.enclosure.type?.startsWith('image/')) {
+          image = item.enclosure.url;
+        } else if (item.media?.content?.[0]?.url) {
+          image = item.media.content[0].url;
+        } else if (item['media:content']?.['$']?.url) {
+          image = item['media:content']['$'].url;
+        } else if (item.image?.url) {
+          image = item.image.url;
+        } else if (item.thumbnail) {
+          image = item.thumbnail;
+        }
+        return {
+          title: item.title,
+          link: item.link,
+          description: item.contentSnippet || '',
+          source: 'Cointelegraph',
+          publishedAt: item.isoDate,
+          image,
+        };
+      });
     } catch (err) {
       this.logger.error(`RSS fallback error: ${err.message}`);
       return [];
