@@ -1,20 +1,18 @@
 /**
- * 📰 NewsAgent v5.0 (API‑based, modular)
- * - Fetches crypto news using CryptocurrencyCvAPI (from tools/api)
+ * 📰 NewsAgent v5.0 (API‑based, direct Axios)
+ * - Fetches crypto news directly from cryptocurrency.cv API
  * - Auto‑subscribes to cryptoNews using DEFAULT_NEWS_CHANNEL_ID
- * - Per‑guild subscriptions stored in DB
  * - Safe error handling – never crashes
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
-const { CryptocurrencyCvAPI } = require('../tools/api/cryptocurrencyCv');
+const axios = require('axios');
 
 class NewsAgent extends BaseAgent {
   constructor(eventBus, deps) {
     super(eventBus, deps);
-    this.api = new CryptocurrencyCvAPI({ logger: this.logger });
-    // In‑memory cache: key = `${guildId}:${category}` -> last posted link
-    this.lastPostCache = new Map();
+    this.apiUrl = 'https://api.cryptocurrency.cv/latest?limit=5';
+    this.lastPostCache = new Map();   // key = `${guildId}:${category}` -> last posted link
     this.subscriptions = new Map();   // guildId -> Map(category -> channelId)
   }
 
@@ -26,7 +24,7 @@ class NewsAgent extends BaseAgent {
       this.logger.debug('🔄 News job triggered – fetching from API');
       await this.fetchAndSendNews();
     });
-    this.logger.info('📰 NewsAgent ready (API mode – stable)');
+    this.logger.info('📰 NewsAgent ready (direct API)');
   }
 
   async ensureDefaultSubscriptions() {
@@ -59,7 +57,6 @@ class NewsAgent extends BaseAgent {
         if (!this.subscriptions.has(row.guildId)) this.subscriptions.set(row.guildId, new Map());
         this.subscriptions.get(row.guildId).set(row.category, row.channelId);
       }
-      // Load cache (store last posted link per guild+category)
       const cacheRows = await this.db.all(`SELECT feedUrl, lastItemLink FROM news_cache`);
       this.lastPostCache.clear();
       for (const row of cacheRows) {
@@ -72,18 +69,18 @@ class NewsAgent extends BaseAgent {
 
   async fetchAndSendNews() {
     try {
-      const articles = await this.api.getLatestNews(5);
+      const response = await axios.get(this.apiUrl, { timeout: 10000 });
+      const articles = response.data?.data || [];
       if (!articles.length) {
         this.logger.debug('No articles from API');
         return;
       }
-      // For each subscription, post the latest article if it's new
+      // For each subscription, post the latest unseen article
       for (const [guildId, subs] of this.subscriptions.entries()) {
         const channelId = subs.get('cryptoNews');
         if (!channelId) continue;
         const cacheKey = `${guildId}:cryptoNews`;
         const lastLink = this.lastPostCache.get(cacheKey);
-        // Find the first article that is not the last posted
         const newArticle = articles.find(a => a.link !== lastLink);
         if (!newArticle) continue;
         await this.sendNews(newArticle, guildId, channelId);
@@ -104,9 +101,9 @@ class NewsAgent extends BaseAgent {
     const embed = new EmbedBuilder()
       .setTitle(article.title || 'Crypto News')
       .setURL(article.link)
-      .setDescription(article.description || '')
+      .setDescription(article.description || article.contentSnippet || '')
       .setColor(0x1e88e5)
-      .setFooter({ text: `Source: ${article.source} • ${new Date().toLocaleString()}` });
+      .setFooter({ text: `Source: ${article.source || 'cryptocurrency.cv'} • ${new Date().toLocaleString()}` });
     if (article.image) embed.setImage(article.image);
     await channel.send({ embeds: [embed] }).catch(err => this.logger.error(`Failed to send: ${err.message}`));
   }
@@ -118,7 +115,7 @@ class NewsAgent extends BaseAgent {
     ).catch(() => {});
   }
 
-  // ---------- SLASH COMMANDS (simplified) ----------
+  // ---------- SLASH COMMANDS (unchanged) ----------
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
     const { commandName } = interaction;
@@ -144,9 +141,8 @@ class NewsAgent extends BaseAgent {
     const category = interaction.options.getString('category');
     const channelTarget = interaction.options.getChannel('channel') || interaction.channel;
     if (!channelTarget.isTextBased()) return interaction.reply({ content: 'Must be a text channel.', ephemeral: true });
-    // Only support 'cryptoNews' category
     if (category !== 'cryptoNews') {
-      return interaction.reply({ content: 'Only `cryptoNews` category is supported in API mode.', ephemeral: true });
+      return interaction.reply({ content: 'Only `cryptoNews` category is supported.', ephemeral: true });
     }
     if (!this.subscriptions.has(interaction.guild.id)) this.subscriptions.set(interaction.guild.id, new Map());
     this.subscriptions.get(interaction.guild.id).set(category, channelTarget.id);
@@ -170,7 +166,7 @@ class NewsAgent extends BaseAgent {
   async cmdListSubs(interaction) {
     const subs = this.subscriptions.get(interaction.guild.id);
     if (!subs || subs.size === 0) {
-      return interaction.reply({ content: 'No active news subscriptions in this server.', ephemeral: true });
+      return interaction.reply({ content: 'No active news subscriptions.', ephemeral: true });
     }
     let desc = '';
     for (const [cat, chId] of subs.entries()) {
@@ -191,7 +187,7 @@ class NewsAgent extends BaseAgent {
     const category = 'cryptoNews';
     const channelId = this.subscriptions.get(interaction.guild.id)?.get(category);
     if (!channelId) {
-      return interaction.reply({ content: 'No subscription found. Run `/newssubscribe` first.', ephemeral: true });
+      return interaction.reply({ content: 'No subscription. Run `/newssubscribe` first.', ephemeral: true });
     }
     await this.sendNews(mockItem, interaction.guild.id, channelId);
     await interaction.reply({ content: 'Test news sent.', ephemeral: true });
