@@ -35,6 +35,25 @@ class DefiLlamaAPI {
   }
 
   /**
+   * Get global DeFi TVL across all chains
+   * @returns {Promise<Object|null>} { tvl, chainsCount, protocolsCount }
+   */
+  async getGlobalTVL() {
+    try {
+      const response = await axios.get(`${this.baseUrl}/overview`);
+      const data = response.data;
+      return {
+        tvl: data.tvl,
+        chainsCount: data.chainsCount,
+        protocolsCount: data.protocolsCount,
+      };
+    } catch (error) {
+      this.logger.error(`DefiLlama global TVL error: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
    * Get TVL for a specific blockchain
    * @param {string} chain - Blockchain name (e.g., 'Ethereum', 'Solana')
    * @returns {Promise<Object|null>} Chain data with TVL, market cap, etc.
@@ -47,6 +66,20 @@ class DefiLlamaAPI {
     } catch (error) {
       this.logger.error(`DefiLlama API error: ${error.message}`);
       return null;
+    }
+  }
+
+  /**
+   * Get list of all available chain names (for autocomplete)
+   * @returns {Promise<Array<string>>}
+   */
+  async getAllChains() {
+    try {
+      const response = await axios.get(`${this.baseUrl}/v2/chains`);
+      return response.data.map(chain => chain.name);
+    } catch (error) {
+      this.logger.error(`DefiLlama chains list error: ${error.message}`);
+      return [];
     }
   }
 }
