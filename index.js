@@ -113,6 +113,11 @@ try {
 
     logger.info('✅ All agents registered');
 
+    // 🔔 Check for required news API key
+    if (!process.env.NEWSDATA_API_KEY) {
+      logger.warn('⚠️ NEWSDATA_API_KEY is not set. NewsAgent will not fetch articles. Please add the key to Render environment variables.');
+    }
+
     // Attach Discord events
     require('./events/messageCreate')(client, orchestrator, { logger });
     require('./events/interactionCreate')(client, orchestrator, { logger });
@@ -124,15 +129,15 @@ try {
     const leaderboardReset = require('./jobs/leaderboardReset')({ eventBus, logger, models });
     const subscriptionRenewal = require('./jobs/subscriptionRenewal')({ eventBus, logger, models, client });
     const cleanupTempData = require('./jobs/cleanupTempData')({ eventBus, logger });
-    const newsUpdater = require('./jobs/newsUpdater')({ eventBus, logger }); // ✅ News job re‑enabled
+    const newsUpdater = require('./jobs/newsUpdater')({ eventBus, logger });
 
     scheduler.registerJob('priceUpdater', '*/1 * * * *', priceUpdater);
     scheduler.registerJob('leaderboardReset', '0 0 * * 0', leaderboardReset);
     scheduler.registerJob('subscriptionRenewal', '0 */6 * * *', subscriptionRenewal);
     scheduler.registerJob('cleanupTempData', '0 */2 * * *', cleanupTempData);
-    scheduler.registerJob('newsUpdater', '*/10 * * * *', newsUpdater); // ✅ Runs every 10 minutes
+    scheduler.registerJob('newsUpdater', '*/10 * * * *', newsUpdater);
 
-    // Weekly leaderboard **posting** job (every Monday at 09:00 UTC)
+    // Weekly leaderboard posting job
     const leaderboardChannelId = process.env.LEADERBOARD_CHANNEL_ID;
     if (leaderboardChannelId) {
       const weeklyLeaderboard = require('./jobs/weeklyLeaderboard')({
@@ -148,7 +153,7 @@ try {
       logger.warn('⚠️ LEADERBOARD_CHANNEL_ID not set – weekly leaderboard posting disabled');
     }
 
-    // ================= SELF-PING JOB (keep Render free tier awake) =================
+    // Self‑ping job
     if (process.env.RENDER_EXTERNAL_URL) {
       scheduler.registerJob('selfPing', '*/10 * * * *', async () => {
         try {
@@ -160,7 +165,7 @@ try {
       });
     }
 
-    // ================= DISCORD RECONNECTION HANDLERS =================
+    // Discord reconnection handlers
     client.on('shardDisconnect', (event, id) => {
       logger.warn(`🔌 Shard ${id} disconnected. Attempting to reconnect...`);
       setTimeout(() => client.login(secrets.token), 5000);
