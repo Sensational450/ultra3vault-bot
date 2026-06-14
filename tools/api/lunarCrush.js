@@ -3,6 +3,7 @@
  * - Fetches social sentiment, trending coins, and engagement metrics
  * - Requires free API key (sign up at https://lunarcrush.com/developers)
  * - Returns normalised data for coins or news
+ * - Uses Bearer token authentication (v4 API)
  */
 const axios = require('axios');
 
@@ -24,6 +25,14 @@ class LunarCrushAPI {
     this.logger = options.logger || console;
   }
 
+  // 🔐 Build authentication headers (Bearer token)
+  _getHeaders() {
+    return {
+      'Authorization': `Bearer ${this.apiKey}`,
+      'Content-Type': 'application/json',
+    };
+  }
+
   /**
    * Get trending coins based on social activity.
    * @param {Object} options
@@ -36,8 +45,8 @@ class LunarCrushAPI {
     const { limit = 10, sort = 'social_score', order = 'desc' } = options;
     try {
       const response = await axios.get(`${this.baseUrl}/trending`, {
+        headers: this._getHeaders(),
         params: {
-          key: this.apiKey,
           limit: Math.min(limit, 50),
           sort,
           order,
@@ -59,6 +68,9 @@ class LunarCrushAPI {
       }));
     } catch (err) {
       this.logger.error(`LunarCrushAPI getTrendingCoins error: ${err.message}`);
+      if (err.response?.status === 401) {
+        this.logger.error('Invalid or expired LunarCrush API key');
+      }
       return [];
     }
   }
@@ -71,10 +83,8 @@ class LunarCrushAPI {
   async getCoinSentiment(symbol) {
     try {
       const response = await axios.get(`${this.baseUrl}/assets`, {
-        params: {
-          key: this.apiKey,
-          symbol,
-        },
+        headers: this._getHeaders(),
+        params: { symbol },
         timeout: this.timeout,
       });
       const data = response.data?.data?.[0];
@@ -108,10 +118,8 @@ class LunarCrushAPI {
   async getNewsFeed(limit = 10) {
     try {
       const response = await axios.get(`${this.baseUrl}/news`, {
-        params: {
-          key: this.apiKey,
-          limit: Math.min(limit, 50),
-        },
+        headers: this._getHeaders(),
+        params: { limit: Math.min(limit, 50) },
         timeout: this.timeout,
       });
       const articles = response.data?.data || [];
