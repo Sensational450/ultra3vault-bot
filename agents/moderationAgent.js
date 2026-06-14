@@ -1,11 +1,12 @@
 /**
- * 🛡️ ModerationAgent v5.0 (Persistent)
+ * 🛡️ ModerationAgent v5.0 (Persistent + auto‑subscription)
  * - Auto‑mod (scam, profanity, links, spam)
  * - Warning system with persistent storage (models.Warning)
  * - Guild configuration stored in DB (survives restarts)
  * - Mute, kick, ban, purge commands
  * - Raid detection (in‑memory only)
  * - Log channel support
+ * - Auto‑sets mod log channel from DEFAULT_MOD_LOG_CHANNEL_ID on startup
  */
 const BaseAgent = require('./baseAgent');
 const { PermissionsBitField, EmbedBuilder } = require('discord.js');
@@ -45,7 +46,33 @@ class ModerationAgent extends BaseAgent {
         PRIMARY KEY (guildId, configKey)
       )
     `);
+    await this.ensureDefaultModLogChannel(); // 👈 auto‑subscribe mod log channel
     this.logger.info('🛡️ ModerationAgent ready');
+  }
+
+  /**
+   * Auto‑set mod log channel from DEFAULT_MOD_LOG_CHANNEL_ID if not already configured.
+   */
+  async ensureDefaultModLogChannel() {
+    const defaultChannelId = process.env.DEFAULT_MOD_LOG_CHANNEL_ID;
+    if (!defaultChannelId) {
+      this.logger.debug('No DEFAULT_MOD_LOG_CHANNEL_ID set – skipping auto‑subscription');
+      return;
+    }
+    const guild = this.client.guilds.cache.first();
+    if (!guild) return;
+    const config = await this.getGuildConfig(guild.id);
+    if (config.modLogChannel) {
+      this.logger.debug(`Mod log channel already set to ${config.modLogChannel}`);
+      return;
+    }
+    const channel = this.client.channels.cache.get(defaultChannelId);
+    if (!channel || !channel.isTextBased()) {
+      this.logger.warn(`Default mod log channel ${defaultChannelId} not found or not text‑based`);
+      return;
+    }
+    await this.updateGuildConfig(guild.id, { modLogChannel: defaultChannelId });
+    this.logger.info(`✅ Auto-set mod log channel to ${channel.name} (${defaultChannelId})`);
   }
 
   // ---------- EVENT BUS ----------
