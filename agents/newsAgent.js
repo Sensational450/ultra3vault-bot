@@ -1,6 +1,7 @@
 /**
- * 📰 NewsAgent v5.0 (API‑based, direct Axios)
- * - Fetches crypto news directly from cryptocurrency.cv API
+ * 📰 NewsAgent v5.0 (NewsData.io + fallback)
+ * - Fetches crypto news from NewsData.io API (requires NEWSDATA_API_KEY)
+ * - Falls back to cryptocurrency.cv if NewsData.io fails or key missing
  * - Auto‑subscribes to cryptoNews using DEFAULT_NEWS_CHANNEL_ID
  * - Safe error handling – never crashes
  */
@@ -11,7 +12,8 @@ const axios = require('axios');
 class NewsAgent extends BaseAgent {
   constructor(eventBus, deps) {
     super(eventBus, deps);
-    this.apiUrl = 'https://api.cryptocurrency.cv/latest?limit=5';
+    this.newsDataKey = process.env.NEWSDATA_API_KEY;
+    this.fallbackUrl = 'https://api.cryptocurrency.cv/latest?limit=5';
     this.lastPostCache = new Map();   // key = `${guildId}:${category}` -> last posted link
     this.subscriptions = new Map();   // guildId -> Map(category -> channelId)
   }
@@ -21,10 +23,10 @@ class NewsAgent extends BaseAgent {
     await this.loadSubscriptionsAndCache();
     await this.ensureDefaultSubscriptions();
     this.subscribe('job.newsUpdate', async () => {
-      this.logger.debug('🔄 News job triggered – fetching from API');
+      this.logger.debug('🔄 News job triggered – fetching news');
       await this.fetchAndSendNews();
     });
-    this.logger.info('📰 NewsAgent ready (direct API)');
+    this.logger.info('📰 NewsAgent ready (NewsData.io)');
   }
 
   async ensureDefaultSubscriptions() {
@@ -67,28 +69,66 @@ class NewsAgent extends BaseAgent {
     }
   }
 
-  async fetchAndSendNews() {
+  /**
+   * Fetch news from primary source (NewsData.io) or fallback
+   */
+  async fetchNews() {
+    // Try NewsData.io first if API key exists
+    if (this.newsDataKey) {
+      try {
+        const url = `https://newsdata.io/api/1/news?apikey=${this.newsDataKey}&category=cryptocurrency&language=en&size=5`;
+        const response = await axios.get(url, { timeout: 10000 });
+        const articles = response.data?.results || [];
+        if (articles.length) {
+          return articles.map(a => ({
+            title: a.title,
+            link: a.link,
+            description: a.description || '',
+            source: a.source_id || 'newsdata.io',
+            publishedAt: a.pubDate,
+            image: a.image_url || null,
+          }));
+        }
+      } catch (err) {
+        this.logger.warn(`NewsData.io error: ${err.message}`);
+      }
+    }
+
+    // Fallback to cryptocurrency.cv
     try {
-      const response = await axios.get(this.apiUrl, { timeout: 10000 });
+      const response = await axios.get(this.fallbackUrl, { timeout: 10000 });
       const articles = response.data?.data || [];
-      if (!articles.length) {
-        this.logger.debug('No articles from API');
-        return;
-      }
-      // For each subscription, post the latest unseen article
-      for (const [guildId, subs] of this.subscriptions.entries()) {
-        const channelId = subs.get('cryptoNews');
-        if (!channelId) continue;
-        const cacheKey = `${guildId}:cryptoNews`;
-        const lastLink = this.lastPostCache.get(cacheKey);
-        const newArticle = articles.find(a => a.link !== lastLink);
-        if (!newArticle) continue;
-        await this.sendNews(newArticle, guildId, channelId);
-        this.lastPostCache.set(cacheKey, newArticle.link);
-        await this.saveCacheToDb(cacheKey, newArticle.link);
-      }
+      return articles.map(a => ({
+        title: a.title,
+        link: a.link,
+        description: a.description || a.contentSnippet || '',
+        source: a.source || 'cryptocurrency.cv',
+        publishedAt: a.published_at || new Date().toISOString(),
+        image: a.image || null,
+      }));
     } catch (err) {
-      this.logger.error(`❌ News API error: ${err.message}`);
+      this.logger.error(`Fallback news API error: ${err.message}`);
+      return [];
+    }
+  }
+
+  async fetchAndSendNews() {
+    const articles = await this.fetchNews();
+    if (!articles.length) {
+      this.logger.debug('No articles from any source');
+      return;
+    }
+    // For each subscription, post the latest unseen article
+    for (const [guildId, subs] of this.subscriptions.entries()) {
+      const channelId = subs.get('cryptoNews');
+      if (!channelId) continue;
+      const cacheKey = `${guildId}:cryptoNews`;
+      const lastLink = this.lastPostCache.get(cacheKey);
+      const newArticle = articles.find(a => a.link !== lastLink);
+      if (!newArticle) continue;
+      await this.sendNews(newArticle, guildId, channelId);
+      this.lastPostCache.set(cacheKey, newArticle.link);
+      await this.saveCacheToDb(cacheKey, newArticle.link);
     }
   }
 
@@ -101,9 +141,9 @@ class NewsAgent extends BaseAgent {
     const embed = new EmbedBuilder()
       .setTitle(article.title || 'Crypto News')
       .setURL(article.link)
-      .setDescription(article.description || article.contentSnippet || '')
+      .setDescription(article.description || '')
       .setColor(0x1e88e5)
-      .setFooter({ text: `Source: ${article.source || 'cryptocurrency.cv'} • ${new Date().toLocaleString()}` });
+      .setFooter({ text: `Source: ${article.source} • ${new Date().toLocaleString()}` });
     if (article.image) embed.setImage(article.image);
     await channel.send({ embeds: [embed] }).catch(err => this.logger.error(`Failed to send: ${err.message}`));
   }
