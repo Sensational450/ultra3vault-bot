@@ -6,6 +6,7 @@
  * - Built‑in caching (optional) to reduce API calls
  * - Now uses the free Demo API key via query parameter `x_cg_demo_api_key`
  * - Error handling and rate‑limit awareness (retry logic optional)
+ * - Trending coins via `/search/trending` endpoint
  */
 const axios = require('axios');
 
@@ -191,6 +192,25 @@ class CoinGeckoAPI {
       symbol: coin.symbol,
       marketCapRank: coin.market_cap_rank,
       thumb: coin.thumb,
+    }));
+  }
+
+  /**
+   * 🔥 Get trending coins from CoinGecko (based on search volume and social activity)
+   * @returns {Promise<Array>} List of trending coins with name, symbol, market cap rank, and score
+   */
+  async getTrendingCoins() {
+    const data = await this._get('/search/trending');
+    if (!data.coins || !Array.isArray(data.coins)) {
+      return [];
+    }
+    return data.coins.map(coin => ({
+      id: coin.item.id,
+      name: coin.item.name,
+      symbol: coin.item.symbol,
+      marketCapRank: coin.item.market_cap_rank,
+      thumb: coin.item.thumb,
+      score: coin.item.score,
     }));
   }
 
