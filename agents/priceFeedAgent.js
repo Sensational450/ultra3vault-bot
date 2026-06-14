@@ -1,10 +1,11 @@
 /**
- * 📈 PriceFeedAgent v5.0 (Persistent)
+ * 📈 PriceFeedAgent v5.0 (Persistent + auto‑subscription)
  * - Fetches prices with API key and delay to avoid rate limits
  * - Uses `this.emit` for all events (baseAgent method)
  * - Guild configuration stored in DB (price/whale channels)
  * - Price cache restored from DB on startup
  * - User alerts stored in DB (already persistent)
+ * - Auto‑sets price alert channel from DEFAULT_PRICE_ALERT_CHANNEL_ID on startup
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
@@ -37,10 +38,36 @@ class PriceFeedAgent extends BaseAgent {
     `);
     await this.loadUserAlertsFromDb();
     await this.restorePriceCacheFromHistory();
+    await this.ensureDefaultPriceChannel(); // 👈 auto‑subscribe price channel
     this.subscribe('job.priceUpdate', async () => {
       await this.updateAllPrices();
     });
     this.logger.info('📈 PriceFeedAgent ready');
+  }
+
+  /**
+   * Auto‑set price alert channel from DEFAULT_PRICE_ALERT_CHANNEL_ID if not already configured.
+   */
+  async ensureDefaultPriceChannel() {
+    const defaultChannelId = process.env.DEFAULT_PRICE_ALERT_CHANNEL_ID;
+    if (!defaultChannelId) {
+      this.logger.debug('No DEFAULT_PRICE_ALERT_CHANNEL_ID set – skipping auto‑subscription');
+      return;
+    }
+    const guild = this.client.guilds.cache.first();
+    if (!guild) return;
+    const config = await this.getGuildConfig(guild.id);
+    if (config.priceAlertChannelId) {
+      this.logger.debug(`Price alert channel already set to ${config.priceAlertChannelId}`);
+      return;
+    }
+    const channel = this.client.channels.cache.get(defaultChannelId);
+    if (!channel || !channel.isTextBased()) {
+      this.logger.warn(`Default price channel ${defaultChannelId} not found or not text‑based`);
+      return;
+    }
+    await this.updateGuildConfig(guild.id, { priceAlertChannelId: defaultChannelId });
+    this.logger.info(`✅ Auto-set price alert channel to ${channel.name} (${defaultChannelId})`);
   }
 
   // ---------- PERSISTENT GUILD CONFIG (using guild_configs table) ----------
