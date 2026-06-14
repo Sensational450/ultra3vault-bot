@@ -1,7 +1,7 @@
 /**
- * 📰 NewsAgent v5.0 (GNews API + RSS fallback)
- * - Fetches crypto news from GNews API (requires GNEWS_API_KEY)
- * - Falls back to Cointelegraph RSS if GNews fails
+ * 📰 NewsAgent v5.0 (Multi‑API + RSS fallback)
+ * - Fetches crypto news from: GNews → NewsData.io → Currents API → RSS (Cointelegraph)
+ * - Requires API keys: GNEWS_API_KEY, NEWSDATA_API_KEY, CURRENTS_API_KEY (optional)
  * - Auto‑subscribes to cryptoNews using DEFAULT_NEWS_CHANNEL_ID
  * - Safe error handling – never crashes
  */
@@ -14,9 +14,11 @@ class NewsAgent extends BaseAgent {
   constructor(eventBus, deps) {
     super(eventBus, deps);
     this.gnewsKey = process.env.GNEWS_API_KEY;
+    this.newsdataKey = process.env.NEWSDATA_API_KEY;
+    this.currentsKey = process.env.CURRENTS_API_KEY;
     this.fallbackRssUrl = 'https://cointelegraph.com/rss';
-    this.lastPostCache = new Map();   // key = `${guildId}:${category}` -> last posted link
-    this.subscriptions = new Map();   // guildId -> Map(category -> channelId)
+    this.lastPostCache = new Map();
+    this.subscriptions = new Map();
   }
 
   async init() {
@@ -27,7 +29,7 @@ class NewsAgent extends BaseAgent {
       this.logger.debug('🔄 News job triggered – fetching news');
       await this.fetchAndSendNews();
     });
-    this.logger.info('📰 NewsAgent ready (GNews + RSS fallback)');
+    this.logger.info('📰 NewsAgent ready (multi‑API + RSS fallback)');
   }
 
   async ensureDefaultSubscriptions() {
@@ -71,16 +73,21 @@ class NewsAgent extends BaseAgent {
   }
 
   /**
-   * Fetch news from GNews API, fallback to RSS
+   * Fetch news from multiple sources in priority order:
+   * 1. GNews API (if key exists)
+   * 2. NewsData.io API (if key exists)
+   * 3. Currents API (if key exists)
+   * 4. Cointelegraph RSS (fallback)
    */
   async fetchNews() {
-    // Try GNews first if API key exists
+    // 1️⃣ GNews API
     if (this.gnewsKey) {
       try {
         const url = `https://gnews.io/api/v4/search?q=cryptocurrency&lang=en&max=5&token=${this.gnewsKey}`;
         const response = await axios.get(url, { timeout: 10000 });
         const articles = response.data?.articles || [];
         if (articles.length) {
+          this.logger.debug('✅ Fetched news from GNews');
           return articles.map(a => ({
             title: a.title,
             link: a.url,
@@ -97,12 +104,59 @@ class NewsAgent extends BaseAgent {
       }
     }
 
-    // Fallback to Cointelegraph RSS
+    // 2️⃣ NewsData.io API
+    if (this.newsdataKey) {
+      try {
+        const url = `https://newsdata.io/api/1/news?apikey=${this.newsdataKey}&q=cryptocurrency&language=en&size=5`;
+        const response = await axios.get(url, { timeout: 10000 });
+        if (response.data?.results?.length) {
+          this.logger.debug('✅ Fetched news from NewsData.io');
+          return response.data.results.map(a => ({
+            title: a.title,
+            link: a.link,
+            description: a.description || '',
+            source: a.source_id || 'NewsData.io',
+            publishedAt: a.pubDate,
+            image: a.image_url || null,
+          }));
+        } else {
+          this.logger.warn('NewsData.io returned no articles');
+        }
+      } catch (err) {
+        this.logger.error(`NewsData.io error: ${err.message}`);
+      }
+    }
+
+    // 3️⃣ Currents API
+    if (this.currentsKey) {
+      try {
+        const url = `https://api.currentsapi.services/v1/latest-news?apiKey=${this.currentsKey}&language=en&keywords=cryptocurrency&limit=5`;
+        const response = await axios.get(url, { timeout: 10000 });
+        if (response.data?.news?.length) {
+          this.logger.debug('✅ Fetched news from Currents API');
+          return response.data.news.map(a => ({
+            title: a.title,
+            link: a.url,
+            description: a.description || '',
+            source: a.author || 'Currents API',
+            publishedAt: a.published,
+            image: null,
+          }));
+        } else {
+          this.logger.warn('Currents API returned no articles');
+        }
+      } catch (err) {
+        this.logger.error(`Currents API error: ${err.message}`);
+      }
+    }
+
+    // 4️⃣ RSS fallback (Cointelegraph)
     try {
       const parser = new Parser();
       const feed = await parser.parseURL(this.fallbackRssUrl, {
         headers: { 'User-Agent': 'Ultra3VaultBot/1.0' }
       });
+      this.logger.debug('✅ Fetched news from RSS fallback (Cointelegraph)');
       return feed.items.slice(0, 5).map(item => ({
         title: item.title,
         link: item.link,
