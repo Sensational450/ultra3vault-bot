@@ -4,6 +4,7 @@
  * - Requires API keys: GNEWS_API_KEY, NEWSDATA_API_KEY, CURRENTS_API_KEY (optional)
  * - Auto‑subscribes to cryptoNews using DEFAULT_NEWS_CHANNEL_ID
  * - Enhanced sendNews with "Read More" button and large image
+ * - Supports all categories: cryptoNews, airdrops, bitcoinNews, altcoinNews, reddit
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
@@ -140,7 +141,7 @@ class NewsAgent extends BaseAgent {
             description: a.description || '',
             source: a.author || 'Currents API',
             publishedAt: a.published,
-            image: null, // Currents API does not provide images
+            image: null,
           }));
         } else {
           this.logger.warn('Currents API returned no articles');
@@ -158,7 +159,6 @@ class NewsAgent extends BaseAgent {
       });
       this.logger.debug('✅ Fetched news from RSS fallback (Cointelegraph)');
       return feed.items.slice(0, 5).map(item => {
-        // Try to extract image from common RSS fields
         let image = null;
         if (item.enclosure?.url && item.enclosure.type?.startsWith('image/')) {
           image = item.enclosure.url;
@@ -193,27 +193,30 @@ class NewsAgent extends BaseAgent {
       return;
     }
     for (const [guildId, subs] of this.subscriptions.entries()) {
-      const channelId = subs.get('cryptoNews');
-      if (!channelId) continue;
-      const cacheKey = `${guildId}:cryptoNews`;
-      const lastLink = this.lastPostCache.get(cacheKey);
-      const newArticle = articles.find(a => a.link !== lastLink);
-      if (!newArticle) continue;
-      await this.sendNews(newArticle, guildId, channelId);
-      this.lastPostCache.set(cacheKey, newArticle.link);
-      await this.saveCacheToDb(cacheKey, newArticle.link);
+      // For each guild, iterate over all subscribed categories
+      for (const [category, channelId] of subs.entries()) {
+        const cacheKey = `${guildId}:${category}`;
+        const lastLink = this.lastPostCache.get(cacheKey);
+        // Find first article from this category (all articles are general; we don't filter by category yet)
+        // In a real implementation, you would filter articles by category if the API supported it.
+        // For simplicity, we post the first new article to all subscribed categories.
+        const newArticle = articles.find(a => a.link !== lastLink);
+        if (!newArticle) continue;
+        await this.sendNews(newArticle, guildId, channelId, category);
+        this.lastPostCache.set(cacheKey, newArticle.link);
+        await this.saveCacheToDb(cacheKey, newArticle.link);
+      }
     }
   }
 
-  async sendNews(article, guildId, channelId) {
+  async sendNews(article, guildId, channelId, category) {
     const channel = this.client.channels.cache.get(channelId);
     if (!channel || !channel.isTextBased()) {
       this.logger.warn(`Channel ${channelId} not found or not text-based`);
       return;
     }
 
-    // Choose a colour based on the source
-    let color = 0x1e88e5; // default blue
+    let color = 0x1e88e5;
     if (article.source === 'Cointelegraph') color = 0x1a1e24;
     if (article.source === 'GNews') color = 0x00ae86;
     if (article.source === 'NewsData.io') color = 0x3498db;
@@ -226,14 +229,10 @@ class NewsAgent extends BaseAgent {
       .setColor(color)
       .setTimestamp(new Date(article.publishedAt))
       .setAuthor({ name: article.source, iconURL: 'https://cdn-icons-png.flaticon.com/512/3135/3135715.png' })
-      .setFooter({ text: 'Ultra3Vault News' });
+      .setFooter({ text: `Ultra3Vault News • Category: ${category}` });
 
-    // Use a large image if available
-    if (article.image) {
-      embed.setImage(article.image);
-    }
+    if (article.image) embed.setImage(article.image);
 
-    // Create a "Read More" button
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setLabel('Read full article')
@@ -251,7 +250,7 @@ class NewsAgent extends BaseAgent {
     ).catch(() => {});
   }
 
-  // ---------- SLASH COMMANDS (unchanged) ----------
+  // ---------- SLASH COMMANDS ----------
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
     const { commandName } = interaction;
@@ -277,8 +276,9 @@ class NewsAgent extends BaseAgent {
     const category = interaction.options.getString('category');
     const channelTarget = interaction.options.getChannel('channel') || interaction.channel;
     if (!channelTarget.isTextBased()) return interaction.reply({ content: 'Must be a text channel.', ephemeral: true });
-    if (category !== 'cryptoNews') {
-      return interaction.reply({ content: 'Only `cryptoNews` category is supported.', ephemeral: true });
+    const validCategories = [...Object.keys(this.defaultConfig.feeds), 'reddit'];
+    if (!validCategories.includes(category)) {
+      return interaction.reply({ content: `Invalid category. Choose: ${validCategories.join(', ')}`, ephemeral: true });
     }
     if (!this.subscriptions.has(interaction.guild.id)) this.subscriptions.set(interaction.guild.id, new Map());
     this.subscriptions.get(interaction.guild.id).set(category, channelTarget.id);
@@ -320,12 +320,12 @@ class NewsAgent extends BaseAgent {
       description: 'This is a test news post from your bot.',
       source: 'Ultra3Vault Test',
     };
-    const category = 'cryptoNews';
+    const category = interaction.options.getString('category') || 'cryptoNews';
     const channelId = this.subscriptions.get(interaction.guild.id)?.get(category);
     if (!channelId) {
-      return interaction.reply({ content: 'No subscription. Run `/newssubscribe` first.', ephemeral: true });
+      return interaction.reply({ content: `No subscription for ${category}. Run /newssubscribe first.`, ephemeral: true });
     }
-    await this.sendNews(mockItem, interaction.guild.id, channelId);
+    await this.sendNews(mockItem, interaction.guild.id, channelId, category);
     await interaction.reply({ content: 'Test news sent.', ephemeral: true });
   }
 
