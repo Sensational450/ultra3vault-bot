@@ -3,10 +3,10 @@
  * - Fetches crypto news from: GNews → NewsData.io → Currents API → RSS (Cointelegraph)
  * - Requires API keys: GNEWS_API_KEY, NEWSDATA_API_KEY, CURRENTS_API_KEY (optional)
  * - Auto‑subscribes to cryptoNews using DEFAULT_NEWS_CHANNEL_ID
- * - Safe error handling – never crashes
+ * - Enhanced sendNews with "Read More" button and large image
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder } = require('discord.js');
+const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const axios = require('axios');
 const Parser = require('rss-parser');
 
@@ -196,14 +196,37 @@ class NewsAgent extends BaseAgent {
       this.logger.warn(`Channel ${channelId} not found or not text-based`);
       return;
     }
+
+    // Choose a colour based on the source
+    let color = 0x1e88e5; // default blue
+    if (article.source === 'Cointelegraph') color = 0x1a1e24;
+    if (article.source === 'GNews') color = 0x00ae86;
+    if (article.source === 'NewsData.io') color = 0x3498db;
+    if (article.source === 'Currents API') color = 0x9b59b6;
+
     const embed = new EmbedBuilder()
       .setTitle(article.title || 'Crypto News')
       .setURL(article.link)
       .setDescription(article.description || '')
-      .setColor(0x1e88e5)
-      .setFooter({ text: `Source: ${article.source} • ${new Date().toLocaleString()}` });
-    if (article.image) embed.setImage(article.image);
-    await channel.send({ embeds: [embed] }).catch(err => this.logger.error(`Failed to send: ${err.message}`));
+      .setColor(color)
+      .setTimestamp(new Date(article.publishedAt))
+      .setAuthor({ name: article.source, iconURL: 'https://cdn-icons-png.flaticon.com/512/3135/3135715.png' })
+      .setFooter({ text: 'Ultra3Vault News' });
+
+    // Use a large image if available
+    if (article.image) {
+      embed.setImage(article.image);
+    }
+
+    // Create a "Read More" button
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setLabel('Read full article')
+        .setStyle(ButtonStyle.Link)
+        .setURL(article.link)
+    );
+
+    await channel.send({ embeds: [embed], components: [row] }).catch(err => this.logger.error(`Failed to send: ${err.message}`));
   }
 
   async saveCacheToDb(key, value) {
