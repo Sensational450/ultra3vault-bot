@@ -1,0 +1,224 @@
+/**
+ * 👋 CommunityManagerAgent v5.0
+ * - Welcomes new members (DM or channel message)
+ * - Guides newcomers with channel suggestions and server info
+ * - Responds to help requests with useful tips
+ * - Sends periodic engagement tips (optional)
+ * - Configurable per guild (enable/disable, welcome channel, DM vs channel)
+ * - Uses rule‑based responses + optional OpenAI fallback
+ */
+const BaseAgent = require('./baseAgent');
+const { EmbedBuilder } = require('discord.js');
+
+class CommunityManagerAgent extends BaseAgent {
+  constructor(eventBus, deps) {
+    super(eventBus, deps);
+    this.defaultConfig = {
+      enabled: true,
+      welcomeChannelId: null,      // channel to post welcome messages (null = DM)
+      sendWelcomeDM: true,         // if true, send a DM as well
+      welcomeMessage: '👋 Welcome {user}! Check out #rules, #announcements, and #general-chat. Use `/help` to see all commands!',
+      guideNewMembers: true,
+      periodicTips: true,
+      tipIntervalHours: 24,
+    };
+    this.guildConfigs = new Map();
+    this.faq = new Map([
+      ['channels', '📌 **Key Channels**\n• #rules – Server rules\n• #announcements – Important updates\n• #general-chat – Main chat\n• #bot-commands – All slash commands\n• #crypto-news – Latest news\n• #price-alerts – Crypto price changes\n• #help-support – Ask for help'],
+      ['commands', '💬 **Useful Commands**\n• `/balance`, `/daily`, `/shop`, `/buy` – Economy\n• `/vip`, `/subscribe` – VIP subscriptions\n• `/price`, `/gecko-trending` – Crypto data\n• `/ping`, `/stats` – Bot info\n• `/refer`, `/redeem` – Referrals\n• `/newssubscribe` – News subscriptions'],
+      ['vip', '💎 **VIP** – $5/month. Access to VIP channels, early news, and more. Use `/buy 30d`.'],
+      ['premium', '💎 **Premium** – $15/month. All VIP perks + exclusive signals & airdrops. Use `/buy 30d` and choose `premium`.'],
+      ['economy', '💰 **Economy** – Earn coins with `/daily`, spend them in `/shop`, gamble with `/gamble`, and transfer with `/transfer`.'],
+      ['help', '📖 **Getting Started**\n1. Read #rules\n2. Check #announcements\n3. Use `/daily` to earn coins\n4. Explore commands with `/help`'],
+    ]);
+  }
+
+  async init() {
+    await super.init();
+    await this.loadConfigs();
+    // Subscribe to periodic tip job
+    this.subscribe('job.communityTip', async () => {
+      await this.sendPeriodicTip();
+    });
+    this.logger.info('👋 CommunityManagerAgent ready' + (this.deps.openai ? ' (AI‑powered)' : ''));
+  }
+
+  async loadConfigs() {
+    try {
+      const rows = await this.db.all(`SELECT guildId, config FROM guild_configs WHERE configKey = 'community'`);
+      for (const row of rows) {
+        this.guildConfigs.set(row.guildId, JSON.parse(row.config));
+      }
+    } catch (err) {
+      this.logger.warn(`Could not load community configs: ${err.message}`);
+    }
+  }
+
+  async getGuildConfig(guildId) {
+    if (this.guildConfigs.has(guildId)) return this.guildConfigs.get(guildId);
+    const config = { ...this.defaultConfig };
+    this.guildConfigs.set(guildId, config);
+    await this.saveConfig(guildId, config);
+    return config;
+  }
+
+  async saveConfig(guildId, config) {
+    await this.db.run(
+      `INSERT OR REPLACE INTO guild_configs (guildId, configKey, config) VALUES (?, 'community', ?)`,
+      [guildId, JSON.stringify(config)]
+    );
+  }
+
+  async updateConfig(guildId, updates) {
+    const config = await this.getGuildConfig(guildId);
+    Object.assign(config, updates);
+    this.guildConfigs.set(guildId, config);
+    await this.saveConfig(guildId, config);
+  }
+
+  // ---------- ON GUILD MEMBER ADD (Welcome) ----------
+  async onGuildMemberAdd(member) {
+    const guild = member.guild;
+    const config = await this.getGuildConfig(guild.id);
+    if (!config.enabled) return;
+
+    // 1. Send welcome message in channel (if configured)
+    if (config.welcomeChannelId) {
+      const channel = guild.channels.cache.get(config.welcomeChannelId);
+      if (channel && channel.isTextBased()) {
+        const msg = config.welcomeMessage.replace('{user}', `<@${member.id}>`);
+        const embed = new EmbedBuilder()
+          .setTitle('👋 Welcome!')
+          .setDescription(msg)
+          .setColor(0x00ae86)
+          .setFooter({ text: 'Check #rules and #announcements to get started!' });
+        await channel.send({ embeds: [embed] }).catch(() => {});
+      }
+    }
+
+    // 2. Send DM (if enabled)
+    if (config.sendWelcomeDM) {
+      try {
+        const dmEmbed = new EmbedBuilder()
+          .setTitle(`👋 Welcome to ${guild.name}!`)
+          .setDescription(`Hey ${member.displayName}! We're glad you're here. Here are some quick links to get you started:\n\n📌 **#rules** – Server rules\n📢 **#announcements** – Important updates\n💬 **#general-chat** – Main chat\n🤖 **#bot-commands** – All commands\n\nUse \`/help\` to see all commands!`)
+          .setColor(0x00ae86)
+          .setFooter({ text: 'Need help? Ask in #help-support or DM me!' });
+        await member.send({ embeds: [dmEmbed] }).catch(() => {});
+        this.logger.info(`Sent welcome DM to ${member.user.tag}`);
+      } catch (err) {
+        this.logger.error(`Failed to send welcome DM: ${err.message}`);
+      }
+    }
+  }
+
+  // ---------- MESSAGE HANDLING (Guide) ----------
+  async onMessage(message) {
+    if (message.author.bot) return;
+    if (!message.guild) return;
+    const config = await this.getGuildConfig(message.guild.id);
+    if (!config.enabled || !config.guideNewMembers) return;
+
+    // Only respond if the message is a question or mentions the bot
+    const content = message.content.toLowerCase();
+    const isQuestion = content.includes('?') || content.includes('help') || content.includes('guide') || content.includes('new');
+    const isMention = message.mentions.has(this.client.user.id);
+    if (!isQuestion && !isMention) return;
+
+    // Try to match FAQ
+    let response = null;
+    for (const [key, value] of this.faq.entries()) {
+      if (content.includes(key)) {
+        response = value;
+        break;
+      }
+    }
+    if (!response && this.deps.openai) {
+      response = await this.getAIResponse(content);
+    }
+    if (!response) {
+      response = "❓ I'm here to help! Ask about `channels`, `commands`, `vip`, `economy`, or `help` to get started.";
+    }
+    const embed = new EmbedBuilder()
+      .setTitle('👋 Community Guide')
+      .setDescription(response)
+      .setColor(0x3498db)
+      .setFooter({ text: 'Ask me anything!' });
+    await message.reply({ embeds: [embed] }).catch(() => {});
+  }
+
+  // ---------- PERIODIC TIP ----------
+  async sendPeriodicTip() {
+    // This is a global job; we can pick a random guild and send a tip.
+    // Or we can iterate all guilds. For simplicity, we'll use a list of tips.
+    const tips = [
+      '💡 **Tip:** Remember to claim your daily reward with `/daily`!',
+      '📊 **Tip:** Check crypto prices with `/price bitcoin`.',
+      '💎 **Tip:** Upgrade to VIP for exclusive perks! Use `/buy 30d`.',
+      '🔗 **Tip:** Share your referral code with `/refer` and earn coins!',
+      '📰 **Tip:** Stay informed – subscribe to news with `/newssubscribe`.',
+      '🎲 **Tip:** Try your luck with `/gamble` – but gamble responsibly!',
+    ];
+    const tip = tips[Math.floor(Math.random() * tips.length)];
+    // For each guild, if a tip channel is set, send it. Otherwise skip.
+    for (const [guildId, config] of this.guildConfigs.entries()) {
+      if (!config.enabled || !config.periodicTips) continue;
+      const channelId = config.welcomeChannelId || config.announcementChannelId; // fallback
+      if (!channelId) continue;
+      const guild = this.client.guilds.cache.get(guildId);
+      if (!guild) continue;
+      const channel = guild.channels.cache.get(channelId);
+      if (channel && channel.isTextBased()) {
+        await channel.send(tip).catch(() => {});
+      }
+    }
+  }
+
+  // ---------- OPENAI FALLBACK ----------
+  async getAIResponse(query) {
+    try {
+      const openai = this.deps.openai;
+      const response = await openai.chat.completions.create({
+        model: 'gpt-3.5-turbo',
+        messages: [
+          { role: 'system', content: 'You are a friendly community manager for a crypto Discord server. Help new members get started, explain channels, commands, and perks. Be concise and welcoming.' },
+          { role: 'user', content: query },
+        ],
+        max_tokens: 150,
+        temperature: 0.7,
+      });
+      return response.choices[0].message.content;
+    } catch (err) {
+      this.logger.error(`OpenAI error: ${err.message}`);
+      return null;
+    }
+  }
+
+  // ---------- SLASH COMMANDS ----------
+  async onInteraction(interaction) {
+    if (!interaction.isCommand()) return;
+    const { commandName, guild, member, options } = interaction;
+    if (!guild) return;
+    const config = await this.getGuildConfig(guild.id);
+
+    if (commandName === 'set-welcome-channel' && member.permissions.has('Administrator')) {
+      const channel = options.getChannel('channel');
+      if (!channel.isTextBased()) return interaction.reply({ content: 'Must be a text channel.', ephemeral: true });
+      await this.updateConfig(guild.id, { welcomeChannelId: channel.id });
+      await interaction.reply({ content: `✅ Welcome channel set to ${channel}.`, ephemeral: true });
+    }
+    if (commandName === 'toggle-community' && member.permissions.has('Administrator')) {
+      config.enabled = !config.enabled;
+      await this.updateConfig(guild.id, { enabled: config.enabled });
+      await interaction.reply({ content: `✅ Community Manager ${config.enabled ? 'enabled' : 'disabled'}.`, ephemeral: true });
+    }
+    if (commandName === 'welcome-test' && member.permissions.has('Administrator')) {
+      // Trigger a test welcome for the command user
+      const mockMember = member;
+      await this.onGuildMemberAdd(mockMember);
+      await interaction.reply({ content: '✅ Test welcome sent (check channel/DM).', ephemeral: true });
+    }
+  }
+}
+
+module.exports = CommunityManagerAgent;
