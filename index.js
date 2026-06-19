@@ -3,7 +3,7 @@
  * Entry point: initializes core, agents, web server, and scheduler.
  */
 require('dotenv').config();
-const { Client, GatewayIntentBits } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js'); // added EmbedBuilder
 const { EventBus } = require('./core/eventBus');
 const { Logger } = require('./core/logger');
 const { RateLimiter } = require('./core/rateLimiter');
@@ -77,7 +77,9 @@ const PriceFeedAgent = require('./agents/priceFeedAgent');
 const NewsAgent = require('./agents/newsAgent');
 const ReferralAgent = require('./agents/referralAgent');
 const InfoAgent = require('./agents/infoAgent');
-const AirdropAgent = require('./agents/airdropAgent'); // 👈 NEW
+const AirdropAgent = require('./agents/airdropAgent');
+const SummaryAgent = require('./agents/summaryAgent'); // 👈 NEW
+
 let AiChatAgent = null;
 try {
   if (secrets.openaiApiKey) {
@@ -110,8 +112,9 @@ try {
       orchestrator.registerAgent(new AiChatAgent(eventBus, { client, logger, db, models }), 50);
     }
     orchestrator.registerAgent(new ReferralAgent(eventBus, { client, logger, db, models }), 40);
+    orchestrator.registerAgent(new AirdropAgent(eventBus, { client, logger, db, models }), 35);
     orchestrator.registerAgent(new InfoAgent(eventBus, { client, logger, db, models }), 30);
-    orchestrator.registerAgent(new AirdropAgent(eventBus, { client, logger, db, models }), 35); // 👈 NEW (priority 35)
+    orchestrator.registerAgent(new SummaryAgent(eventBus, { client, logger, db, models }), 25); // 👈 NEW (lower priority)
 
     logger.info('✅ All agents registered');
 
@@ -123,6 +126,48 @@ try {
     if (!process.env.PREMIUM_AIRDROP_CHANNEL_ID) {
       logger.warn('⚠️ PREMIUM_AIRDROP_CHANNEL_ID is not set. AirdropAgent will be disabled.');
     }
+
+    // ================= AUTO‑SUMMARY POSTER =================
+    // Listens for 'news.summarized' and posts to all subscribed news channels
+    eventBus.on('news.summarized', async (data) => {
+      const { summary, original, category } = data;
+      logger.debug(`📝 Auto‑summary generated for: ${original.title}`);
+
+      // Get the NewsAgent instance to retrieve subscriptions
+      const newsAgent = orchestrator.getAgent('NewsAgent');
+      if (!newsAgent) {
+        logger.warn('⚠️ NewsAgent not found – cannot post auto‑summary');
+        return;
+      }
+
+      // For each guild and category subscription, post the summary
+      for (const [guildId, subs] of newsAgent.subscriptions.entries()) {
+        for (const [cat, channelId] of subs.entries()) {
+          // Optionally match category to the one from the event, or post to all
+          // Here we post to all subscribed channels regardless of category
+          const channel = client.channels.cache.get(channelId);
+          if (!channel || !channel.isTextBased()) continue;
+
+          try {
+            const embed = new EmbedBuilder()
+              .setTitle('📰 Auto‑Summary')
+              .setDescription(summary || 'No summary available.')
+              .addFields(
+                { name: 'Original', value: `[${original.title}](${original.link})`, inline: false },
+                { name: 'Category', value: category || 'General', inline: true }
+              )
+              .setColor(0x00ff88)
+              .setTimestamp()
+              .setFooter({ text: 'Ultra3Vault • Auto‑generated' });
+
+            await channel.send({ embeds: [embed] });
+            logger.debug(`✅ Auto‑summary posted to #${channel.name}`);
+          } catch (err) {
+            logger.error(`Failed to post auto‑summary: ${err.message}`);
+          }
+        }
+      }
+    });
 
     // Attach Discord events
     require('./events/messageCreate')(client, orchestrator, { logger });
