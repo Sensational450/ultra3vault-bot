@@ -77,6 +77,7 @@ const PriceFeedAgent = require('./agents/priceFeedAgent');
 const NewsAgent = require('./agents/newsAgent');
 const ReferralAgent = require('./agents/referralAgent');
 const InfoAgent = require('./agents/infoAgent');
+const AirdropAgent = require('./agents/airdropAgent'); // 👈 NEW
 let AiChatAgent = null;
 try {
   if (secrets.openaiApiKey) {
@@ -110,12 +111,17 @@ try {
     }
     orchestrator.registerAgent(new ReferralAgent(eventBus, { client, logger, db, models }), 40);
     orchestrator.registerAgent(new InfoAgent(eventBus, { client, logger, db, models }), 30);
+    orchestrator.registerAgent(new AirdropAgent(eventBus, { client, logger, db, models }), 35); // 👈 NEW (priority 35)
 
     logger.info('✅ All agents registered');
 
     // 🔔 Check for required news API key
     if (!process.env.NEWSDATA_API_KEY) {
       logger.warn('⚠️ NEWSDATA_API_KEY is not set. NewsAgent will not fetch articles. Please add the key to Render environment variables.');
+    }
+    // 🔔 Check for premium airdrop channel
+    if (!process.env.PREMIUM_AIRDROP_CHANNEL_ID) {
+      logger.warn('⚠️ PREMIUM_AIRDROP_CHANNEL_ID is not set. AirdropAgent will be disabled.');
     }
 
     // Attach Discord events
@@ -152,6 +158,12 @@ try {
     } else {
       logger.warn('⚠️ LEADERBOARD_CHANNEL_ID not set – weekly leaderboard posting disabled');
     }
+
+    // ================= AIRDROP JOB (every 30 minutes) =================
+    scheduler.registerJob('airdropCheck', '*/30 * * * *', async () => {
+      eventBus.emit('job.airdropCheck');
+    });
+    logger.info('🎁 Airdrop check job scheduled (every 30 minutes)');
 
     // Self‑ping job
     if (process.env.RENDER_EXTERNAL_URL) {
