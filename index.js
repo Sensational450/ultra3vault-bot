@@ -83,7 +83,8 @@ const SupportAgent = require('./agents/supportAgent');
 const WhaleAgent = require('./agents/whaleAgent');
 const AlertPrioritizationAgent = require('./agents/alertPrioritizationAgent');
 const CommunityManagerAgent = require('./agents/communityManagerAgent');
-const SignalAgent = require('./agents/signalAgent'); // 👈 NEW
+const SignalAgent = require('./agents/signalAgent');
+const RecommendationAgent = require('./agents/recommendationAgent'); // 👈 NEW
 
 let AiChatAgent = null;
 try {
@@ -115,7 +116,7 @@ try {
     orchestrator.registerAgent(new WhaleAgent(eventBus, { client, logger, db, models }), 65);
     orchestrator.registerAgent(new NewsAgent(eventBus, { client, logger, db, models }), 60);
     orchestrator.registerAgent(new AlertPrioritizationAgent(eventBus, { client, logger, db, models }), 55);
-    orchestrator.registerAgent(new SignalAgent(eventBus, { client, logger, db, models }), 54); // 📈 Signal AI
+    orchestrator.registerAgent(new SignalAgent(eventBus, { client, logger, db, models }), 54);
     if (AiChatAgent) {
       orchestrator.registerAgent(new AiChatAgent(eventBus, { client, logger, db, models }), 50);
     }
@@ -125,6 +126,7 @@ try {
     orchestrator.registerAgent(new InfoAgent(eventBus, { client, logger, db, models }), 30);
     orchestrator.registerAgent(new SummaryAgent(eventBus, { client, logger, db, models }), 25);
     orchestrator.registerAgent(new CommunityManagerAgent(eventBus, { client, logger, db, models }), 20);
+    orchestrator.registerAgent(new RecommendationAgent(eventBus, { client, logger, db, models }), 10); // 👈 NEW (lowest)
 
     logger.info('✅ All agents registered');
 
@@ -234,6 +236,69 @@ try {
       }
     });
 
+    // ================= RECOMMENDATION POSTERS =================
+    // VIP Recommendations
+    eventBus.on('recommendation.generated', async (rec) => {
+      if (rec.tier !== 'vip') return;
+
+      const channelId = process.env.VIP_RECOMMENDATION_CHANNEL_ID;
+      if (!channelId) {
+        logger.warn('⚠️ VIP_RECOMMENDATION_CHANNEL_ID not set – VIP recs disabled.');
+        return;
+      }
+
+      try {
+        const channel = client.channels.cache.get(channelId);
+        if (!channel || !channel.isTextBased()) {
+          logger.warn(`VIP rec channel ${channelId} not found`);
+          return;
+        }
+
+        const recAgent = orchestrator.getAgent('RecommendationAgent');
+        if (!recAgent) {
+          logger.warn('RecommendationAgent not found');
+          return;
+        }
+
+        const embed = recAgent.formatRecommendationEmbed(rec);
+        await channel.send({ embeds: [embed] });
+        logger.info(`🔶 VIP recommendation posted to #${channel.name}`);
+      } catch (err) {
+        logger.error(`Failed to post VIP recommendation: ${err.message}`);
+      }
+    });
+
+    // Premium Recommendations
+    eventBus.on('recommendation.generated', async (rec) => {
+      if (rec.tier !== 'premium') return;
+
+      const channelId = process.env.PREMIUM_RECOMMENDATION_CHANNEL_ID;
+      if (!channelId) {
+        logger.warn('⚠️ PREMIUM_RECOMMENDATION_CHANNEL_ID not set – Premium recs disabled.');
+        return;
+      }
+
+      try {
+        const channel = client.channels.cache.get(channelId);
+        if (!channel || !channel.isTextBased()) {
+          logger.warn(`Premium rec channel ${channelId} not found`);
+          return;
+        }
+
+        const recAgent = orchestrator.getAgent('RecommendationAgent');
+        if (!recAgent) {
+          logger.warn('RecommendationAgent not found');
+          return;
+        }
+
+        const embed = recAgent.formatRecommendationEmbed(rec);
+        await channel.send({ embeds: [embed] });
+        logger.info(`💎 Premium recommendation posted to #${channel.name}`);
+      } catch (err) {
+        logger.error(`Failed to post Premium recommendation: ${err.message}`);
+      }
+    });
+
     // Attach Discord events
     require('./events/messageCreate')(client, orchestrator, { logger });
     require('./events/interactionCreate')(client, orchestrator, { logger });
@@ -286,6 +351,12 @@ try {
       eventBus.emit('job.signalCheck');
     });
     logger.info('📈 Signal check job scheduled');
+
+    // ================= RECOMMENDATION SCAN JOB (every 15 minutes) =================
+    scheduler.registerJob('recommendationCheck', '*/15 * * * *', async () => {
+      eventBus.emit('job.recommendationCheck');
+    });
+    logger.info('🧠 Recommendation scan job scheduled (every 15 minutes)');
 
     // ================= COMMUNITY MANAGER JOBS =================
     // Auto‑announcements (token launches, NFT giveaways, AMA reminders) - every hour
