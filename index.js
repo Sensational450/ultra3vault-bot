@@ -84,7 +84,8 @@ const WhaleAgent = require('./agents/whaleAgent');
 const AlertPrioritizationAgent = require('./agents/alertPrioritizationAgent');
 const CommunityManagerAgent = require('./agents/communityManagerAgent');
 const SignalAgent = require('./agents/signalAgent');
-const RecommendationAgent = require('./agents/recommendationAgent'); // 👈 NEW
+const RecommendationAgent = require('./agents/recommendationAgent');
+const GrowthRetentionAgent = require('./agents/growthRetentionAgent'); // 👈 NEW
 
 let AiChatAgent = null;
 try {
@@ -126,7 +127,8 @@ try {
     orchestrator.registerAgent(new InfoAgent(eventBus, { client, logger, db, models }), 30);
     orchestrator.registerAgent(new SummaryAgent(eventBus, { client, logger, db, models }), 25);
     orchestrator.registerAgent(new CommunityManagerAgent(eventBus, { client, logger, db, models }), 20);
-    orchestrator.registerAgent(new RecommendationAgent(eventBus, { client, logger, db, models }), 10); // 👈 NEW (lowest)
+    orchestrator.registerAgent(new RecommendationAgent(eventBus, { client, logger, db, models }), 10);
+    orchestrator.registerAgent(new GrowthRetentionAgent(eventBus, { client, logger, db, models }), 5); // 👈 NEW (lowest)
 
     logger.info('✅ All agents registered');
 
@@ -140,6 +142,22 @@ try {
     if (!process.env.WHALE_ALERT_CHANNEL_ID && !process.env.ETHERSCAN_API_KEY) {
       logger.warn('⚠️ No whale alert channel or Etherscan key set. WhaleAgent may not function.');
     }
+
+    // ================= ECONOMY REWARD LISTENER =================
+    eventBus.on('economy.addBalance', async ({ userId, guildId, amount, reason }) => {
+      try {
+        // Find or create user
+        let user = await models.User.findOne({ where: { userId, guildId } });
+        if (!user) {
+          user = await models.User.create({ userId, guildId, balance: 0 });
+        }
+        user.balance = (user.balance || 0) + amount;
+        await user.save();
+        logger.debug(`💰 Added ${amount} tokens to ${userId} (${reason})`);
+      } catch (err) {
+        logger.error(`Failed to add balance: ${err.message}`);
+      }
+    });
 
     // ================= AUTO‑SUMMARY POSTER =================
     eventBus.on('news.summarized', async (data) => {
@@ -312,6 +330,11 @@ try {
     const cleanupTempData = require('./jobs/cleanupTempData')({ eventBus, logger });
     const newsUpdater = require('./jobs/newsUpdater')({ eventBus, logger });
 
+    // 👇 GROWTH/RETENTION JOBS
+    const dailyRetention = require('./jobs/dailyRetention')({ eventBus, logger, models, client, orchestrator });
+    const weeklyGrowthReport = require('./jobs/weeklyGrowthReport')({ eventBus, logger, models, client, orchestrator });
+    const inactivityCheck = require('./jobs/inactivityCheck')({ eventBus, logger, models, client, orchestrator });
+
     scheduler.registerJob('priceUpdater', '*/1 * * * *', priceUpdater);
     scheduler.registerJob('leaderboardReset', '0 0 * * 0', leaderboardReset);
     scheduler.registerJob('subscriptionRenewal', '0 */6 * * *', subscriptionRenewal);
@@ -370,6 +393,12 @@ try {
       eventBus.emit('job.engagementCheck');
     });
     logger.info('📊 Engagement check job scheduled (daily at midnight)');
+
+    // 👇 GROWTH/RETENTION JOB SCHEDULES
+    scheduler.registerJob('dailyRetention', '0 20 * * *', dailyRetention);
+    scheduler.registerJob('weeklyGrowthReport', '0 9 * * 1', weeklyGrowthReport);
+    scheduler.registerJob('inactivityCheck', '0 10 * * 0', inactivityCheck);
+    logger.info('📈 Growth/Retention jobs scheduled');
 
     // Self‑ping job (keep Render awake)
     if (process.env.RENDER_EXTERNAL_URL) {
