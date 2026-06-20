@@ -82,7 +82,7 @@ const SummaryAgent = require('./agents/summaryAgent');
 const SupportAgent = require('./agents/supportAgent');
 const WhaleAgent = require('./agents/whaleAgent');
 const AlertPrioritizationAgent = require('./agents/alertPrioritizationAgent');
-const CommunityManagerAgent = require('./agents/communityManagerAgent');
+const CommunityManagerAgent = require('./agents/CommunityManagerAgent');
 
 let AiChatAgent = null;
 try {
