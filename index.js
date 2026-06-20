@@ -83,6 +83,7 @@ const SupportAgent = require('./agents/supportAgent');
 const WhaleAgent = require('./agents/whaleAgent');
 const AlertPrioritizationAgent = require('./agents/alertPrioritizationAgent');
 const CommunityManagerAgent = require('./agents/communityManagerAgent');
+const SignalAgent = require('./agents/signalAgent'); // 👈 NEW
 
 let AiChatAgent = null;
 try {
@@ -111,18 +112,19 @@ try {
     orchestrator.registerAgent(new EconomyAgent(eventBus, { client, logger, db, models }), 90);
     orchestrator.registerAgent(new VipAgent(eventBus, { client, logger, db, models }), 80);
     orchestrator.registerAgent(new PriceFeedAgent(eventBus, { client, logger, db, models }), 70);
-    orchestrator.registerAgent(new WhaleAgent(eventBus, { client, logger, db, models }), 65); // 🐋
+    orchestrator.registerAgent(new WhaleAgent(eventBus, { client, logger, db, models }), 65);
     orchestrator.registerAgent(new NewsAgent(eventBus, { client, logger, db, models }), 60);
-    orchestrator.registerAgent(new AlertPrioritizationAgent(eventBus, { client, logger, db, models }), 55); // 🧠
+    orchestrator.registerAgent(new AlertPrioritizationAgent(eventBus, { client, logger, db, models }), 55);
+    orchestrator.registerAgent(new SignalAgent(eventBus, { client, logger, db, models }), 54); // 📈 Signal AI
     if (AiChatAgent) {
       orchestrator.registerAgent(new AiChatAgent(eventBus, { client, logger, db, models }), 50);
     }
-    orchestrator.registerAgent(new SupportAgent(eventBus, { client, logger, db, models }), 45); // 🆘
+    orchestrator.registerAgent(new SupportAgent(eventBus, { client, logger, db, models }), 45);
     orchestrator.registerAgent(new ReferralAgent(eventBus, { client, logger, db, models }), 40);
     orchestrator.registerAgent(new AirdropAgent(eventBus, { client, logger, db, models }), 35);
     orchestrator.registerAgent(new InfoAgent(eventBus, { client, logger, db, models }), 30);
     orchestrator.registerAgent(new SummaryAgent(eventBus, { client, logger, db, models }), 25);
-    orchestrator.registerAgent(new CommunityManagerAgent(eventBus, { client, logger, db, models }), 20); // 👥
+    orchestrator.registerAgent(new CommunityManagerAgent(eventBus, { client, logger, db, models }), 20);
 
     logger.info('✅ All agents registered');
 
@@ -203,6 +205,35 @@ try {
       }
     });
 
+    // ================= PREMIUM SIGNAL POSTER =================
+    eventBus.on('signal.generated', async (signal) => {
+      const channelId = process.env.PREMIUM_SIGNAL_CHANNEL_ID;
+      if (!channelId) {
+        logger.warn('⚠️ PREMIUM_SIGNAL_CHANNEL_ID not set – signals disabled.');
+        return;
+      }
+
+      try {
+        const channel = client.channels.cache.get(channelId);
+        if (!channel || !channel.isTextBased()) {
+          logger.warn(`Premium signal channel ${channelId} not found`);
+          return;
+        }
+
+        const signalAgent = orchestrator.getAgent('SignalAgent');
+        if (!signalAgent) {
+          logger.warn('SignalAgent not found');
+          return;
+        }
+
+        const embed = signalAgent.formatSignalEmbed(signal);
+        await channel.send({ embeds: [embed] });
+        logger.info(`📈 Premium signal posted to #${channel.name}`);
+      } catch (err) {
+        logger.error(`Failed to post premium signal: ${err.message}`);
+      }
+    });
+
     // Attach Discord events
     require('./events/messageCreate')(client, orchestrator, { logger });
     require('./events/interactionCreate')(client, orchestrator, { logger });
@@ -249,6 +280,12 @@ try {
       eventBus.emit('job.whaleCheck');
     });
     logger.info('🐋 Whale check job scheduled');
+
+    // ================= SIGNAL CHECK JOB (every 5 minutes) =================
+    scheduler.registerJob('signalCheck', '*/5 * * * *', async () => {
+      eventBus.emit('job.signalCheck');
+    });
+    logger.info('📈 Signal check job scheduled');
 
     // ================= COMMUNITY MANAGER JOBS =================
     // Auto‑announcements (token launches, NFT giveaways, AMA reminders) - every hour
