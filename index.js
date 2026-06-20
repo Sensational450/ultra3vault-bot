@@ -126,7 +126,7 @@ try {
 
     logger.info('✅ All agents registered');
 
-    // 🔔 Check for required API keys
+    // 🔔 Check for required API keys (optional)
     if (!process.env.NEWSDATA_API_KEY) {
       logger.warn('⚠️ NEWSDATA_API_KEY is not set. NewsAgent will not fetch articles. Please add the key to Render environment variables.');
     }
@@ -249,6 +249,19 @@ try {
       eventBus.emit('job.whaleCheck');
     });
     logger.info('🐋 Whale check job scheduled');
+
+    // ================= COMMUNITY MANAGER JOBS =================
+    // Auto‑announcements (token launches, NFT giveaways, AMA reminders) - every hour
+    scheduler.registerJob('announcementCheck', '0 * * * *', async () => {
+      eventBus.emit('job.announcementCheck');
+    });
+    logger.info('📢 Auto‑announcement check job scheduled (every hour)');
+
+    // Engagement rewards - daily at midnight
+    scheduler.registerJob('engagementCheck', '0 0 * * *', async () => {
+      eventBus.emit('job.engagementCheck');
+    });
+    logger.info('📊 Engagement check job scheduled (daily at midnight)');
 
     // Self‑ping job (keep Render awake)
     if (process.env.RENDER_EXTERNAL_URL) {
