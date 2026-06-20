@@ -47,7 +47,6 @@ class CommunityManagerAgent extends BaseAgent {
       await this.rewardActiveMembers();
     });
 
-    // Listen for new members (handled via onGuildMemberAdd)
     this.logger.info('👥 CommunityManagerAgent v5.0 ready (Web3 focused)');
   }
 
@@ -99,10 +98,10 @@ class CommunityManagerAgent extends BaseAgent {
     const channel = this.client.channels.cache.get(this.announcementChannelId);
     if (!channel?.isTextBased()) return;
 
+    const today = new Date().toISOString().split('T')[0];
+
     // 1. Token launches
     for (const launch of this.tokenLaunches) {
-      // Check if today matches the launch date
-      const today = new Date().toISOString().split('T')[0];
       if (launch.date === today) {
         const embed = new EmbedBuilder()
           .setTitle(`🚀 Token Launch: ${launch.name}`)
@@ -121,7 +120,6 @@ class CommunityManagerAgent extends BaseAgent {
 
     // 2. NFT giveaways
     for (const giveaway of this.nftGiveaways) {
-      const today = new Date().toISOString().split('T')[0];
       if (giveaway.date === today) {
         const embed = new EmbedBuilder()
           .setTitle(`🎁 NFT Giveaway: ${giveaway.name}`)
@@ -139,11 +137,7 @@ class CommunityManagerAgent extends BaseAgent {
 
     // 3. AMA schedule reminder
     const now = new Date();
-    const dayOfWeek = now.getDay();
-    const hour = now.getHours();
-    const minute = now.getMinutes();
-    // Check if it's AMA time (configurable)
-    if (this.amaSchedule && this._matchCron(this.amaSchedule, now)) {
+    if (this._matchCron(this.amaSchedule, now)) {
       const embed = new EmbedBuilder()
         .setTitle('🎙️ AMA Session Starting Now!')
         .setDescription('Join us for our weekly Ask Me Anything session with our core team.')
@@ -160,19 +154,12 @@ class CommunityManagerAgent extends BaseAgent {
 
   // ---------- Engagement Rewards ----------
   async rewardActiveMembers() {
-    // Track active users and give rewards
-    // This would typically query the database for message counts
-    // For now, we'll just log a sample
-    this.logger.debug('📊 Engagement check running... (configure with database integration)');
-    
-    // Example: get top active users from the database
-    // const topUsers = await this.models.User.find().sort({ messageCount: -1 }).limit(5);
-    // for (const user of topUsers) {
-    //   // Give engagement role or tokens
-    // }
+    this.logger.debug('📊 Engagement check running...');
+    // Placeholder – implement database integration here
+    // Example: get top active users from database and reward them
   }
 
-  // ---------- Slash Commands (Community focused, no moderation) ----------
+  // ---------- Slash Commands ----------
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
     const { commandName } = interaction;
@@ -218,7 +205,6 @@ class CommunityManagerAgent extends BaseAgent {
     
     if (channel) this.welcomeChannelId = channel.id;
     if (message) this.welcomeMessage = message;
-    // Optionally save to database here
 
     await interaction.reply({
       content: `✅ Welcome channel set to ${channel ? channel.toString() : 'unchanged'} and message updated.`,
@@ -245,9 +231,8 @@ class CommunityManagerAgent extends BaseAgent {
     await interaction.reply({ embeds: [embed] });
   }
 
-  // ---------- Helper: Simple cron matcher ----------
+  // ---------- Helper ----------
   _matchCron(cronExpression, date) {
-    // Very basic: check if hour and minute match (format: 'min hour * * *')
     const parts = cronExpression.split(' ');
     if (parts.length < 2) return false;
     const [minute, hour] = parts;
