@@ -3,7 +3,7 @@
  * Entry point: initializes core, agents, web server, and scheduler.
  */
 require('dotenv').config();
-const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js'); // added EmbedBuilder
+const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
 const { EventBus } = require('./core/eventBus');
 const { Logger } = require('./core/logger');
 const { RateLimiter } = require('./core/rateLimiter');
@@ -78,7 +78,11 @@ const NewsAgent = require('./agents/newsAgent');
 const ReferralAgent = require('./agents/referralAgent');
 const InfoAgent = require('./agents/infoAgent');
 const AirdropAgent = require('./agents/airdropAgent');
-const SummaryAgent = require('./agents/summaryAgent'); // 👈 NEW
+const SummaryAgent = require('./agents/summaryAgent');
+const SupportAgent = require('./agents/supportAgent');
+const WhaleAgent = require('./agents/whaleAgent');
+const AlertPrioritizationAgent = require('./agents/alertPrioritizationAgent');
+const CommunityManagerAgent = require('./agents/communityManagerAgent');
 
 let AiChatAgent = null;
 try {
@@ -102,49 +106,50 @@ try {
     orchestrator = new Orchestrator(client, { eventBus, logger, rateLimiter });
     client.orchestrator = orchestrator;
 
-    // Register all agents
+    // Register all agents (priorities: higher = more important)
     orchestrator.registerAgent(new ModerationAgent(eventBus, { client, logger, db, models }), 100);
     orchestrator.registerAgent(new EconomyAgent(eventBus, { client, logger, db, models }), 90);
     orchestrator.registerAgent(new VipAgent(eventBus, { client, logger, db, models }), 80);
     orchestrator.registerAgent(new PriceFeedAgent(eventBus, { client, logger, db, models }), 70);
+    orchestrator.registerAgent(new WhaleAgent(eventBus, { client, logger, db, models }), 65); // 🐋
     orchestrator.registerAgent(new NewsAgent(eventBus, { client, logger, db, models }), 60);
+    orchestrator.registerAgent(new AlertPrioritizationAgent(eventBus, { client, logger, db, models }), 55); // 🧠
     if (AiChatAgent) {
       orchestrator.registerAgent(new AiChatAgent(eventBus, { client, logger, db, models }), 50);
     }
+    orchestrator.registerAgent(new SupportAgent(eventBus, { client, logger, db, models }), 45); // 🆘
     orchestrator.registerAgent(new ReferralAgent(eventBus, { client, logger, db, models }), 40);
     orchestrator.registerAgent(new AirdropAgent(eventBus, { client, logger, db, models }), 35);
     orchestrator.registerAgent(new InfoAgent(eventBus, { client, logger, db, models }), 30);
-    orchestrator.registerAgent(new SummaryAgent(eventBus, { client, logger, db, models }), 25); // 👈 NEW (lower priority)
+    orchestrator.registerAgent(new SummaryAgent(eventBus, { client, logger, db, models }), 25);
+    orchestrator.registerAgent(new CommunityManagerAgent(eventBus, { client, logger, db, models }), 20); // 👥
 
     logger.info('✅ All agents registered');
 
-    // 🔔 Check for required news API key
+    // 🔔 Check for required API keys
     if (!process.env.NEWSDATA_API_KEY) {
       logger.warn('⚠️ NEWSDATA_API_KEY is not set. NewsAgent will not fetch articles. Please add the key to Render environment variables.');
     }
-    // 🔔 Check for premium airdrop channel
     if (!process.env.PREMIUM_AIRDROP_CHANNEL_ID) {
       logger.warn('⚠️ PREMIUM_AIRDROP_CHANNEL_ID is not set. AirdropAgent will be disabled.');
     }
+    if (!process.env.WHALE_ALERT_CHANNEL_ID && !process.env.ETHERSCAN_API_KEY) {
+      logger.warn('⚠️ No whale alert channel or Etherscan key set. WhaleAgent may not function.');
+    }
 
     // ================= AUTO‑SUMMARY POSTER =================
-    // Listens for 'news.summarized' and posts to all subscribed news channels
     eventBus.on('news.summarized', async (data) => {
       const { summary, original, category } = data;
       logger.debug(`📝 Auto‑summary generated for: ${original.title}`);
 
-      // Get the NewsAgent instance to retrieve subscriptions
       const newsAgent = orchestrator.getAgent('NewsAgent');
       if (!newsAgent) {
         logger.warn('⚠️ NewsAgent not found – cannot post auto‑summary');
         return;
       }
 
-      // For each guild and category subscription, post the summary
       for (const [guildId, subs] of newsAgent.subscriptions.entries()) {
         for (const [cat, channelId] of subs.entries()) {
-          // Optionally match category to the one from the event, or post to all
-          // Here we post to all subscribed channels regardless of category
           const channel = client.channels.cache.get(channelId);
           if (!channel || !channel.isTextBased()) continue;
 
@@ -166,6 +171,35 @@ try {
             logger.error(`Failed to post auto‑summary: ${err.message}`);
           }
         }
+      }
+    });
+
+    // ================= WHALE ALERT POSTER =================
+    eventBus.on('whale.detected', async (tx) => {
+      const channelId = process.env.WHALE_ALERT_CHANNEL_ID;
+      if (!channelId) {
+        logger.warn('⚠️ WHALE_ALERT_CHANNEL_ID not set – whale alerts disabled.');
+        return;
+      }
+
+      try {
+        const channel = client.channels.cache.get(channelId);
+        if (!channel || !channel.isTextBased()) {
+          logger.warn(`Whale channel ${channelId} not found`);
+          return;
+        }
+
+        const whaleAgent = orchestrator.getAgent('WhaleAgent');
+        if (!whaleAgent) {
+          logger.warn('WhaleAgent not found');
+          return;
+        }
+
+        const embed = whaleAgent.formatWhaleEmbed(tx);
+        await channel.send({ embeds: [embed] });
+        logger.info(`🐋 Whale alert posted to #${channel.name}`);
+      } catch (err) {
+        logger.error(`Failed to post whale alert: ${err.message}`);
       }
     });
 
@@ -210,7 +244,13 @@ try {
     });
     logger.info('🎁 Airdrop check job scheduled (every 30 minutes)');
 
-    // Self‑ping job
+    // ================= WHALE CHECK JOB (every 5 minutes) =================
+    scheduler.registerJob('whaleCheck', process.env.WHALE_CHECK_INTERVAL || '*/5 * * * *', async () => {
+      eventBus.emit('job.whaleCheck');
+    });
+    logger.info('🐋 Whale check job scheduled');
+
+    // Self‑ping job (keep Render awake)
     if (process.env.RENDER_EXTERNAL_URL) {
       scheduler.registerJob('selfPing', '*/10 * * * *', async () => {
         try {
