@@ -88,7 +88,8 @@ const RecommendationAgent = require('./agents/recommendationAgent');
 const GrowthRetentionAgent = require('./agents/growthRetentionAgent');
 const OptimizationAgent = require('./agents/optimizationAgent');
 const LocalizationAgent = require('./agents/localizationAgent');
-const ContentPlanningAgent = require('./agents/contentPlanningAgent'); // 👈 NEW
+const ContentPlanningAgent = require('./agents/contentPlanningAgent');
+const AMAAgent = require('./agents/amaAgent'); // 👈 NEW
 
 let AiChatAgent = null;
 try {
@@ -130,7 +131,8 @@ try {
     orchestrator.registerAgent(new InfoAgent(eventBus, { client, logger, db, models }), 30);
     orchestrator.registerAgent(new SummaryAgent(eventBus, { client, logger, db, models }), 25);
     orchestrator.registerAgent(new CommunityManagerAgent(eventBus, { client, logger, db, models }), 20);
-    orchestrator.registerAgent(new ContentPlanningAgent(eventBus, { client, logger, db, models, orchestrator }), 18); // 📅
+    orchestrator.registerAgent(new AMAAgent(eventBus, { client, logger, db, models, orchestrator }), 19); // 🎙️
+    orchestrator.registerAgent(new ContentPlanningAgent(eventBus, { client, logger, db, models, orchestrator }), 18);
     orchestrator.registerAgent(new LocalizationAgent(eventBus, { client, logger, db, models }), 15);
     orchestrator.registerAgent(new RecommendationAgent(eventBus, { client, logger, db, models }), 10);
     orchestrator.registerAgent(new GrowthRetentionAgent(eventBus, { client, logger, db, models }), 5);
@@ -147,6 +149,9 @@ try {
     }
     if (!process.env.WHALE_ALERT_CHANNEL_ID && !process.env.ETHERSCAN_API_KEY) {
       logger.warn('⚠️ No whale alert channel or Etherscan key set. WhaleAgent may not function.');
+    }
+    if (!process.env.AMA_CHANNEL_ID) {
+      logger.warn('⚠️ AMA_CHANNEL_ID not set. AMAAgent will be disabled.');
     }
 
     // ================= ECONOMY REWARD LISTENER =================
@@ -340,7 +345,7 @@ try {
     const weeklyGrowthReport = require('./jobs/weeklyGrowthReport')({ eventBus, logger, models, client, orchestrator });
     const inactivityCheck = require('./jobs/inactivityCheck')({ eventBus, logger, models, client, orchestrator });
 
-    // 👇 OPTIMIZATION JOBS (using job files from jobs/ folder)
+    // 👇 OPTIMIZATION JOBS
     const healthCheck = require('./jobs/healthCheck')({ eventBus, logger, orchestrator });
     const cacheCleanup = require('./jobs/cacheCleanup')({ eventBus, logger, orchestrator });
     const memoryMonitor = require('./jobs/memoryMonitor')({ eventBus, logger, orchestrator });
@@ -356,6 +361,9 @@ try {
     const announcementReminder = require('./jobs/announcementReminder')({ eventBus, logger, orchestrator });
     const vipContent = require('./jobs/vipContent')({ eventBus, logger, orchestrator });
     const premiumContent = require('./jobs/premiumContent')({ eventBus, logger, orchestrator });
+
+    // 👇 AMA JOB
+    const amaSummary = require('./jobs/amaSummary')({ eventBus, logger, orchestrator });
 
     scheduler.registerJob('priceUpdater', '*/1 * * * *', priceUpdater);
     scheduler.registerJob('leaderboardReset', '0 0 * * 0', leaderboardReset);
@@ -420,7 +428,7 @@ try {
     scheduler.registerJob('inactivityCheck', '0 10 * * 0', inactivityCheck);
     logger.info('📈 Growth/Retention jobs scheduled');
 
-    // 👇 OPTIMIZATION JOB SCHEDULES (using job files)
+    // 👇 OPTIMIZATION JOB SCHEDULES
     scheduler.registerJob('healthCheck', '*/15 * * * *', healthCheck);
     scheduler.registerJob('cacheCleanup', '*/30 * * * *', cacheCleanup);
     scheduler.registerJob('memoryMonitor', '*/10 * * * *', memoryMonitor);
@@ -430,14 +438,18 @@ try {
     logger.info('⚡ Optimization jobs scheduled');
 
     // 👇 CONTENT PLANNING JOB SCHEDULES
-    scheduler.registerJob('dailyContent', '0 9 * * *', dailyContent); // Daily at 9 AM UTC
-    scheduler.registerJob('educationalContent', '0 */6 * * *', educationalContent); // Every 6 hours
-    scheduler.registerJob('marketRecap', '0 20 * * *', marketRecap); // Daily at 8 PM UTC
-    scheduler.registerJob('engagementContent', '0 */12 * * *', engagementContent); // Every 12 hours
-    scheduler.registerJob('announcementReminder', '0 */4 * * *', announcementReminder); // Every 4 hours
-    scheduler.registerJob('vipContent', '0 10 * * *', vipContent); // Daily at 10 AM UTC
-    scheduler.registerJob('premiumContent', '0 12 * * *', premiumContent); // Daily at 12 PM UTC
+    scheduler.registerJob('dailyContent', '0 9 * * *', dailyContent);
+    scheduler.registerJob('educationalContent', '0 */6 * * *', educationalContent);
+    scheduler.registerJob('marketRecap', '0 20 * * *', marketRecap);
+    scheduler.registerJob('engagementContent', '0 */12 * * *', engagementContent);
+    scheduler.registerJob('announcementReminder', '0 */4 * * *', announcementReminder);
+    scheduler.registerJob('vipContent', '0 10 * * *', vipContent);
+    scheduler.registerJob('premiumContent', '0 12 * * *', premiumContent);
     logger.info('📅 Content planning jobs scheduled');
+
+    // 👇 AMA JOB SCHEDULE
+    scheduler.registerJob('amasummary', '0 20 * * 0', amaSummary); // Sunday at 8 PM UTC
+    logger.info('🎙️ AMA summary job scheduled (Sunday 8 PM UTC)');
 
     // Self‑ping job (keep Render awake)
     if (process.env.RENDER_EXTERNAL_URL) {
