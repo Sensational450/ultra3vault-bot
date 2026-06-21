@@ -88,6 +88,7 @@ const RecommendationAgent = require('./agents/recommendationAgent');
 const GrowthRetentionAgent = require('./agents/growthRetentionAgent');
 const OptimizationAgent = require('./agents/optimizationAgent');
 const LocalizationAgent = require('./agents/localizationAgent');
+const ContentPlanningAgent = require('./agents/contentPlanningAgent'); // 👈 NEW
 
 let AiChatAgent = null;
 try {
@@ -129,6 +130,7 @@ try {
     orchestrator.registerAgent(new InfoAgent(eventBus, { client, logger, db, models }), 30);
     orchestrator.registerAgent(new SummaryAgent(eventBus, { client, logger, db, models }), 25);
     orchestrator.registerAgent(new CommunityManagerAgent(eventBus, { client, logger, db, models }), 20);
+    orchestrator.registerAgent(new ContentPlanningAgent(eventBus, { client, logger, db, models, orchestrator }), 18); // 📅
     orchestrator.registerAgent(new LocalizationAgent(eventBus, { client, logger, db, models }), 15);
     orchestrator.registerAgent(new RecommendationAgent(eventBus, { client, logger, db, models }), 10);
     orchestrator.registerAgent(new GrowthRetentionAgent(eventBus, { client, logger, db, models }), 5);
@@ -346,6 +348,15 @@ try {
     const tempCleanup = require('./jobs/tempCleanup')({ eventBus, logger, orchestrator });
     const performanceReport = require('./jobs/performanceReport')({ eventBus, logger, orchestrator });
 
+    // 👇 CONTENT PLANNING JOBS
+    const dailyContent = require('./jobs/dailyContent')({ eventBus, logger, orchestrator });
+    const educationalContent = require('./jobs/educationalContent')({ eventBus, logger, orchestrator });
+    const marketRecap = require('./jobs/marketRecap')({ eventBus, logger, orchestrator });
+    const engagementContent = require('./jobs/engagementContent')({ eventBus, logger, orchestrator });
+    const announcementReminder = require('./jobs/announcementReminder')({ eventBus, logger, orchestrator });
+    const vipContent = require('./jobs/vipContent')({ eventBus, logger, orchestrator });
+    const premiumContent = require('./jobs/premiumContent')({ eventBus, logger, orchestrator });
+
     scheduler.registerJob('priceUpdater', '*/1 * * * *', priceUpdater);
     scheduler.registerJob('leaderboardReset', '0 0 * * 0', leaderboardReset);
     scheduler.registerJob('subscriptionRenewal', '0 */6 * * *', subscriptionRenewal);
@@ -417,6 +428,16 @@ try {
     scheduler.registerJob('tempCleanup', '0 0 * * 0', tempCleanup);
     scheduler.registerJob('performanceReport', '0 20 * * 0', performanceReport);
     logger.info('⚡ Optimization jobs scheduled');
+
+    // 👇 CONTENT PLANNING JOB SCHEDULES
+    scheduler.registerJob('dailyContent', '0 9 * * *', dailyContent); // Daily at 9 AM UTC
+    scheduler.registerJob('educationalContent', '0 */6 * * *', educationalContent); // Every 6 hours
+    scheduler.registerJob('marketRecap', '0 20 * * *', marketRecap); // Daily at 8 PM UTC
+    scheduler.registerJob('engagementContent', '0 */12 * * *', engagementContent); // Every 12 hours
+    scheduler.registerJob('announcementReminder', '0 */4 * * *', announcementReminder); // Every 4 hours
+    scheduler.registerJob('vipContent', '0 10 * * *', vipContent); // Daily at 10 AM UTC
+    scheduler.registerJob('premiumContent', '0 12 * * *', premiumContent); // Daily at 12 PM UTC
+    logger.info('📅 Content planning jobs scheduled');
 
     // Self‑ping job (keep Render awake)
     if (process.env.RENDER_EXTERNAL_URL) {
