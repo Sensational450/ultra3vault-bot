@@ -89,7 +89,8 @@ const GrowthRetentionAgent = require('./agents/growthRetentionAgent');
 const OptimizationAgent = require('./agents/optimizationAgent');
 const LocalizationAgent = require('./agents/localizationAgent');
 const ContentPlanningAgent = require('./agents/contentPlanningAgent');
-const AMAAgent = require('./agents/amaAgent'); // 👈 NEW
+const AMAAgent = require('./agents/amaAgent');
+const SelfImprovementAgent = require('./agents/selfImprovementAgent'); // 👈 NEW
 
 let AiChatAgent = null;
 try {
@@ -131,12 +132,13 @@ try {
     orchestrator.registerAgent(new InfoAgent(eventBus, { client, logger, db, models }), 30);
     orchestrator.registerAgent(new SummaryAgent(eventBus, { client, logger, db, models }), 25);
     orchestrator.registerAgent(new CommunityManagerAgent(eventBus, { client, logger, db, models }), 20);
-    orchestrator.registerAgent(new AMAAgent(eventBus, { client, logger, db, models, orchestrator }), 19); // 🎙️
+    orchestrator.registerAgent(new AMAAgent(eventBus, { client, logger, db, models, orchestrator }), 19);
     orchestrator.registerAgent(new ContentPlanningAgent(eventBus, { client, logger, db, models, orchestrator }), 18);
     orchestrator.registerAgent(new LocalizationAgent(eventBus, { client, logger, db, models }), 15);
     orchestrator.registerAgent(new RecommendationAgent(eventBus, { client, logger, db, models }), 10);
     orchestrator.registerAgent(new GrowthRetentionAgent(eventBus, { client, logger, db, models }), 5);
     orchestrator.registerAgent(new OptimizationAgent(eventBus, { client, logger, db, models, orchestrator }), 1);
+    orchestrator.registerAgent(new SelfImprovementAgent(eventBus, { client, logger, db, models, orchestrator }), 0); // 👈 NEW (lowest)
 
     logger.info('✅ All agents registered');
 
@@ -152,6 +154,9 @@ try {
     }
     if (!process.env.AMA_CHANNEL_ID) {
       logger.warn('⚠️ AMA_CHANNEL_ID not set. AMAAgent will be disabled.');
+    }
+    if (!process.env.FEEDBACK_CHANNEL_ID) {
+      logger.warn('⚠️ FEEDBACK_CHANNEL_ID not set. SelfImprovementAgent feedback mining disabled.');
     }
 
     // ================= ECONOMY REWARD LISTENER =================
@@ -365,6 +370,13 @@ try {
     // 👇 AMA JOB
     const amaSummary = require('./jobs/amaSummary')({ eventBus, logger, orchestrator });
 
+    // 👇 SELF-IMPROVEMENT JOBS
+    const performanceAnalysis = require('./jobs/performanceAnalysis')({ eventBus, logger, orchestrator });
+    const feedbackMining = require('./jobs/feedbackMining')({ eventBus, logger, orchestrator });
+    const trendDetection = require('./jobs/trendDetection')({ eventBus, logger, orchestrator });
+    const sentimentAnalysis = require('./jobs/sentimentAnalysis')({ eventBus, logger, orchestrator });
+    const suggestionReport = require('./jobs/suggestionReport')({ eventBus, logger, orchestrator });
+
     scheduler.registerJob('priceUpdater', '*/1 * * * *', priceUpdater);
     scheduler.registerJob('leaderboardReset', '0 0 * * 0', leaderboardReset);
     scheduler.registerJob('subscriptionRenewal', '0 */6 * * *', subscriptionRenewal);
@@ -448,8 +460,16 @@ try {
     logger.info('📅 Content planning jobs scheduled');
 
     // 👇 AMA JOB SCHEDULE
-    scheduler.registerJob('amasummary', '0 20 * * 0', amaSummary); // Sunday at 8 PM UTC
+    scheduler.registerJob('amasummary', '0 20 * * 0', amaSummary);
     logger.info('🎙️ AMA summary job scheduled (Sunday 8 PM UTC)');
+
+    // 👇 SELF-IMPROVEMENT JOB SCHEDULES
+    scheduler.registerJob('performanceAnalysis', '0 */6 * * *', performanceAnalysis);
+    scheduler.registerJob('feedbackMining', '0 * * * *', feedbackMining);
+    scheduler.registerJob('trendDetection', '0 0 * * *', trendDetection);
+    scheduler.registerJob('sentimentAnalysis', '0 */6 * * *', sentimentAnalysis);
+    scheduler.registerJob('suggestionReport', '0 20 * * 0', suggestionReport);
+    logger.info('🧠 Self-improvement jobs scheduled');
 
     // Self‑ping job (keep Render awake)
     if (process.env.RENDER_EXTERNAL_URL) {
