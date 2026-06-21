@@ -86,8 +86,8 @@ const CommunityManagerAgent = require('./agents/communityManagerAgent');
 const SignalAgent = require('./agents/signalAgent');
 const RecommendationAgent = require('./agents/recommendationAgent');
 const GrowthRetentionAgent = require('./agents/growthRetentionAgent');
-const OptimizationAgent = require('./agents/optimizationAgent'); // 👈 NEW
-const LocalizationAgent = require('./agents/localizationAgent'); // 👈 NEW (you already have it)
+const OptimizationAgent = require('./agents/optimizationAgent');
+const LocalizationAgent = require('./agents/localizationAgent');
 
 let AiChatAgent = null;
 try {
@@ -129,10 +129,10 @@ try {
     orchestrator.registerAgent(new InfoAgent(eventBus, { client, logger, db, models }), 30);
     orchestrator.registerAgent(new SummaryAgent(eventBus, { client, logger, db, models }), 25);
     orchestrator.registerAgent(new CommunityManagerAgent(eventBus, { client, logger, db, models }), 20);
-    orchestrator.registerAgent(new LocalizationAgent(eventBus, { client, logger, db, models }), 15); // 🌍
+    orchestrator.registerAgent(new LocalizationAgent(eventBus, { client, logger, db, models }), 15);
     orchestrator.registerAgent(new RecommendationAgent(eventBus, { client, logger, db, models }), 10);
     orchestrator.registerAgent(new GrowthRetentionAgent(eventBus, { client, logger, db, models }), 5);
-    orchestrator.registerAgent(new OptimizationAgent(eventBus, { client, logger, db, models, orchestrator }), 1); // ⚡ (lowest, with orchestrator dep)
+    orchestrator.registerAgent(new OptimizationAgent(eventBus, { client, logger, db, models, orchestrator }), 1);
 
     logger.info('✅ All agents registered');
 
@@ -338,13 +338,13 @@ try {
     const weeklyGrowthReport = require('./jobs/weeklyGrowthReport')({ eventBus, logger, models, client, orchestrator });
     const inactivityCheck = require('./jobs/inactivityCheck')({ eventBus, logger, models, client, orchestrator });
 
-    // 👇 OPTIMIZATION JOBS
-    const healthCheckJob = async () => eventBus.emit('job.healthCheck');
-    const cacheCleanupJob = async () => eventBus.emit('job.cacheCleanup');
-    const memoryMonitorJob = async () => eventBus.emit('job.memoryMonitor');
-    const logRotationJob = async () => eventBus.emit('job.logRotation');
-    const tempCleanupJob = async () => eventBus.emit('job.tempCleanup');
-    const performanceReportJob = async () => eventBus.emit('job.performanceReport');
+    // 👇 OPTIMIZATION JOBS (using job files from jobs/ folder)
+    const healthCheck = require('./jobs/healthCheck')({ eventBus, logger, orchestrator });
+    const cacheCleanup = require('./jobs/cacheCleanup')({ eventBus, logger, orchestrator });
+    const memoryMonitor = require('./jobs/memoryMonitor')({ eventBus, logger, orchestrator });
+    const logRotation = require('./jobs/logRotation')({ eventBus, logger, orchestrator });
+    const tempCleanup = require('./jobs/tempCleanup')({ eventBus, logger, orchestrator });
+    const performanceReport = require('./jobs/performanceReport')({ eventBus, logger, orchestrator });
 
     scheduler.registerJob('priceUpdater', '*/1 * * * *', priceUpdater);
     scheduler.registerJob('leaderboardReset', '0 0 * * 0', leaderboardReset);
@@ -409,13 +409,13 @@ try {
     scheduler.registerJob('inactivityCheck', '0 10 * * 0', inactivityCheck);
     logger.info('📈 Growth/Retention jobs scheduled');
 
-    // 👇 OPTIMIZATION JOB SCHEDULES
-    scheduler.registerJob('healthCheck', '*/15 * * * *', healthCheckJob);
-    scheduler.registerJob('cacheCleanup', '*/30 * * * *', cacheCleanupJob);
-    scheduler.registerJob('memoryMonitor', '*/10 * * * *', memoryMonitorJob);
-    scheduler.registerJob('logRotation', '0 0 * * *', logRotationJob);
-    scheduler.registerJob('tempCleanup', '0 0 * * 0', tempCleanupJob);
-    scheduler.registerJob('performanceReport', '0 20 * * 0', performanceReportJob);
+    // 👇 OPTIMIZATION JOB SCHEDULES (using job files)
+    scheduler.registerJob('healthCheck', '*/15 * * * *', healthCheck);
+    scheduler.registerJob('cacheCleanup', '*/30 * * * *', cacheCleanup);
+    scheduler.registerJob('memoryMonitor', '*/10 * * * *', memoryMonitor);
+    scheduler.registerJob('logRotation', '0 0 * * *', logRotation);
+    scheduler.registerJob('tempCleanup', '0 0 * * 0', tempCleanup);
+    scheduler.registerJob('performanceReport', '0 20 * * 0', performanceReport);
     logger.info('⚡ Optimization jobs scheduled');
 
     // Self‑ping job (keep Render awake)
