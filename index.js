@@ -85,7 +85,9 @@ const AlertPrioritizationAgent = require('./agents/alertPrioritizationAgent');
 const CommunityManagerAgent = require('./agents/communityManagerAgent');
 const SignalAgent = require('./agents/signalAgent');
 const RecommendationAgent = require('./agents/recommendationAgent');
-const GrowthRetentionAgent = require('./agents/growthRetentionAgent'); // 👈 NEW
+const GrowthRetentionAgent = require('./agents/growthRetentionAgent');
+const OptimizationAgent = require('./agents/optimizationAgent'); // 👈 NEW
+const LocalizationAgent = require('./agents/localizationAgent'); // 👈 NEW (you already have it)
 
 let AiChatAgent = null;
 try {
@@ -127,8 +129,10 @@ try {
     orchestrator.registerAgent(new InfoAgent(eventBus, { client, logger, db, models }), 30);
     orchestrator.registerAgent(new SummaryAgent(eventBus, { client, logger, db, models }), 25);
     orchestrator.registerAgent(new CommunityManagerAgent(eventBus, { client, logger, db, models }), 20);
+    orchestrator.registerAgent(new LocalizationAgent(eventBus, { client, logger, db, models }), 15); // 🌍
     orchestrator.registerAgent(new RecommendationAgent(eventBus, { client, logger, db, models }), 10);
-    orchestrator.registerAgent(new GrowthRetentionAgent(eventBus, { client, logger, db, models }), 5); // 👈 NEW (lowest)
+    orchestrator.registerAgent(new GrowthRetentionAgent(eventBus, { client, logger, db, models }), 5);
+    orchestrator.registerAgent(new OptimizationAgent(eventBus, { client, logger, db, models, orchestrator }), 1); // ⚡ (lowest, with orchestrator dep)
 
     logger.info('✅ All agents registered');
 
@@ -146,7 +150,6 @@ try {
     // ================= ECONOMY REWARD LISTENER =================
     eventBus.on('economy.addBalance', async ({ userId, guildId, amount, reason }) => {
       try {
-        // Find or create user
         let user = await models.User.findOne({ where: { userId, guildId } });
         if (!user) {
           user = await models.User.create({ userId, guildId, balance: 0 });
@@ -335,6 +338,14 @@ try {
     const weeklyGrowthReport = require('./jobs/weeklyGrowthReport')({ eventBus, logger, models, client, orchestrator });
     const inactivityCheck = require('./jobs/inactivityCheck')({ eventBus, logger, models, client, orchestrator });
 
+    // 👇 OPTIMIZATION JOBS
+    const healthCheckJob = async () => eventBus.emit('job.healthCheck');
+    const cacheCleanupJob = async () => eventBus.emit('job.cacheCleanup');
+    const memoryMonitorJob = async () => eventBus.emit('job.memoryMonitor');
+    const logRotationJob = async () => eventBus.emit('job.logRotation');
+    const tempCleanupJob = async () => eventBus.emit('job.tempCleanup');
+    const performanceReportJob = async () => eventBus.emit('job.performanceReport');
+
     scheduler.registerJob('priceUpdater', '*/1 * * * *', priceUpdater);
     scheduler.registerJob('leaderboardReset', '0 0 * * 0', leaderboardReset);
     scheduler.registerJob('subscriptionRenewal', '0 */6 * * *', subscriptionRenewal);
@@ -382,13 +393,11 @@ try {
     logger.info('🧠 Recommendation scan job scheduled (every 15 minutes)');
 
     // ================= COMMUNITY MANAGER JOBS =================
-    // Auto‑announcements (token launches, NFT giveaways, AMA reminders) - every hour
     scheduler.registerJob('announcementCheck', '0 * * * *', async () => {
       eventBus.emit('job.announcementCheck');
     });
     logger.info('📢 Auto‑announcement check job scheduled (every hour)');
 
-    // Engagement rewards - daily at midnight
     scheduler.registerJob('engagementCheck', '0 0 * * *', async () => {
       eventBus.emit('job.engagementCheck');
     });
@@ -399,6 +408,15 @@ try {
     scheduler.registerJob('weeklyGrowthReport', '0 9 * * 1', weeklyGrowthReport);
     scheduler.registerJob('inactivityCheck', '0 10 * * 0', inactivityCheck);
     logger.info('📈 Growth/Retention jobs scheduled');
+
+    // 👇 OPTIMIZATION JOB SCHEDULES
+    scheduler.registerJob('healthCheck', '*/15 * * * *', healthCheckJob);
+    scheduler.registerJob('cacheCleanup', '*/30 * * * *', cacheCleanupJob);
+    scheduler.registerJob('memoryMonitor', '*/10 * * * *', memoryMonitorJob);
+    scheduler.registerJob('logRotation', '0 0 * * *', logRotationJob);
+    scheduler.registerJob('tempCleanup', '0 0 * * 0', tempCleanupJob);
+    scheduler.registerJob('performanceReport', '0 20 * * 0', performanceReportJob);
+    logger.info('⚡ Optimization jobs scheduled');
 
     // Self‑ping job (keep Render awake)
     if (process.env.RENDER_EXTERNAL_URL) {
