@@ -14,6 +14,7 @@ const Models = require('./tools/database/models');
 const { WebServer } = require('./web/server');
 const secrets = require('./config/secrets');
 const axios = require('axios');
+const ButtonHandler = require('./tools/discord/buttonHandler'); // 👈 NEW
 
 // ================= UNHANDLED ERROR HANDLERS =================
 process.on('uncaughtException', (err) => {
@@ -90,7 +91,7 @@ const OptimizationAgent = require('./agents/optimizationAgent');
 const LocalizationAgent = require('./agents/localizationAgent');
 const ContentPlanningAgent = require('./agents/contentPlanningAgent');
 const AMAAgent = require('./agents/amaAgent');
-const SelfImprovementAgent = require('./agents/selfImprovementAgent'); // 👈 NEW
+const SelfImprovementAgent = require('./agents/selfImprovementAgent');
 
 let AiChatAgent = null;
 try {
@@ -113,6 +114,17 @@ try {
     const models = new Models(db, eventBus, logger);
     orchestrator = new Orchestrator(client, { eventBus, logger, rateLimiter });
     client.orchestrator = orchestrator;
+
+    // 👇 INITIALIZE BUTTON HANDLER
+    const buttonHandler = new ButtonHandler({ logger, eventBus });
+    // Register trivia reveal button
+    buttonHandler.register('trivia_reveal', async (interaction) => {
+      await interaction.reply({
+        content: '🔍 **Answer:** Bitcoin was created in **2009** by the pseudonymous creator **Satoshi Nakamoto**.',
+        ephemeral: true,
+      });
+    });
+    // Register any other buttons (e.g., pagination, confirmations) as needed
 
     // Register all agents (priorities: higher = more important)
     orchestrator.registerAgent(new ModerationAgent(eventBus, { client, logger, db, models }), 100);
@@ -138,7 +150,7 @@ try {
     orchestrator.registerAgent(new RecommendationAgent(eventBus, { client, logger, db, models }), 10);
     orchestrator.registerAgent(new GrowthRetentionAgent(eventBus, { client, logger, db, models }), 5);
     orchestrator.registerAgent(new OptimizationAgent(eventBus, { client, logger, db, models, orchestrator }), 1);
-    orchestrator.registerAgent(new SelfImprovementAgent(eventBus, { client, logger, db, models, orchestrator }), 0); // 👈 NEW (lowest)
+    orchestrator.registerAgent(new SelfImprovementAgent(eventBus, { client, logger, db, models, orchestrator }), 0);
 
     logger.info('✅ All agents registered');
 
@@ -332,9 +344,9 @@ try {
       }
     });
 
-    // Attach Discord events
+    // Attach Discord events (pass buttonHandler)
     require('./events/messageCreate')(client, orchestrator, { logger });
-    require('./events/interactionCreate')(client, orchestrator, { logger });
+    require('./events/interactionCreate')(client, orchestrator, { logger, buttonHandler }); // 👈 Pass buttonHandler
     require('./events/guildMemberAdd')(client, orchestrator, { logger });
     require('./events/ready')(client, orchestrator, { logger, registerCommands: require('./commands/register') });
 
