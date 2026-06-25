@@ -8,7 +8,6 @@
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
-// ❌ Removed: const { z } = require('zod'); // Not used and not installed
 
 class SelfImprovementAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -35,7 +34,7 @@ class SelfImprovementAgent extends BaseAgent {
     this.resourceSnapshots = [];
 
     // ---- Feedback Scan Tracking ----
-    this.lastFeedbackScan = Date.now(); // ✅ FIXED: initialize
+    this.lastFeedbackScan = Date.now(); // ✅ Fixed
 
     // ---- Internal State ----
     this.initialized = false;
@@ -47,20 +46,18 @@ class SelfImprovementAgent extends BaseAgent {
     await this._loadBestMetrics();
     this.initialized = true;
 
-    // ---- Subscriptions ----
     this.subscribe('job.performanceAnalysis', async () => await this._analyzePerformance());
     this.subscribe('job.feedbackMining', async () => await this._mineFeedback());
     this.subscribe('job.trendDetection', async () => await this._detectTrends());
     this.subscribe('job.suggestionReport', async () => await this._postSuggestionReport());
     this.subscribe('job.sentimentAnalysis', async () => await this._analyzeSentiment());
 
-    // Listen to reactions on bot messages
     this.subscribe('message.reaction', async (data) => await this._handleReaction(data));
 
     this.logger.info('🧠 SelfImprovementAgent v12.0 ready');
   }
 
-  // ===================== DATABASE HELPERS =====================
+  // ----- Database Helpers -----
   async _loadSuggestionsFromDB() {
     try {
       const rows = await this.db.all(`SELECT * FROM self_improvement_suggestions ORDER BY id DESC LIMIT 200`);
@@ -75,7 +72,6 @@ class SelfImprovementAgent extends BaseAgent {
       }));
       this.logger.debug(`📋 Loaded ${this.suggestionLog.length} suggestions from DB`);
     } catch (err) {
-      // Table might not exist yet; create it
       await this.db.exec(`
         CREATE TABLE IF NOT EXISTS self_improvement_suggestions (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -105,10 +101,7 @@ class SelfImprovementAgent extends BaseAgent {
   }
 
   async _updateSuggestionOutcome(id, outcome) {
-    await this.db.run(
-      `UPDATE self_improvement_suggestions SET outcome = ? WHERE id = ?`,
-      [outcome, id]
-    );
+    await this.db.run(`UPDATE self_improvement_suggestions SET outcome = ? WHERE id = ?`, [outcome, id]);
     const idx = this.suggestionLog.findIndex(s => s.id === id);
     if (idx !== -1) this.suggestionLog[idx].outcome = outcome;
   }
@@ -157,7 +150,7 @@ class SelfImprovementAgent extends BaseAgent {
     }
   }
 
-  // ===================== PERFORMANCE ANALYSIS =====================
+  // ----- Performance Analysis -----
   async _analyzePerformance() {
     const optAgent = this.deps.orchestrator?.getAgent('OptimizationAgent');
     if (!optAgent) return;
@@ -228,7 +221,6 @@ class SelfImprovementAgent extends BaseAgent {
     return analysis;
   }
 
-  // ===================== ANOMALY DETECTION =====================
   _detectAnomaly(agent, metric, value) {
     const history = this.performanceHistory
       .filter(h => h.agent === agent)
@@ -244,7 +236,6 @@ class SelfImprovementAgent extends BaseAgent {
     return z > 3 ? z : 0;
   }
 
-  // ===================== PREDICTIVE MAINTENANCE =====================
   _predictErrors(agent) {
     const history = this.performanceHistory
       .filter(h => h.agent === agent)
@@ -268,7 +259,7 @@ class SelfImprovementAgent extends BaseAgent {
     return predicted > 0 ? predicted : 0;
   }
 
-  // ===================== USER SENTIMENT ANALYSIS =====================
+  // ----- Sentiment Analysis -----
   async _analyzeSentiment() {
     let totalPos = 0, totalNeg = 0;
     for (const [agent, stats] of Object.entries(this.sentimentStats)) {
@@ -294,7 +285,6 @@ class SelfImprovementAgent extends BaseAgent {
     if (userId === this.client.user.id) return;
 
     const agent = 'General';
-
     if (!this.sentimentStats[agent]) this.sentimentStats[agent] = { positive: 0, negative: 0 };
     const isPositive = ['👍', '✅', '❤️', '🎉', '🚀', '💎'].includes(emoji.name);
     const isNegative = ['👎', '❌', '😡', '💩', '👀'].includes(emoji.name);
@@ -302,7 +292,7 @@ class SelfImprovementAgent extends BaseAgent {
     if (isNegative) this.sentimentStats[agent].negative += added ? 1 : -1;
   }
 
-  // ===================== FEEDBACK MINING =====================
+  // ----- Feedback Mining -----
   async _mineFeedback() {
     if (!this.feedbackChannelId) return;
     const channel = this.client.channels.cache.get(this.feedbackChannelId);
@@ -361,7 +351,7 @@ class SelfImprovementAgent extends BaseAgent {
     }
   }
 
-  // ===================== TREND DETECTION =====================
+  // ----- Trend Detection -----
   async _detectTrends() {
     const optAgent = this.deps.orchestrator?.getAgent('OptimizationAgent');
     if (!optAgent) return;
@@ -385,7 +375,7 @@ class SelfImprovementAgent extends BaseAgent {
     }
   }
 
-  // ===================== SUGGESTION REPORT =====================
+  // ----- Suggestion Report -----
   async _postSuggestionReport() {
     const channelId = this.reportChannelId;
     if (!channelId) return;
@@ -421,7 +411,7 @@ class SelfImprovementAgent extends BaseAgent {
     await channel.send({ embeds: [embed] });
   }
 
-  // ===================== ADMIN COMMANDS =====================
+  // ----- Admin Commands -----
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
     const { commandName } = interaction;
@@ -461,7 +451,7 @@ class SelfImprovementAgent extends BaseAgent {
     const embed = new EmbedBuilder()
       .setTitle('📋 Pending Improvements')
       .setColor(0x3498db)
-      .setDescription(pending.map((s, i) => 
+      .setDescription(pending.map((s, i) =>
         `**${i+1}.** ${s.agent || 'General'}: ${s.suggestion}\n_(${s.source})_`
       ).join('\n\n'))
       .setTimestamp();
@@ -481,11 +471,7 @@ class SelfImprovementAgent extends BaseAgent {
 
     const suggestion = pending[0];
     suggestion.applied = true;
-    await this.db.run(
-      `UPDATE self_improvement_suggestions SET applied = 1 WHERE id = ?`,
-      [suggestion.id]
-    );
-
+    await this.db.run(`UPDATE self_improvement_suggestions SET applied = 1 WHERE id = ?`, [suggestion.id]);
     await this._updateSuggestionOutcome(suggestion.id, 'applied');
 
     await interaction.reply({
@@ -505,7 +491,7 @@ class SelfImprovementAgent extends BaseAgent {
     const agents = analysis.agents;
     const anomalies = analysis.anomalies;
 
-    let summary = agents.map(a => 
+    let summary = agents.map(a =>
       `${a.name}: ${a.status} (errors: ${a.errorCount}, response: ${a.avgTime}ms)`
     ).join('\n');
 
