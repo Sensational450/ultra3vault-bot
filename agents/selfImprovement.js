@@ -8,7 +8,7 @@
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
-const { z } = require('zod'); // optional, but we'll implement simple stats manually
+// ❌ Removed: const { z } = require('zod'); // Not used and not installed
 
 class SelfImprovementAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -21,18 +21,21 @@ class SelfImprovementAgent extends BaseAgent {
 
     // ---- Performance Metrics ----
     this.performanceHistory = [];
-    this.bestMetrics = {}; // agentName → { minErrors, maxSpeed, timestamp }
+    this.bestMetrics = {};
     this.anomalyCache = {};
 
     // ---- Suggestion Storage ----
-    this.suggestionLog = []; // in‑memory + DB
+    this.suggestionLog = [];
     this.outcomeCache = {};
 
     // ---- Sentiment Tracking ----
-    this.sentimentStats = {}; // agentName → { positive: 0, negative: 0 }
+    this.sentimentStats = {};
 
     // ---- Resource Tracking ----
     this.resourceSnapshots = [];
+
+    // ---- Feedback Scan Tracking ----
+    this.lastFeedbackScan = Date.now(); // ✅ FIXED: initialize
 
     // ---- Internal State ----
     this.initialized = false;
@@ -154,7 +157,7 @@ class SelfImprovementAgent extends BaseAgent {
     }
   }
 
-  // ===================== PERFORMANCE ANALYSIS (Enhanced) =====================
+  // ===================== PERFORMANCE ANALYSIS =====================
   async _analyzePerformance() {
     const optAgent = this.deps.orchestrator?.getAgent('OptimizationAgent');
     if (!optAgent) return;
@@ -172,14 +175,11 @@ class SelfImprovementAgent extends BaseAgent {
       const errorCount = errors ? errors.count : 0;
       const avgTime = responseTimes.get(name) || 0;
 
-      // Update history
       this.performanceHistory.push({ timestamp: now, agent: name, errorCount, avgTime });
       if (this.performanceHistory.length > 500) this.performanceHistory.shift();
 
-      // Update best metrics
       await this._updateBestMetrics(name, errorCount, avgTime);
 
-      // Check performance relative to best
       const best = this.bestMetrics[name];
       if (best) {
         const errorRatio = best.minErrors > 0 ? errorCount / best.minErrors : 1;
@@ -194,7 +194,6 @@ class SelfImprovementAgent extends BaseAgent {
         }
       }
 
-      // Anomaly detection (Z‑score on errors and response time)
       const errorAnomaly = this._detectAnomaly(name, 'errors', errorCount);
       const timeAnomaly = this._detectAnomaly(name, 'time', avgTime);
       if (errorAnomaly || timeAnomaly) {
@@ -213,7 +212,6 @@ class SelfImprovementAgent extends BaseAgent {
         });
       }
 
-      // Predictive maintenance: forecast next 24h
       const forecast = this._predictErrors(name);
       if (forecast && forecast > 10) {
         this.emit('selfimprovement.suggestions', {
@@ -234,16 +232,16 @@ class SelfImprovementAgent extends BaseAgent {
   _detectAnomaly(agent, metric, value) {
     const history = this.performanceHistory
       .filter(h => h.agent === agent)
-      .slice(-30) // last 30 entries
+      .slice(-30)
       .map(h => metric === 'errors' ? h.errorCount : h.avgTime);
 
-    if (history.length < 15) return 0; // insufficient data
+    if (history.length < 15) return 0;
 
     const mean = history.reduce((a, b) => a + b, 0) / history.length;
     const std = Math.sqrt(history.reduce((a, b) => a + (b - mean) ** 2, 0) / history.length);
     if (std === 0) return 0;
     const z = (value - mean) / std;
-    return z > 3 ? z : 0; // only positive anomalies (high errors/time)
+    return z > 3 ? z : 0;
   }
 
   // ===================== PREDICTIVE MAINTENANCE =====================
@@ -265,7 +263,6 @@ class SelfImprovementAgent extends BaseAgent {
     const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
     const intercept = (sumY - slope * sumX) / n;
 
-    // Predict 24h from now (in ms)
     const futureX = Date.now() + 24 * 60 * 60 * 1000;
     const predicted = slope * futureX + intercept;
     return predicted > 0 ? predicted : 0;
@@ -273,9 +270,6 @@ class SelfImprovementAgent extends BaseAgent {
 
   // ===================== USER SENTIMENT ANALYSIS =====================
   async _analyzeSentiment() {
-    // This scans reactions on bot messages from the past 24h
-    // We'll rely on the 'message.reaction' event to update stats.
-    // For now, we summarize and suggest actions.
     let totalPos = 0, totalNeg = 0;
     for (const [agent, stats] of Object.entries(this.sentimentStats)) {
       totalPos += stats.positive;
@@ -296,12 +290,10 @@ class SelfImprovementAgent extends BaseAgent {
 
   async _handleReaction(data) {
     const { message, emoji, userId, added } = data;
-    if (!message.author?.bot) return; // only track reactions to bot messages
+    if (!message.author?.bot) return;
     if (userId === this.client.user.id) return;
 
-    // Identify which agent posted the message (if possible)
-    // We'll look at the message content or embed to guess, or simply group under 'General'
-    const agent = 'General'; // placeholder
+    const agent = 'General';
 
     if (!this.sentimentStats[agent]) this.sentimentStats[agent] = { positive: 0, negative: 0 };
     const isPositive = ['👍', '✅', '❤️', '🎉', '🚀', '💎'].includes(emoji.name);
@@ -310,7 +302,7 @@ class SelfImprovementAgent extends BaseAgent {
     if (isNegative) this.sentimentStats[agent].negative += added ? 1 : -1;
   }
 
-  // ===================== FEEDBACK MINING (Enhanced) =====================
+  // ===================== FEEDBACK MINING =====================
   async _mineFeedback() {
     if (!this.feedbackChannelId) return;
     const channel = this.client.channels.cache.get(this.feedbackChannelId);
@@ -321,7 +313,6 @@ class SelfImprovementAgent extends BaseAgent {
 
     this.lastFeedbackScan = Date.now();
 
-    // More advanced: use OpenAI to classify suggestions (if available)
     const useAI = !!process.env.OPENAI_API_KEY;
     let openai;
     if (useAI) {
@@ -331,7 +322,6 @@ class SelfImprovementAgent extends BaseAgent {
     for (const [id, msg] of messages) {
       if (msg.author.bot) continue;
       const content = msg.content;
-      // Quick keyword check first
       const keywords = ['suggest', 'improve', 'add', 'fix', 'change', 'slow', 'bug', 'idea', 'should', 'need'];
       if (!keywords.some(kw => content.toLowerCase().includes(kw))) continue;
 
@@ -353,7 +343,6 @@ class SelfImprovementAgent extends BaseAgent {
         }
       }
       if (!suggestion) {
-        // fallback: extract by keywords
         const lines = content.split(/[.!?]\s/);
         const likely = lines.find(l => keywords.some(k => l.toLowerCase().includes(k)));
         suggestion = likely || content.substring(0, 120);
@@ -372,17 +361,15 @@ class SelfImprovementAgent extends BaseAgent {
     }
   }
 
-  // ===================== TREND DETECTION (Enhanced) =====================
+  // ===================== TREND DETECTION =====================
   async _detectTrends() {
     const optAgent = this.deps.orchestrator?.getAgent('OptimizationAgent');
     if (!optAgent) return;
 
-    // Check resource usage trends
     const memUsage = process.memoryUsage().heapUsed / (1024 * 1024);
     this.resourceSnapshots.push({ timestamp: Date.now(), memUsage });
     if (this.resourceSnapshots.length > 100) this.resourceSnapshots.shift();
 
-    // If memory usage has been rising for last 10 snapshots, suggest investigation
     if (this.resourceSnapshots.length > 10) {
       const last10 = this.resourceSnapshots.slice(-10);
       const first = last10[0].memUsage;
@@ -396,8 +383,6 @@ class SelfImprovementAgent extends BaseAgent {
         });
       }
     }
-
-    // Also check job queue length or other metrics from Scheduler? (optional)
   }
 
   // ===================== SUGGESTION REPORT =====================
@@ -458,7 +443,6 @@ class SelfImprovementAgent extends BaseAgent {
         await this.cmdMetrics(interaction);
         break;
       case 'applysuggestion':
-        // keep for compatibility
         await this.cmdApply(interaction);
         break;
     }
@@ -495,7 +479,6 @@ class SelfImprovementAgent extends BaseAgent {
       return interaction.reply({ content: '📋 No pending suggestions to apply.', ephemeral: true });
     }
 
-    // Apply the oldest suggestion
     const suggestion = pending[0];
     suggestion.applied = true;
     await this.db.run(
@@ -503,8 +486,6 @@ class SelfImprovementAgent extends BaseAgent {
       [suggestion.id]
     );
 
-    // Simulate outcome tracking after some time (in reality, we'd set a follow-up job)
-    // For demo, we'll just log a positive outcome placeholder
     await this._updateSuggestionOutcome(suggestion.id, 'applied');
 
     await interaction.reply({
