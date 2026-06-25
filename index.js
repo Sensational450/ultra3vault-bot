@@ -14,7 +14,7 @@ const Models = require('./tools/database/models');
 const { WebServer } = require('./web/server');
 const secrets = require('./config/secrets');
 const axios = require('axios');
-const ButtonHandler = require('./tools/discord/buttonHandler'); // 👈 NEW
+const ButtonHandler = require('./tools/discord/buttonHandler');
 
 // ================= UNHANDLED ERROR HANDLERS =================
 process.on('uncaughtException', (err) => {
@@ -91,7 +91,7 @@ const OptimizationAgent = require('./agents/optimizationAgent');
 const LocalizationAgent = require('./agents/localizationAgent');
 const ContentPlanningAgent = require('./agents/contentPlanningAgent');
 const AMAAgent = require('./agents/amaAgent');
-const SelfImprovementAgent = require('./agents/selfImprovementAgent');
+const SelfImprovementAgent = require('./agents/selfImprovementAgent'); // ✅ Fixed version
 
 let AiChatAgent = null;
 try {
@@ -346,7 +346,7 @@ try {
 
     // Attach Discord events (pass buttonHandler)
     require('./events/messageCreate')(client, orchestrator, { logger });
-    require('./events/interactionCreate')(client, orchestrator, { logger, buttonHandler }); // 👈 Pass buttonHandler
+    require('./events/interactionCreate')(client, orchestrator, { logger, buttonHandler });
     require('./events/guildMemberAdd')(client, orchestrator, { logger });
     require('./events/ready')(client, orchestrator, { logger, registerCommands: require('./commands/register') });
 
