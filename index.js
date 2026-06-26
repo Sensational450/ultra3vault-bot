@@ -91,7 +91,7 @@ const OptimizationAgent = require('./agents/optimizationAgent');
 const LocalizationAgent = require('./agents/localizationAgent');
 const ContentPlanningAgent = require('./agents/contentPlanningAgent');
 const AMAAgent = require('./agents/amaAgent');
-const SelfImprovementAgent = require('./agents/selfImprovementAgent'); // ✅ Fixed version
+const SelfImprovementAgent = require('./agents/selfImprovementAgent');
 
 let AiChatAgent = null;
 try {
@@ -389,6 +389,9 @@ try {
     const sentimentAnalysis = require('./jobs/sentimentAnalysis')({ eventBus, logger, orchestrator });
     const suggestionReport = require('./jobs/suggestionReport')({ eventBus, logger, orchestrator });
 
+    // 👇 TRIAL EXPIRY JOB
+    const trialExpiry = require('./jobs/trialExpiry')({ eventBus, logger, orchestrator });
+
     scheduler.registerJob('priceUpdater', '*/1 * * * *', priceUpdater);
     scheduler.registerJob('leaderboardReset', '0 0 * * 0', leaderboardReset);
     scheduler.registerJob('subscriptionRenewal', '0 */6 * * *', subscriptionRenewal);
@@ -482,6 +485,10 @@ try {
     scheduler.registerJob('sentimentAnalysis', '0 */6 * * *', sentimentAnalysis);
     scheduler.registerJob('suggestionReport', '0 20 * * 0', suggestionReport);
     logger.info('🧠 Self-improvement jobs scheduled');
+
+    // 👇 TRIAL EXPIRY JOB SCHEDULE (every hour)
+    scheduler.registerJob('trialExpiry', '0 * * * *', trialExpiry);
+    logger.info('⏰ Trial expiry job scheduled (every hour)');
 
     // Self‑ping job (keep Render awake)
     if (process.env.RENDER_EXTERNAL_URL) {
