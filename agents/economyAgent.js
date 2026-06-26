@@ -1,9 +1,10 @@
 /**
- * 💰 EconomyAgent v5.0
+ * 💰 EconomyAgent v5.1
  * - Daily rewards, balance, shop, leaderboard, transfer, inventory
  * - Uses models layer (Economy) for all database operations
  * - No table creation (handled by migrations)
  * - Emits events for purchases and grants
+ * - 🔹 Added `deductBalance` method for token‑based unlocks
  * - NOTE: The `/buy` command is handled by VipAgent (for subscriptions)
  * - Daily cooldown stored in DB to survive restarts
  */
@@ -23,8 +24,6 @@ class EconomyAgent extends BaseAgent {
       shopMessage: 'Use `/shop` to view items!',
     };
     this.guildConfigs = new Map();
-    // No more in-memory cooldown map – use DB
-    // Shop items (could be moved to DB later)
     this.shopItems = [
       { id: 'role_vip', name: 'VIP Role', type: 'role', roleId: process.env.VIP_ROLE_ID, price: 5000, description: 'Access to VIP channels' },
       { id: 'item_lottery', name: 'Lottery Ticket', type: 'consumable', price: 100, description: 'Enter the weekly lottery' },
@@ -34,9 +33,8 @@ class EconomyAgent extends BaseAgent {
 
   async init() {
     await super.init();
-    // Ensure cooldown table exists (migration should already create it)
     await this._ensureCooldownTable();
-    this.logger.info('💰 EconomyAgent ready');
+    this.logger.info('💰 EconomyAgent v5.1 ready');
   }
 
   async _ensureCooldownTable() {
@@ -50,7 +48,7 @@ class EconomyAgent extends BaseAgent {
     )`).catch(err => this.logger.warn(`Cooldown table ensure: ${err.message}`));
   }
 
-  // ---------- COOLDOWN HELPERS (DB) ----------
+  // ---------- COOLDOWN HELPERS ----------
   async getLastDaily(userId, guildId) {
     const db = this.deps.db;
     const row = await db.get(
@@ -69,7 +67,7 @@ class EconomyAgent extends BaseAgent {
     );
   }
 
-  // ---------- BALANCE HELPERS (using models) ----------
+  // ---------- BALANCE HELPERS ----------
   async getBalance(userId, guildId) {
     return await this.models.Economy.getBalance(userId, guildId);
   }
@@ -84,6 +82,28 @@ class EconomyAgent extends BaseAgent {
 
   async removeBalance(userId, guildId, amount) {
     await this.models.Economy.addBalance(userId, guildId, -amount);
+  }
+
+  /**
+   * 🔹 Deduct tokens from a user's balance (with check)
+   * @param {string} userId - Discord user ID
+   * @param {string} guildId - Discord guild ID
+   * @param {number} amount - Amount to deduct
+   * @param {string} reason - Reason for deduction (for logging/events)
+   * @returns {Promise<boolean>} - True if successful, false if insufficient balance
+   */
+  async deductBalance(userId, guildId, amount, reason) {
+    const currentBalance = await this.getBalance(userId, guildId);
+    if (currentBalance < amount) return false;
+    await this.removeBalance(userId, guildId, amount);
+    this.emit('economy.balanceChanged', {
+      userId,
+      guildId,
+      newBalance: currentBalance - amount,
+      change: -amount,
+      reason,
+    });
+    return true;
   }
 
   // ---------- INVENTORY ----------
@@ -126,7 +146,6 @@ class EconomyAgent extends BaseAgent {
       case 'shop':
         await this.cmdShop(interaction);
         break;
-      // 🚫 'buy' is removed – handled by VipAgent (VIP subscriptions)
       case 'leaderboard':
       case 'lb':
         await this.cmdLeaderboard(interaction);
@@ -191,7 +210,7 @@ class EconomyAgent extends BaseAgent {
     const embed = new EmbedBuilder()
       .setTitle('🛒 Shop')
       .setDescription(description || 'No items available.')
-      .setFooter({ text: 'Use `/buy <item_name>` to purchase (for economy items)' })
+      .setFooter({ text: 'Use `/buy` to purchase items (for economy items)' })
       .setColor(0xffaa00);
     await interaction.reply({ embeds: [embed] });
   }
