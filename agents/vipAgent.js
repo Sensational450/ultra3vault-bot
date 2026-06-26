@@ -1,7 +1,9 @@
 /**
- * 👑 VipAgent v6.0 (Persistent + Trial System)
+ * 👑 VipAgent v6.1 (Persistent + Trial System + Plan Pricing)
  * - Subscription management (VIP / Premium tiers)
  * - Trial system: claim, status, expiry, admin grant
+ * - Plan-based pricing: 7d, 14d, 30d (USD + tokens)
+ * - Token-based purchase method
  * - Uses models layer (Subscription) – fully persistent
  * - Listens to payment.success and admin events
  * - Handles role assignment/removal
@@ -18,8 +20,8 @@ class VipAgent extends BaseAgent {
       vip: {
         name: 'VIP',
         roleId: process.env.VIP_ROLE_ID,
-        priceUSD: 5,
-        priceCoins: 500,
+        priceUSD: 5,      // base price for 30 days (used as fallback)
+        priceCoins: 500,   // base token cost for 30 days (fallback)
         durationDays: 30,
         perks: 'Access to VIP channels, early news',
       },
@@ -33,6 +35,20 @@ class VipAgent extends BaseAgent {
       },
     };
 
+    // Plan-based pricing (USD and tokens)
+    this.planPricing = {
+      vip: {
+        7:  { usd: 2.00, tokens: 120 },
+        14: { usd: 4.00, tokens: 240 },
+        30: { usd: 8.00, tokens: 500 },
+      },
+      premium: {
+        7:  { usd: 6.00, tokens: 350 },
+        14: { usd: 12.00, tokens: 700 },
+        30: { usd: 25.00, tokens: 1500 },
+      },
+    };
+
     // Trial configuration
     this.trialDurationDays = parseInt(process.env.TRIAL_DURATION_DAYS) || 3;
     this.trialCooldownDays = parseInt(process.env.TRIAL_COOLDOWN_DAYS) || 30;
@@ -43,13 +59,11 @@ class VipAgent extends BaseAgent {
     this.subscribe('job.subscriptionRenewal', async () => {
       await this.checkExpiredSubscriptions();
     });
-    // Trial expiry job (optional – we'll also schedule separately)
     this.subscribe('job.trialExpiry', async () => {
       await this.expireTrials();
     });
-    // Ensure trial table exists
     await this._ensureTrialTable();
-    this.logger.info('👑 VipAgent v6.0 ready (with Trial System)');
+    this.logger.info('👑 VipAgent v6.1 ready (with Plan Pricing & Trial System)');
   }
 
   // ---------- DATABASE HELPERS ----------
@@ -74,7 +88,7 @@ class VipAgent extends BaseAgent {
     }
   }
 
-  // ---------- MODELS HELPERS (persistent) ----------
+  // ---------- MODELS HELPERS ----------
   async getSubscription(userId, guildId) {
     return await this.models.Subscription.get(userId, guildId);
   }
@@ -138,21 +152,10 @@ class VipAgent extends BaseAgent {
   }
 
   // ===================== TRIAL SYSTEM =====================
-
-  /**
-   * 🎟️ Claim a free trial for VIP or Premium
-   * @param {string} userId - Discord user ID
-   * @param {string} guildId - Discord guild ID
-   * @param {string} tier - 'vip' or 'premium'
-   * @param {number} durationDays - Number of days (default 3)
-   * @returns {Promise<{ success: boolean, message: string, expiresAt: Date }>}
-   */
   async claimTrial(userId, guildId, tier, durationDays = this.trialDurationDays) {
     if (!this.tiers[tier]) {
       return { success: false, message: 'Invalid tier. Choose vip or premium.' };
     }
-
-    // Check if user already has an active trial for this tier
     const existing = await this.db.get(
       `SELECT * FROM user_trials WHERE userId = ? AND guildId = ? AND tier = ? AND used = 0`,
       [userId, guildId, tier]
@@ -160,8 +163,6 @@ class VipAgent extends BaseAgent {
     if (existing) {
       return { success: false, message: `You already have an active ${tier.toUpperCase()} trial.` };
     }
-
-    // Check if user already used a trial for this tier
     const used = await this.db.get(
       `SELECT * FROM user_trials WHERE userId = ? AND guildId = ? AND tier = ? AND used = 1`,
       [userId, guildId, tier]
@@ -169,30 +170,22 @@ class VipAgent extends BaseAgent {
     if (used) {
       return { success: false, message: `You already used your ${tier.toUpperCase()} trial.` };
     }
-
-    // Check if user already has an active subscription for this tier
     const subscription = await this.getSubscription(userId, guildId);
     if (subscription && subscription.tier === tier && subscription.expiresAt > Date.now()) {
       return { success: false, message: `You already have an active ${tier.toUpperCase()} subscription.` };
     }
-
     const now = Date.now();
     const expiresAt = now + durationDays * 24 * 60 * 60 * 1000;
-
-    // Save trial to database
     await this.db.run(
       `INSERT INTO user_trials (userId, guildId, tier, claimedAt, expiresAt, used)
        VALUES (?, ?, ?, ?, ?, 0)`,
       [userId, guildId, tier, now, expiresAt]
     );
-
-    // Grant temporary access (assign role)
     const guild = this.client.guilds.cache.get(guildId);
     if (guild) {
       const member = await guild.members.fetch(userId).catch(() => null);
       if (member) await this.assignRole(member, tier);
     }
-
     this.logger.info(`🎟️ ${tier.toUpperCase()} trial claimed by ${userId} (expires in ${durationDays} days)`);
     return {
       success: true,
@@ -201,24 +194,14 @@ class VipAgent extends BaseAgent {
     };
   }
 
-  /**
-   * 🔄 Check and expire expired trials (run by scheduler)
-   * @returns {Promise<number>} - Number of expired trials
-   */
   async expireTrials() {
     const now = Date.now();
     const expired = await this.db.all(
       `SELECT * FROM user_trials WHERE expiresAt < ? AND used = 0`,
       [now]
     );
-
     for (const trial of expired) {
-      // Mark as used (expired)
-      await this.db.run(
-        `UPDATE user_trials SET used = 1 WHERE id = ?`,
-        [trial.id]
-      );
-      // Remove role
+      await this.db.run(`UPDATE user_trials SET used = 1 WHERE id = ?`, [trial.id]);
       const guild = this.client.guilds.cache.get(trial.guildId);
       if (guild) {
         const member = await guild.members.fetch(trial.userId).catch(() => null);
@@ -232,21 +215,13 @@ class VipAgent extends BaseAgent {
     return expired.length;
   }
 
-  /**
-   * 📊 Get trial status for a user
-   * @param {string} userId - Discord user ID
-   * @param {string} guildId - Discord guild ID
-   * @returns {Promise<Object>}
-   */
   async getTrialStatus(userId, guildId) {
     const trials = await this.db.all(
       `SELECT * FROM user_trials WHERE userId = ? AND guildId = ?`,
       [userId, guildId]
     );
-
     const active = trials.filter(t => t.used === 0 && t.expiresAt > Date.now());
     const expired = trials.filter(t => t.used === 1 || t.expiresAt <= Date.now());
-
     return {
       active: active.map(t => ({
         tier: t.tier,
@@ -258,16 +233,7 @@ class VipAgent extends BaseAgent {
     };
   }
 
-  /**
-   * 🎁 Admin: Grant trial to a user
-   * @param {string} adminUserId - Admin Discord user ID
-   * @param {string} targetUserId - Target Discord user ID
-   * @param {string} guildId - Discord guild ID
-   * @param {string} tier - 'vip' or 'premium'
-   * @param {number} durationDays - Number of days
-   */
   async adminGrantTrial(adminUserId, targetUserId, guildId, tier, durationDays = this.trialDurationDays) {
-    // Check admin permissions (handled in command)
     const result = await this.claimTrial(targetUserId, guildId, tier, durationDays);
     if (result.success) {
       this.logger.info(`🎁 Admin ${adminUserId} granted ${tier} trial to ${targetUserId}`);
@@ -282,7 +248,6 @@ class VipAgent extends BaseAgent {
     const duration = durationDays || tierData.durationDays;
     const expiresAt = Date.now() + duration * 24 * 60 * 60 * 1000;
 
-    // Remove old role if exists
     const existing = await this.getSubscription(userId, guildId);
     if (existing) {
       const guild = this.client.guilds.cache.get(guildId);
@@ -292,7 +257,6 @@ class VipAgent extends BaseAgent {
       }
     }
     await this.setSubscription(userId, guildId, tier, expiresAt, autoRenew);
-    // Assign new role
     const guild = this.client.guilds.cache.get(guildId);
     if (guild) {
       const member = await guild.members.fetch(userId).catch(() => null);
@@ -333,12 +297,94 @@ class VipAgent extends BaseAgent {
     return true;
   }
 
+  // ===================== PRICING HELPERS (NEW) =====================
+
+  /**
+   * Get token cost for a given tier and plan (days)
+   * @param {string} tier - 'vip' or 'premium'
+   * @param {number} days - 7, 14, or 30
+   * @returns {number} Cost in tokens
+   */
+  getTokenCost(tier, days) {
+    const plan = this.planPricing[tier]?.[days];
+    if (plan) return plan.tokens;
+    // Fallback to base priceCoins prorated
+    const tierData = this.tiers[tier];
+    if (!tierData) throw new Error('Invalid tier');
+    return Math.ceil((tierData.priceCoins / tierData.durationDays) * days);
+  }
+
+  /**
+   * Get USD cost for a given tier and plan (days)
+   * @param {string} tier - 'vip' or 'premium'
+   * @param {number} days - 7, 14, or 30
+   * @returns {number} Cost in USD
+   */
+  getUsdCost(tier, days) {
+    const plan = this.planPricing[tier]?.[days];
+    if (plan) return plan.usd;
+    // Fallback to base priceUSD prorated
+    const tierData = this.tiers[tier];
+    if (!tierData) throw new Error('Invalid tier');
+    return parseFloat(((tierData.priceUSD / tierData.durationDays) * days).toFixed(2));
+  }
+
+  /**
+   * 💰 Purchase subscription using economy tokens
+   * @param {string} userId - Discord user ID
+   * @param {string} guildId - Discord guild ID
+   * @param {string} tier - 'vip' or 'premium'
+   * @param {number} days - Number of days (7, 14, or 30)
+   * @param {Object} economyAgent - Reference to EconomyAgent for balance operations
+   * @returns {Promise<{ success: boolean, message: string, expiresAt?: Date }>}
+   */
+  async purchaseWithTokens(userId, guildId, tier, days, economyAgent) {
+    const tierData = this.tiers[tier];
+    if (!tierData) {
+      return { success: false, message: 'Invalid tier. Choose vip or premium.' };
+    }
+    if (![7, 14, 30].includes(days)) {
+      return { success: false, message: 'Invalid plan. Choose 7, 14, or 30 days.' };
+    }
+
+    const totalCost = this.getTokenCost(tier, days);
+
+    // Check balance
+    if (!economyAgent) {
+      return { success: false, message: 'Economy system not available.' };
+    }
+    const balance = await economyAgent.getBalance(userId, guildId);
+    if (balance < totalCost) {
+      return {
+        success: false,
+        message: `❌ Insufficient tokens. You need **${totalCost}** tokens, but you have **${balance}**. Earn more via \`/daily\` or \`/referral\`.`,
+      };
+    }
+
+    // Deduct tokens
+    const deducted = await economyAgent.deductBalance(userId, guildId, totalCost, `Purchased ${tier} for ${days} days`);
+    if (!deducted) {
+      return { success: false, message: 'Failed to deduct tokens. Please try again.' };
+    }
+
+    // Grant subscription
+    const expiresAt = await this.grantSubscription(userId, guildId, tier, days, 0, 'tokens');
+
+    this.logger.info(`💰 User ${userId} purchased ${tier} for ${days} days using ${totalCost} tokens`);
+
+    return {
+      success: true,
+      message: `✅ **${tierData.name}** unlocked for **${days} days**! Expires: <t:${Math.floor(expiresAt / 1000)}:R>.`,
+      expiresAt: new Date(expiresAt),
+    };
+  }
+
   // ---------- EVENT BUS LISTENERS ----------
   setupListeners() {
     this.subscribe('payment.success', async (data) => {
-      const { userId, guildId, tier } = data;
+      const { userId, guildId, tier, days } = data;
       if (this.tiers[tier]) {
-        await this.grantSubscription(userId, guildId, tier, null, 0, 'crypto');
+        await this.grantSubscription(userId, guildId, tier, days || null, 0, 'crypto');
       } else {
         this.logger.warn(`Unknown tier ${tier} in payment.success`);
       }
@@ -384,7 +430,6 @@ class VipAgent extends BaseAgent {
         if (!member.permissions.has('Administrator')) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
         await this.cmdRevokeVip(interaction);
         break;
-      // Trial commands
       case 'trial':
         await this.cmdTrial(interaction);
         break;
@@ -461,14 +506,17 @@ class VipAgent extends BaseAgent {
       return interaction.reply({ content: `Invalid tier. Choose: ${Object.keys(this.tiers).join(', ')}`, ephemeral: true });
     }
     const tierData = this.tiers[tierOption];
+    // Emit event with a default duration (30 days) – the command could be extended with plan later.
+    // For simplicity, we'll keep as is, but we could also read a 'plan' option.
     this.emit('vip.purchase.init', {
       userId: interaction.user.id,
       guildId: interaction.guild.id,
       tier: tierOption,
       price: tierData.priceCoins,
+      days: 30,
     });
     await interaction.reply({
-      content: `💰 Starting purchase of **${tierData.name}** for ${tierData.priceCoins} coins. Use /balance to check funds.`,
+      content: `💰 Starting purchase of **${tierData.name}** for ${tierData.priceCoins} coins (30 days). Use /balance to check funds.`,
       ephemeral: true,
     });
   }
