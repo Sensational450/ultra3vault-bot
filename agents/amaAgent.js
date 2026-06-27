@@ -1,9 +1,8 @@
 /**
- * 🎙️ AMAAgent v6.4 — AI Co‑Host for AMA Sessions (Fixed Defer)
- * - Replies instantly to /amaquestion with AI answer
- * - Uses interaction.deferReply() to avoid timeout
- * - No artificial delays – AI call is already slow enough
- * - Detailed error logging to diagnose AI failures
+ * 🎙️ AMAAgent v6.5 — AI Co‑Host for AMA Sessions (Fixed Gemini Model)
+ * - Uses OpenAI (primary), falls back to Gemini (stable model)
+ * - Correct model: gemini-1.5-flash (available in v1beta)
+ * - Handles OpenAI quota errors gracefully
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
@@ -36,7 +35,8 @@ class AMAAgent extends BaseAgent {
     this.useGemini = !!process.env.GEMINI_API_KEY;
     if (this.useGemini) {
       this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-      this.geminiModel = process.env.GEMINI_MODEL || 'gemini-2.0-flash-exp';
+      // ✅ Fixed: Use a stable model available in v1beta
+      this.geminiModel = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
       this.logger.info(`🧠 Gemini available (model: ${this.geminiModel})`);
     } else {
       this.logger.warn('⚠️ GEMINI_API_KEY missing – Gemini disabled.');
@@ -60,9 +60,10 @@ class AMAAgent extends BaseAgent {
     this.subscribe('job.amasummary', async () => {
       await this._postAMASummary();
     });
-    this.logger.info(`🎙️ AMAAgent v6.4 ready (channel: ${this.amaChannelId})`);
+    this.logger.info(`🎙️ AMAAgent v6.5 ready (channel: ${this.amaChannelId})`);
   }
 
+  // ---------- Table Creation ----------
   async _ensureTable() {
     try {
       await this.db.exec(`
@@ -81,6 +82,7 @@ class AMAAgent extends BaseAgent {
     }
   }
 
+  // ---------- Message Handler ----------
   async onMessage(message) {
     if (!this.enabled) return;
     if (message.author.bot) return;
@@ -108,11 +110,12 @@ class AMAAgent extends BaseAgent {
     }
   }
 
+  // ---------- AI Answer Generation ----------
   async _generateAnswer(question, context = '') {
     const prompt = this._buildPrompt(question, context);
     let result = null;
 
-    // 1. Try OpenAI
+    // 1. Try OpenAI (if available and not quota-exceeded)
     if (this.openai) {
       try {
         this.logger.debug('⏳ Asking OpenAI...');
@@ -136,14 +139,16 @@ class AMAAgent extends BaseAgent {
         this.logger.debug('✅ OpenAI answer success');
       } catch (err) {
         this.logger.error(`❌ OpenAI failed: ${err.message}`);
-        if (err.response) {
-          this.logger.error(`Status: ${err.response.status} - ${err.response.statusText}`);
-          this.logger.error(`Data: ${JSON.stringify(err.response.data)}`);
+        // If it's a quota error, we'll fall through to Gemini (or fallback)
+        if (err.status === 429) {
+          this.logger.warn('⚠️ OpenAI quota exceeded – trying Gemini');
+        } else {
+          this.logger.error(`Status: ${err.status} - ${err.message}`);
         }
       }
     }
 
-    // 2. Try Gemini
+    // 2. Try Gemini (if OpenAI failed or not available)
     if (!result && this.useGemini) {
       try {
         this.logger.debug('⏳ Asking Gemini...');
@@ -171,6 +176,7 @@ class AMAAgent extends BaseAgent {
     return result;
   }
 
+  // ---------- Memory Helpers ----------
   _addToMemory(channelId, message) {
     if (!this.conversationMemory.has(channelId)) {
       this.conversationMemory.set(channelId, []);
@@ -196,6 +202,7 @@ class AMAAgent extends BaseAgent {
     return prompt;
   }
 
+  // ---------- Database ----------
   async _logQA(userId, question, answer) {
     try {
       await this.db.run(
@@ -208,6 +215,7 @@ class AMAAgent extends BaseAgent {
     }
   }
 
+  // ---------- AMA Summary ----------
   async _postAMASummary() {
     const channel = this.client.channels.cache.get(this.amaChannelId);
     if (!channel || !channel.isTextBased()) return;
@@ -277,7 +285,7 @@ class AMAAgent extends BaseAgent {
     this.logger.info('🎙️ AMA summary posted');
   }
 
-  // ===================== SLASH COMMANDS =====================
+  // ---------- Slash Commands ----------
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
     const { commandName } = interaction;
@@ -327,7 +335,6 @@ class AMAAgent extends BaseAgent {
   async cmdAMAQuestion(interaction) {
     const question = interaction.options.getString('question');
 
-    // ✅ Defer immediately to avoid 3-second timeout
     await interaction.deferReply({ ephemeral: true });
 
     let answer = 'No answer generated.';
@@ -338,15 +345,12 @@ class AMAAgent extends BaseAgent {
       answer = 'Sorry, I could not generate an answer right now. Please try again later.';
     }
 
-    // Log Q&A
     await this._logQA(interaction.user.id, question, answer);
 
-    // Edit the deferred reply
     await interaction.editReply({
       content: `✅ Your question:\n**${question}**\n\n🤖 Answer:\n${answer}`,
     });
 
-    // Also post to AMA channel
     const channel = this.client.channels.cache.get(this.amaChannelId);
     if (channel && channel.isTextBased()) {
       await channel.send(`📋 **Question from ${interaction.user.username}:**\n${question}\n\n💬 **Answer:**\n${answer}`);
