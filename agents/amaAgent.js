@@ -1,7 +1,8 @@
 /**
- * 🎙️ AMAAgent v6.3 — AI Co‑Host for AMA Sessions (Debug + Delay)
+ * 🎙️ AMAAgent v6.4 — AI Co‑Host for AMA Sessions (Fixed Defer)
  * - Replies instantly to /amaquestion with AI answer
- * - Added 3s delay to simulate "thinking"
+ * - Uses interaction.deferReply() to avoid timeout
+ * - No artificial delays – AI call is already slow enough
  * - Detailed error logging to diagnose AI failures
  */
 const BaseAgent = require('./baseAgent');
@@ -59,7 +60,7 @@ class AMAAgent extends BaseAgent {
     this.subscribe('job.amasummary', async () => {
       await this._postAMASummary();
     });
-    this.logger.info(`🎙️ AMAAgent v6.3 ready (channel: ${this.amaChannelId})`);
+    this.logger.info(`🎙️ AMAAgent v6.4 ready (channel: ${this.amaChannelId})`);
   }
 
   async _ensureTable() {
@@ -99,9 +100,6 @@ class AMAAgent extends BaseAgent {
     });
 
     try {
-      // Artificial 3s delay to simulate "thinking"
-      await new Promise(resolve => setTimeout(resolve, 3000));
-
       const answer = await this._generateAnswer(message.content);
       await message.reply(answer);
       await this._logQA(message.author.id, message.content, answer);
@@ -173,8 +171,187 @@ class AMAAgent extends BaseAgent {
     return result;
   }
 
-  // ... (rest of the methods unchanged: _addToMemory, _getConversationContext, _buildPrompt, _logQA, _postAMASummary, onInteraction, cmdAMASummary, cmdAMAQuestion)
-  // I'm omitting them here for brevity – they remain exactly as in the previous version.
+  _addToMemory(channelId, message) {
+    if (!this.conversationMemory.has(channelId)) {
+      this.conversationMemory.set(channelId, []);
+    }
+    const memory = this.conversationMemory.get(channelId);
+    memory.push(message);
+    if (memory.length > this.memoryLimit) {
+      memory.shift();
+    }
+  }
+
+  _getConversationContext(channelId) {
+    const memory = this.conversationMemory.get(channelId) || [];
+    return memory.slice(-10).map(m => `${m.author}: ${m.content}`).join('\n');
+  }
+
+  _buildPrompt(question, context) {
+    let prompt = `Question: ${question}\n`;
+    if (context) {
+      prompt += `\nPrevious conversation:\n${context}\n`;
+    }
+    prompt += '\nProvide a helpful, concise response:';
+    return prompt;
+  }
+
+  async _logQA(userId, question, answer) {
+    try {
+      await this.db.run(
+        `INSERT INTO ama_history (userId, question, answer, timestamp, guildId)
+         VALUES (?, ?, ?, ?, ?)`,
+        [userId, question, answer, Date.now(), this.client.guilds.cache.first()?.id || 'unknown']
+      );
+    } catch (err) {
+      this.logger.debug(`Failed to log AMA Q&A: ${err.message}`);
+    }
+  }
+
+  async _postAMASummary() {
+    const channel = this.client.channels.cache.get(this.amaChannelId);
+    if (!channel || !channel.isTextBased()) return;
+
+    const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const rows = await this.db.all(
+      `SELECT * FROM ama_history WHERE timestamp > ? ORDER BY timestamp DESC LIMIT 20`,
+      [weekAgo]
+    );
+
+    if (!rows || rows.length === 0) {
+      await channel.send('📋 No AMA questions recorded this week. Ask away!');
+      return;
+    }
+
+    const summaryText = rows.map((row, i) => `${i+1}. Q: ${row.question}\n   A: ${row.answer}\n`).join('\n');
+    let summary = null;
+
+    if (this.openai) {
+      try {
+        const response = await this.openai.chat.completions.create({
+          model: 'gpt-3.5-turbo',
+          messages: [
+            { role: 'system', content: 'You are a community manager summarizing an AMA session. Create a concise summary of the key topics discussed.' },
+            { role: 'user', content: `Summarize these AMA questions and answers:\n\n${summaryText}` }
+          ],
+          max_tokens: 300,
+          temperature: 0.5,
+        });
+        summary = response.choices[0].message.content.trim();
+      } catch (err) {
+        this.logger.warn(`⚠️ OpenAI summary failed: ${err.message} – trying Gemini`);
+      }
+    }
+
+    if (!summary && this.useGemini) {
+      try {
+        const model = this.genAI.getGenerativeModel({ model: this.geminiModel });
+        const geminiResult = await model.generateContent({
+          contents: [{ role: 'user', parts: [{ text: `You are a community manager. Summarize these AMA questions and answers:\n\n${summaryText}` }] }],
+          generationConfig: { maxOutputTokens: 300, temperature: 0.5 },
+        });
+        summary = geminiResult.response.text().trim();
+      } catch (err) {
+        this.logger.warn(`⚠️ Gemini summary failed: ${err.message}`);
+      }
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle('🎙️ AMA Session Summary')
+      .setDescription(summary || `Here are the top questions from this AMA session:`)
+      .setColor(0x9b59b6)
+      .setTimestamp();
+
+    if (rows.length > 0) {
+      const topQuestions = rows.slice(0, 5);
+      for (const row of topQuestions) {
+        embed.addFields({
+          name: `❓ ${row.question}`,
+          value: `💬 ${row.answer.substring(0, 100)}${row.answer.length > 100 ? '...' : ''}`,
+          inline: false,
+        });
+      }
+    }
+
+    await channel.send({ embeds: [embed] });
+    this.logger.info('🎙️ AMA summary posted');
+  }
+
+  // ===================== SLASH COMMANDS =====================
+  async onInteraction(interaction) {
+    if (!interaction.isCommand()) return;
+    const { commandName } = interaction;
+
+    switch (commandName) {
+      case 'amasummary':
+        await this.cmdAMASummary(interaction);
+        break;
+      case 'amaquestion':
+        await this.cmdAMAQuestion(interaction);
+        break;
+    }
+  }
+
+  async cmdAMASummary(interaction) {
+    if (!interaction.memberPermissions.has('ManageMessages')) {
+      return interaction.reply({ content: '❌ You need `Manage Messages` permission.', ephemeral: true });
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+
+    const rows = await this.db.all(
+      `SELECT * FROM ama_history WHERE guildId = ? ORDER BY timestamp DESC LIMIT 20`,
+      [interaction.guild.id]
+    );
+
+    if (!rows || rows.length === 0) {
+      return interaction.editReply({ content: '📋 No AMA questions recorded yet.' });
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle('🎙️ AMA History')
+      .setColor(0x9b59b6)
+      .setDescription(`Recent questions (${rows.length} total):`);
+
+    for (const row of rows.slice(0, 10)) {
+      embed.addFields({
+        name: `❓ ${row.question}`,
+        value: `💬 ${row.answer.substring(0, 80)}${row.answer.length > 80 ? '...' : ''}`,
+        inline: false,
+      });
+    }
+
+    await interaction.editReply({ embeds: [embed] });
+  }
+
+  async cmdAMAQuestion(interaction) {
+    const question = interaction.options.getString('question');
+
+    // ✅ Defer immediately to avoid 3-second timeout
+    await interaction.deferReply({ ephemeral: true });
+
+    let answer = 'No answer generated.';
+    try {
+      answer = await this._generateAnswer(question);
+    } catch (err) {
+      this.logger.error(`Error generating answer: ${err.message}`);
+      answer = 'Sorry, I could not generate an answer right now. Please try again later.';
+    }
+
+    // Log Q&A
+    await this._logQA(interaction.user.id, question, answer);
+
+    // Edit the deferred reply
+    await interaction.editReply({
+      content: `✅ Your question:\n**${question}**\n\n🤖 Answer:\n${answer}`,
+    });
+
+    // Also post to AMA channel
+    const channel = this.client.channels.cache.get(this.amaChannelId);
+    if (channel && channel.isTextBased()) {
+      await channel.send(`📋 **Question from ${interaction.user.username}:**\n${question}\n\n💬 **Answer:**\n${answer}`);
+    }
+  }
 }
 
 module.exports = AMAAgent;
