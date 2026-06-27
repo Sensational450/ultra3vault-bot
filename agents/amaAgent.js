@@ -1,10 +1,9 @@
 /**
- * 🎙️ AMAAgent v6.0 — AI Co‑Host for AMA Sessions
+ * 🎙️ AMAAgent v6.1 — AI Co‑Host for AMA Sessions
  * - Auto‑replies to questions in #ama-chat
  * - Uses OpenAI for intelligent responses, falls back to Gemini
- * - Fetches market data from PriceFeedAgent
- * - Logs Q&A pairs to database
- * - Generates AMA summaries using AI (OpenAI → Gemini → fallback)
+ * - Logs Q&A pairs to database (with auto‑table creation)
+ * - Generates AMA summaries using AI
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
@@ -44,7 +43,7 @@ class AMAAgent extends BaseAgent {
       this.logger.warn('⚠️ GEMINI_API_KEY missing – Gemini disabled.');
     }
 
-    // Fallback responses (only used if both AI providers fail)
+    // Fallback responses
     this.fallbackResponses = [
       "That's a great question! Let me get back to you on that.",
       "Interesting question! I'll look into this and get back to you.",
@@ -61,12 +60,34 @@ class AMAAgent extends BaseAgent {
       return;
     }
 
+    // Ensure the ama_history table exists
+    await this._ensureTable();
+
     // Subscribe to AMA summary requests
     this.subscribe('job.amasummary', async () => {
       await this._postAMASummary();
     });
 
-    this.logger.info(`🎙️ AMAAgent v6.0 ready (channel: ${this.amaChannelId})`);
+    this.logger.info(`🎙️ AMAAgent v6.1 ready (channel: ${this.amaChannelId})`);
+  }
+
+  // ---------- Table Creation ----------
+  async _ensureTable() {
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS ama_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          userId TEXT NOT NULL,
+          question TEXT NOT NULL,
+          answer TEXT,
+          timestamp INTEGER,
+          guildId TEXT
+        )
+      `);
+      this.logger.debug('✅ ama_history table ready');
+    } catch (err) {
+      this.logger.error(`❌ Failed to create ama_history table: ${err.message}`);
+    }
   }
 
   // ===================== MESSAGE HANDLER =====================
@@ -133,7 +154,7 @@ class AMAAgent extends BaseAgent {
       }
     }
 
-    // 2. Try Gemini (if OpenAI failed or not available)
+    // 2. Try Gemini
     if (!result && this.useGemini) {
       try {
         const model = this.genAI.getGenerativeModel({ model: this.geminiModel });
@@ -148,7 +169,7 @@ class AMAAgent extends BaseAgent {
       }
     }
 
-    // 3. Fallback to hardcoded responses
+    // 3. Fallback
     if (!result) {
       result = this.fallbackResponses[Math.floor(Math.random() * this.fallbackResponses.length)];
       this.logger.warn('⚠️ Using fallback AMA response');
