@@ -1,11 +1,13 @@
 /**
- * 🧠 RecommendationAgent v5.0
+ * 🧠 RecommendationAgent v6.0 (Configurable + AI‑Enhanced)
  * - Generates crypto trading recommendations from:
  *   • SignalAgent (high‑confidence BUY/SELL)
  *   • WhaleAgent (large accumulation)
  *   • NewsAgent (sentiment)
  *   • Periodic market scan (top gainers, volume spikes)
  * - Routes to VIP (light) and PREMIUM (advanced) channels
+ * - Configurable thresholds and coin list via env
+ * - Uses OpenAI to enhance recommendation reasons (if available)
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
@@ -15,19 +17,35 @@ class RecommendationAgent extends BaseAgent {
   constructor(eventBus, deps) {
     super(eventBus, deps);
 
-    // Hardcoded defaults
-    this.coins = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA'];
-    this.coinGeckoApi = 'https://api.coingecko.com/api/v3';
+    // ---- Config from Environment ----
+    this.coins = (process.env.RECOMMENDATION_COINS || 'BTC,ETH,SOL,BNB,XRP,ADA')
+      .split(',').map(c => c.trim().toUpperCase());
+
+    this.cacheTTL = parseInt(process.env.RECOMMENDATION_CACHE_TTL) || 2 * 60 * 60 * 1000; // 2 hours
+    this.minWhaleValue = parseFloat(process.env.RECOMMENDATION_MIN_WHALE_VALUE) || 3_000_000; // $3M
+    this.topGainerThreshold = parseFloat(process.env.RECOMMENDATION_TOP_GAINER_THRESHOLD) || 8; // 8%
+    this.volumeSpikeThreshold = parseFloat(process.env.RECOMMENDATION_VOLUME_SPIKE_THRESHOLD) || 1_000_000_000; // $1B
+    this.minSignalConfidence = parseFloat(process.env.RECOMMENDATION_MIN_SIGNAL_CONFIDENCE) || 70;
+
+    // ---- OpenAI (for enhanced reasons) ----
+    this.openai = null;
+    try {
+      if (process.env.OPENAI_API_KEY) {
+        const { OpenAI } = require('openai');
+        this.openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+        this.logger.info('🧠 OpenAI available for RecommendationAgent');
+      }
+    } catch (err) {
+      this.logger.warn('OpenAI not available – reasons will be simple.');
+    }
 
     // Track what we've already recommended (dedup)
     this.recommendationCache = new Map();
-    this.cacheTTL = 2 * 60 * 60 * 1000; // 2 hours
   }
 
   async init() {
     await super.init();
 
-    // Listen to existing agents
     this.subscribe('signal.generated', async (data) => {
       await this._processSignal(data);
     });
@@ -40,28 +58,27 @@ class RecommendationAgent extends BaseAgent {
       await this._processNews(data);
     });
 
-    // Periodic market scan (every 15 min)
     this.subscribe('job.recommendationCheck', async () => {
       await this._periodicScan();
     });
 
-    this.logger.info('🧠 RecommendationAgent v5.0 ready');
+    this.logger.info(`🧠 RecommendationAgent v6.0 ready (coins: ${this.coins.join(', ')})`);
   }
 
   // ---------- SIGNAL PROCESSOR ----------
   async _processSignal(signal) {
-    // Only act on strong signals
-    if (signal.confidence < 70) return;
+    if (signal.confidence < this.minSignalConfidence) return;
 
     const tier = signal.confidence >= 80 ? 'premium' : 'vip';
     const action = signal.action === 'BUY' ? 'Accumulate' : 'Reduce exposure';
+    const reason = await this._enhanceReason(signal.reasons, signal.coin, signal.action, signal.confidence);
 
     const rec = {
       tier,
       asset: signal.coin,
       action,
       confidence: signal.confidence,
-      reason: `📈 Signal AI: ${signal.reasons.substring(0, 80)}`,
+      reason: `📈 Signal AI: ${reason}`,
       price: signal.priceUsd,
       source: 'SignalAI',
       urgency: signal.confidence >= 85 ? 'high' : 'medium',
@@ -73,15 +90,22 @@ class RecommendationAgent extends BaseAgent {
 
   // ---------- WHALE PROCESSOR ----------
   async _processWhale(tx) {
-    if (tx.usdValue < 3_000_000) return; // Only big whales
+    if (tx.usdValue < this.minWhaleValue) return;
     if (!this.coins.includes(tx.symbol)) return;
 
+    const reason = await this._enhanceReason(
+      `Large accumulation of ${tx.amount} ${tx.symbol} ($${(tx.usdValue / 1e6).toFixed(1)}M moved)`,
+      tx.symbol,
+      'BUY',
+      75
+    );
+
     const rec = {
-      tier: 'premium', // Whale alerts are premium
+      tier: 'premium',
       asset: tx.symbol,
       action: 'Follow the whale',
       confidence: 75,
-      reason: `🐋 Large accumulation: ${tx.amount} ${tx.symbol} ($${(tx.usdValue / 1e6).toFixed(1)}M moved)`,
+      reason: `🐋 ${reason}`,
       price: null,
       source: 'WhaleAlert',
       urgency: 'high',
@@ -105,13 +129,20 @@ class RecommendationAgent extends BaseAgent {
 
     const action = score > 0 ? 'Consider buying' : 'Consider selling';
     const tier = Math.abs(score) >= 3 ? 'premium' : 'vip';
+    const confidence = 60 + Math.abs(score) * 5;
+    const reason = await this._enhanceReason(
+      `News sentiment (${score > 0 ? 'positive' : 'negative'}): ${data.summary.substring(0, 60)}...`,
+      'BTC',
+      action,
+      confidence
+    );
 
     const rec = {
       tier,
       asset: 'BTC (market sentiment)',
       action,
-      confidence: 60 + Math.abs(score) * 5,
-      reason: `📰 News sentiment (${score > 0 ? 'positive' : 'negative'}): ${data.summary.substring(0, 60)}...`,
+      confidence,
+      reason: `📰 ${reason}`,
       price: null,
       source: 'NewsSentiment',
       urgency: tier === 'premium' ? 'medium' : 'low',
@@ -141,14 +172,19 @@ class RecommendationAgent extends BaseAgent {
         const change24h = coin.price_change_percentage_24h || 0;
         const volume = coin.total_volume || 0;
 
-        // Top gainers (> 8%)
-        if (change24h > 8) {
+        if (change24h > this.topGainerThreshold) {
+          const reason = await this._enhanceReason(
+            `Top gainer: +${change24h.toFixed(1)}% in 24h, volume $${(volume / 1e6).toFixed(0)}M`,
+            coin.symbol.toUpperCase(),
+            'WATCH',
+            65
+          );
           const rec = {
             tier: 'vip',
             asset: coin.symbol.toUpperCase(),
             action: 'Watchlist',
             confidence: 65,
-            reason: `📈 Top gainer: +${change24h.toFixed(1)}% in 24h, volume $${(volume / 1e6).toFixed(0)}M`,
+            reason: `📈 ${reason}`,
             price: coin.current_price,
             source: 'MarketScan',
             urgency: 'low',
@@ -157,14 +193,19 @@ class RecommendationAgent extends BaseAgent {
           await this._emitRecommendation(rec);
         }
 
-        // Volume spike (> $1B)
-        if (volume > 1_000_000_000 && change24h > 3) {
+        if (volume > this.volumeSpikeThreshold && change24h > 3) {
+          const reason = await this._enhanceReason(
+            `Volume spike: $${(volume / 1e9).toFixed(1)}B traded, ${change24h.toFixed(1)}% change`,
+            coin.symbol.toUpperCase(),
+            'HIGH_ACTIVITY',
+            70
+          );
           const rec = {
             tier: 'premium',
             asset: coin.symbol.toUpperCase(),
             action: 'High activity',
             confidence: 70,
-            reason: `📊 Volume spike: $${(volume / 1e9).toFixed(1)}B traded, ${change24h.toFixed(1)}% change`,
+            reason: `📊 ${reason}`,
             price: coin.current_price,
             source: 'MarketScan',
             urgency: 'medium',
@@ -178,15 +219,31 @@ class RecommendationAgent extends BaseAgent {
     }
   }
 
+  // ---------- AI ENHANCEMENT ----------
+  async _enhanceReason(baseReason, asset, action, confidence) {
+    if (!this.openai) return baseReason;
+    try {
+      const prompt = `Given this crypto market signal: ${baseReason} for ${asset} with ${action} and ${confidence}% confidence, write a short, actionable recommendation (1 sentence).`;
+      const response = await this.openai.chat.completions.create({
+        model: 'gpt-3.5-turbo',
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 60,
+        temperature: 0.7,
+      });
+      return response.choices[0].message.content.trim();
+    } catch (err) {
+      this.logger.debug(`AI enhancement failed: ${err.message}`);
+      return baseReason;
+    }
+  }
+
   // ---------- EMIT RECOMMENDATION ----------
   async _emitRecommendation(rec) {
-    // Dedup
     const key = `${rec.asset}_${rec.action}_${rec.source}`;
     if (this.recommendationCache.has(key) && Date.now() - this.recommendationCache.get(key) < this.cacheTTL) {
       return;
     }
     this.recommendationCache.set(key, Date.now());
-
     this.emit('recommendation.generated', rec);
     this.logger.info(`🧠 Recommendation: ${rec.asset} ${rec.action} (${rec.tier})`);
   }
@@ -221,7 +278,7 @@ class RecommendationAgent extends BaseAgent {
         { name: '⏰ Time', value: `<t:${Math.floor(new Date(rec.timestamp).getTime() / 1000)}:R>`, inline: false }
       )
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Recommendation AI v5.0' });
+      .setFooter({ text: 'Ultra3Vault • Recommendation AI v6.0' });
 
     return embed;
   }
