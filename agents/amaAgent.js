@@ -1,7 +1,7 @@
 /**
- * 🎙️ AMAAgent v6.7 — AI Co‑Host for AMA Sessions (Customizable Gemini Model)
- * - Uses OpenAI (primary), falls back to Gemini with configurable model via GEMINI_MODEL env
- * - If Gemini fails, logs the error and uses fallback responses
+ * 🎙️ AMAAgent v6.8 — Default to gemini-pro
+ * - Uses OpenAI (primary), falls back to Gemini (default: gemini-pro)
+ * - Allows override via GEMINI_MODEL env
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
@@ -34,8 +34,8 @@ class AMAAgent extends BaseAgent {
     this.useGemini = !!process.env.GEMINI_API_KEY;
     if (this.useGemini) {
       this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-      // Allow user to override model via env, default to gemini-1.5-pro
-      this.geminiModel = process.env.GEMINI_MODEL || 'gemini-1.5-pro';
+      // Use the stable gemini-pro model by default (works with free tier)
+      this.geminiModel = process.env.GEMINI_MODEL || 'gemini-pro';
       this.logger.info(`🧠 Gemini available (model: ${this.geminiModel})`);
     } else {
       this.logger.warn('⚠️ GEMINI_API_KEY missing – Gemini disabled.');
@@ -59,7 +59,7 @@ class AMAAgent extends BaseAgent {
     this.subscribe('job.amasummary', async () => {
       await this._postAMASummary();
     });
-    this.logger.info(`🎙️ AMAAgent v6.7 ready (channel: ${this.amaChannelId})`);
+    this.logger.info(`🎙️ AMAAgent v6.8 ready (channel: ${this.amaChannelId})`);
   }
 
   // ---------- Table Creation ----------
@@ -160,9 +160,8 @@ class AMAAgent extends BaseAgent {
         if (err.response) {
           this.logger.error(`Status: ${err.response.status} - ${err.response.statusText}`);
         }
-        // Provide helpful hint
         if (err.message.includes('404')) {
-          this.logger.error('💡 Try setting a different Gemini model via GEMINI_MODEL env (e.g., gemini-1.5-flash, gemini-2.0-flash-exp).');
+          this.logger.error('💡 Try setting GEMINI_MODEL to "gemini-1.5-pro" or "gemini-pro" in Render environment.');
         }
       }
     }
