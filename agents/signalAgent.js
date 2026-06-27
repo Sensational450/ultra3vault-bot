@@ -1,11 +1,12 @@
 /**
- * 📈 SignalAgent v5.0
+ * 📈 SignalAgent v6.0 (Configurable + AI‑Enhanced)
  * - Generates trading signals using:
  *   • Price + RSI (CoinGecko)
  *   • MACD, SMA crossovers
  *   • Whale correlation (from WhaleAgent)
  *   • News sentiment (from SummaryAgent)
- * - All settings hardcoded – only PREMIUM_SIGNAL_CHANNEL_ID needed
+ * - All thresholds and coin list are configurable via env
+ * - Uses OpenAI to enhance reason text (if key present)
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
@@ -14,18 +15,37 @@ const axios = require('axios');
 class SignalAgent extends BaseAgent {
   constructor(eventBus, deps) {
     super(eventBus, deps);
-    
-    // Hardcoded defaults – no env vars needed
-    this.coins = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA'];
-    this.minConfidence = 60;
-    this.coinGeckoApi = 'https://api.coingecko.com/api/v3';
 
-    // Price history
+    // ---- Config from Environment ----
+    this.coins = (process.env.SIGNAL_COINS || 'BTC,ETH,SOL,BNB,XRP,ADA')
+      .split(',').map(c => c.trim().toUpperCase());
+
+    this.minConfidence = parseFloat(process.env.SIGNAL_MIN_CONFIDENCE) || 60;
+    this.whaleWindow = parseInt(process.env.SIGNAL_WHALE_WINDOW_MS) || 10 * 60 * 1000; // 10 min
+    this.whaleCorrelationThreshold = parseFloat(process.env.SIGNAL_WHALE_CORRELATION_VALUE) || 2_000_000; // $2M
+    this.whaleImmediateThreshold = parseFloat(process.env.SIGNAL_WHALE_IMMEDIATE_VALUE) || 5_000_000; // $5M
+    this.rsiOversold = parseFloat(process.env.SIGNAL_RSI_OVERSOLD) || 30;
+    this.rsiOverbought = parseFloat(process.env.SIGNAL_RSI_OVERBOUGHT) || 70;
+    this.smaBreakoutPct = parseFloat(process.env.SIGNAL_SMA_BREAKOUT_PCT) || 0.03; // 3%
+    this.min24hChange = parseFloat(process.env.SIGNAL_MIN_24H_CHANGE) || 5; // 5%
+    this.historyLimit = parseInt(process.env.SIGNAL_HISTORY_LIMIT) || 50;
+
+    // ---- OpenAI (for enhanced reasons) ----
+    this.openai = null;
+    try {
+      if (process.env.OPENAI_API_KEY) {
+        const { OpenAI } = require('openai');
+        this.openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+        this.logger.info('🧠 OpenAI available for SignalAgent');
+      }
+    } catch (err) {
+      this.logger.warn('OpenAI not available – reasons will be simple.');
+    }
+
+    // Price history and tracking
     this.priceHistory = new Map();
-    this.historyLimit = 50;
     this.lastSignal = new Map();
     this.recentWhales = [];
-    this.whaleWindow = 10 * 60 * 1000; // 10 min
   }
 
   async init() {
@@ -43,7 +63,7 @@ class SignalAgent extends BaseAgent {
       await this.handleNewsEvent(data);
     });
 
-    this.logger.info(`📈 SignalAgent v5.0 ready (coins: ${this.coins.join(', ')})`);
+    this.logger.info(`📈 SignalAgent v6.0 ready (coins: ${this.coins.join(', ')})`);
   }
 
   // ---------- GENERATE SIGNALS ----------
@@ -89,8 +109,15 @@ class SignalAgent extends BaseAgent {
     const reasons = [];
 
     if (rsi !== null) {
-      if (rsi < 30) { action = 'BUY'; confidence += 20; reasons.push(`RSI oversold (${rsi.toFixed(0)})`); }
-      else if (rsi > 70) { action = 'SELL'; confidence += 20; reasons.push(`RSI overbought (${rsi.toFixed(0)})`); }
+      if (rsi < this.rsiOversold) {
+        action = 'BUY';
+        confidence += 20;
+        reasons.push(`RSI oversold (${rsi.toFixed(0)})`);
+      } else if (rsi > this.rsiOverbought) {
+        action = 'SELL';
+        confidence += 20;
+        reasons.push(`RSI overbought (${rsi.toFixed(0)})`);
+      }
     }
 
     if (macd) {
@@ -106,23 +133,54 @@ class SignalAgent extends BaseAgent {
     }
 
     if (sma !== null) {
-      if (price > sma * 1.03) { if (action === 'HOLD') action = 'BUY'; confidence += 10; reasons.push('Above 20‑day SMA'); }
-      else if (price < sma * 0.97) { if (action === 'HOLD') action = 'SELL'; confidence += 10; reasons.push('Below 20‑day SMA'); }
+      const breakout = this.smaBreakoutPct;
+      if (price > sma * (1 + breakout)) {
+        if (action === 'HOLD') action = 'BUY';
+        confidence += 10;
+        reasons.push(`Above 20‑day SMA by ${(breakout*100).toFixed(0)}%`);
+      } else if (price < sma * (1 - breakout)) {
+        if (action === 'HOLD') action = 'SELL';
+        confidence += 10;
+        reasons.push(`Below 20‑day SMA by ${(breakout*100).toFixed(0)}%`);
+      }
     }
 
-    const whaleMatch = this.recentWhales.some(w => w.symbol === coin && w.usdValue > 2_000_000);
+    const whaleMatch = this.recentWhales.some(w => w.symbol === coin && w.usdValue > this.whaleCorrelationThreshold);
     if (whaleMatch) {
       confidence += 15;
       reasons.push('🐋 Large whale transaction');
       if (action === 'HOLD') action = 'BUY';
     }
 
-    if (priceData.change24h > 5) { confidence += 5; reasons.push(`+${priceData.change24h.toFixed(1)}% 24h`); }
-    else if (priceData.change24h < -5) { confidence += 5; reasons.push(`${priceData.change24h.toFixed(1)}% 24h`); }
+    const change = priceData.change24h;
+    if (change > this.min24hChange) {
+      confidence += 5;
+      reasons.push(`+${change.toFixed(1)}% 24h`);
+    } else if (change < -this.min24hChange) {
+      confidence += 5;
+      reasons.push(`${change.toFixed(1)}% 24h`);
+    }
 
     confidence = Math.min(confidence, 95);
 
     if (confidence < this.minConfidence || reasons.length === 0) return null;
+
+    // Enhance reason with AI (if available)
+    let reasonText = reasons.join(', ');
+    if (this.openai) {
+      try {
+        const prompt = `Given these technical signals for ${coin}: ${reasonText}. Current price $${price.toFixed(2)}. Write a short, actionable insight (1 sentence).`;
+        const response = await this.openai.chat.completions.create({
+          model: 'gpt-3.5-turbo',
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 60,
+          temperature: 0.7,
+        });
+        reasonText = response.choices[0].message.content.trim();
+      } catch (err) {
+        this.logger.debug(`AI enhancement failed: ${err.message}`);
+      }
+    }
 
     return {
       coin,
@@ -131,9 +189,9 @@ class SignalAgent extends BaseAgent {
       priceUsd: priceData.currentPrice,
       change24h: priceData.change24h,
       rsi: rsi !== null ? Math.round(rsi) : null,
-      reasons: reasons.join(', '),
+      reasons: reasonText,
       timestamp: new Date().toISOString(),
-      source: 'SignalAI v5.0',
+      source: 'SignalAI v6.0',
       icon: action === 'BUY' ? '🟢' : action === 'SELL' ? '🔴' : '🟡',
     };
   }
@@ -143,8 +201,24 @@ class SignalAgent extends BaseAgent {
     this.recentWhales.push({ symbol: tx.symbol, usdValue: tx.usdValue, timestamp: Date.now() });
     this.recentWhales = this.recentWhales.filter(w => Date.now() - w.timestamp < this.whaleWindow);
 
-    if (tx.usdValue < 5_000_000) return;
+    if (tx.usdValue < this.whaleImmediateThreshold) return;
     if (!this.coins.includes(tx.symbol)) return;
+
+    let reason = `🐋 Whale moved ${tx.amount} ${tx.symbol} ($${(tx.usdValue / 1e6).toFixed(1)}M) – accumulation signal`;
+    if (this.openai) {
+      try {
+        const prompt = `Given a whale transaction of ${tx.amount} ${tx.symbol} worth $${(tx.usdValue / 1e6).toFixed(1)}M, write a short insight (1 sentence) on the potential market impact.`;
+        const response = await this.openai.chat.completions.create({
+          model: 'gpt-3.5-turbo',
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 50,
+          temperature: 0.7,
+        });
+        reason = response.choices[0].message.content.trim();
+      } catch (err) {
+        this.logger.debug(`AI whale enhancement failed: ${err.message}`);
+      }
+    }
 
     const signal = {
       coin: tx.symbol,
@@ -153,7 +227,7 @@ class SignalAgent extends BaseAgent {
       priceUsd: null,
       change24h: null,
       rsi: null,
-      reasons: `🐋 Whale moved ${tx.amount} ${tx.symbol} ($${(tx.usdValue / 1e6).toFixed(1)}M) – accumulation signal`,
+      reasons: reason,
       timestamp: new Date().toISOString(),
       source: 'WhaleAlert',
       icon: '🐋',
@@ -172,6 +246,21 @@ class SignalAgent extends BaseAgent {
     for (const w of negative) if (summary.includes(w)) score--;
     if (Math.abs(score) >= 2) {
       const action = score > 0 ? 'BUY' : 'SELL';
+      let reason = `📰 News sentiment (${score > 0 ? 'positive' : 'negative'}): ${data.summary.substring(0, 60)}...`;
+      if (this.openai) {
+        try {
+          const prompt = `Given the news sentiment (${score > 0 ? 'positive' : 'negative'}) for BTC: "${data.summary}", write a short actionable insight (1 sentence).`;
+          const response = await this.openai.chat.completions.create({
+            model: 'gpt-3.5-turbo',
+            messages: [{ role: 'user', content: prompt }],
+            max_tokens: 50,
+            temperature: 0.7,
+          });
+          reason = response.choices[0].message.content.trim();
+        } catch (err) {
+          this.logger.debug(`AI news enhancement failed: ${err.message}`);
+        }
+      }
       const signal = {
         coin: 'BTC',
         action,
@@ -179,7 +268,7 @@ class SignalAgent extends BaseAgent {
         priceUsd: null,
         change24h: null,
         rsi: null,
-        reasons: `📰 News sentiment (${score > 0 ? 'positive' : 'negative'}): ${data.summary.substring(0, 60)}...`,
+        reasons: reason,
         timestamp: new Date().toISOString(),
         source: 'NewsSentiment',
         icon: '📰',
@@ -203,7 +292,12 @@ class SignalAgent extends BaseAgent {
   }
 
   _getGeckoId(coin) {
-    const map = { BTC:'bitcoin', ETH:'ethereum', SOL:'solana', BNB:'binancecoin', XRP:'ripple', ADA:'cardano', DOGE:'dogecoin', DOT:'polkadot', AVAX:'avalanche-2', MATIC:'matic-network', LINK:'chainlink', UNI:'uniswap' };
+    const map = {
+      BTC:'bitcoin', ETH:'ethereum', SOL:'solana',
+      BNB:'binancecoin', XRP:'ripple', ADA:'cardano',
+      DOGE:'dogecoin', DOT:'polkadot', AVAX:'avalanche-2',
+      MATIC:'matic-network', LINK:'chainlink', UNI:'uniswap'
+    };
     return map[coin] || coin.toLowerCase();
   }
 
@@ -266,7 +360,7 @@ class SignalAgent extends BaseAgent {
         { name: '⏰ Time', value: `<t:${Math.floor(new Date(signal.timestamp).getTime() / 1000)}:R>`, inline: true }
       )
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Signal AI v5.0' });
+      .setFooter({ text: 'Ultra3Vault • Signal AI v6.0' });
   }
 }
 
