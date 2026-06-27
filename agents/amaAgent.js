@@ -1,9 +1,10 @@
 /**
- * 🎙️ AMAAgent v6.1 — AI Co‑Host for AMA Sessions
+ * 🎙️ AMAAgent v6.2 — AI Co‑Host for AMA Sessions (Instant Reply)
  * - Auto‑replies to questions in #ama-chat
- * - Uses OpenAI for intelligent responses, falls back to Gemini
- * - Logs Q&A pairs to database (with auto‑table creation)
- * - Generates AMA summaries using AI
+ * - Instant AI answers for slash command /amaquestion
+ * - Uses OpenAI, falls back to Gemini, then hardcoded fallback
+ * - Logs Q&A pairs to database
+ * - Generates AMA summaries
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
@@ -17,7 +18,7 @@ class AMAAgent extends BaseAgent {
     // Configuration
     this.amaChannelId = process.env.AMA_CHANNEL_ID;
     this.enabled = !!this.amaChannelId;
-    this.conversationMemory = new Map(); // channelId → messages[]
+    this.conversationMemory = new Map();
     this.memoryLimit = 50;
 
     // ---- OpenAI ----
@@ -60,15 +61,12 @@ class AMAAgent extends BaseAgent {
       return;
     }
 
-    // Ensure the ama_history table exists
     await this._ensureTable();
-
-    // Subscribe to AMA summary requests
     this.subscribe('job.amasummary', async () => {
       await this._postAMASummary();
     });
 
-    this.logger.info(`🎙️ AMAAgent v6.1 ready (channel: ${this.amaChannelId})`);
+    this.logger.info(`🎙️ AMAAgent v6.2 ready (channel: ${this.amaChannelId})`);
   }
 
   // ---------- Table Creation ----------
@@ -90,7 +88,7 @@ class AMAAgent extends BaseAgent {
     }
   }
 
-  // ===================== MESSAGE HANDLER =====================
+  // ===================== MESSAGE HANDLER (Auto‑reply in channel) =====================
   async onMessage(message) {
     if (!this.enabled) return;
     if (message.author.bot) return;
@@ -105,6 +103,7 @@ class AMAAgent extends BaseAgent {
 
     if (!isQuestion) return;
 
+    // Add to memory
     this._addToMemory(message.channel.id, {
       role: 'user',
       content: message.content,
@@ -112,20 +111,17 @@ class AMAAgent extends BaseAgent {
     });
 
     try {
-      const response = await this._generateResponse(message);
-      if (response) {
-        await message.reply(response);
-        await this._logQA(message.author.id, message.content, response);
-      }
+      const answer = await this._generateAnswer(message.content);
+      await message.reply(answer);
+      await this._logQA(message.author.id, message.content, answer);
     } catch (err) {
       this.logger.error(`AMA response failed: ${err.message}`);
     }
   }
 
-  // ===================== AI RESPONSE GENERATION =====================
-  async _generateResponse(message) {
-    const context = this._getConversationContext(message.channel.id);
-    const prompt = this._buildPrompt(message.content, context);
+  // ===================== GENERATE ANSWER (for any question) =====================
+  async _generateAnswer(question, context = '') {
+    const prompt = this._buildPrompt(question, context);
     let result = null;
 
     // 1. Try OpenAI
@@ -148,9 +144,9 @@ class AMAAgent extends BaseAgent {
           temperature: 0.7,
         });
         result = response.choices[0].message.content.trim();
-        this.logger.debug('✅ OpenAI AMA response success');
+        this.logger.debug('✅ OpenAI answer success');
       } catch (err) {
-        this.logger.warn(`⚠️ OpenAI AMA response failed: ${err.message} – trying Gemini`);
+        this.logger.warn(`⚠️ OpenAI answer failed: ${err.message} – trying Gemini`);
       }
     }
 
@@ -163,16 +159,16 @@ class AMAAgent extends BaseAgent {
           generationConfig: { maxOutputTokens: 200, temperature: 0.7 },
         });
         result = geminiResult.response.text().trim();
-        this.logger.debug('✅ Gemini AMA response success');
+        this.logger.debug('✅ Gemini answer success');
       } catch (err) {
-        this.logger.warn(`⚠️ Gemini AMA response failed: ${err.message}`);
+        this.logger.warn(`⚠️ Gemini answer failed: ${err.message}`);
       }
     }
 
     // 3. Fallback
     if (!result) {
       result = this.fallbackResponses[Math.floor(Math.random() * this.fallbackResponses.length)];
-      this.logger.warn('⚠️ Using fallback AMA response');
+      this.logger.warn('⚠️ Using fallback answer');
     }
 
     return result;
@@ -236,7 +232,6 @@ class AMAAgent extends BaseAgent {
     const summaryText = rows.map((row, i) => `${i+1}. Q: ${row.question}\n   A: ${row.answer}\n`).join('\n');
     let summary = null;
 
-    // 1. Try OpenAI
     if (this.openai) {
       try {
         const response = await this.openai.chat.completions.create({
@@ -249,13 +244,11 @@ class AMAAgent extends BaseAgent {
           temperature: 0.5,
         });
         summary = response.choices[0].message.content.trim();
-        this.logger.debug('✅ OpenAI AMA summary success');
       } catch (err) {
-        this.logger.warn(`⚠️ OpenAI AMA summary failed: ${err.message} – trying Gemini`);
+        this.logger.warn(`⚠️ OpenAI summary failed: ${err.message} – trying Gemini`);
       }
     }
 
-    // 2. Try Gemini
     if (!summary && this.useGemini) {
       try {
         const model = this.genAI.getGenerativeModel({ model: this.geminiModel });
@@ -264,9 +257,8 @@ class AMAAgent extends BaseAgent {
           generationConfig: { maxOutputTokens: 300, temperature: 0.5 },
         });
         summary = geminiResult.response.text().trim();
-        this.logger.debug('✅ Gemini AMA summary success');
       } catch (err) {
-        this.logger.warn(`⚠️ Gemini AMA summary failed: ${err.message}`);
+        this.logger.warn(`⚠️ Gemini summary failed: ${err.message}`);
       }
     }
 
@@ -341,20 +333,28 @@ class AMAAgent extends BaseAgent {
   async cmdAMAQuestion(interaction) {
     const question = interaction.options.getString('question');
 
-    await this.db.run(
-      `INSERT INTO ama_history (userId, question, answer, timestamp, guildId)
-       VALUES (?, ?, ?, ?, ?)`,
-      [interaction.user.id, question, 'Pending answer...', Date.now(), interaction.guild.id]
-    );
+    // Generate answer immediately
+    let answer = 'No answer generated.';
+    try {
+      answer = await this._generateAnswer(question);
+    } catch (err) {
+      this.logger.error(`Error generating answer: ${err.message}`);
+      answer = 'Sorry, I could not generate an answer right now. Please try again later.';
+    }
 
+    // Log Q&A
+    await this._logQA(interaction.user.id, question, answer);
+
+    // Reply to user
     await interaction.reply({
-      content: `✅ Your question has been submitted!\n\n**Question:** ${question}\n\nYou'll receive an answer soon! 🎙️`,
+      content: `✅ Your question:\n**${question}**\n\n🤖 Answer:\n${answer}`,
       ephemeral: true,
     });
 
+    // Also post to AMA channel so everyone can see
     const channel = this.client.channels.cache.get(this.amaChannelId);
     if (channel && channel.isTextBased()) {
-      await channel.send(`📋 **Question from ${interaction.user.username}:**\n${question}\n\n_Answer pending..._`);
+      await channel.send(`📋 **Question from ${interaction.user.username}:**\n${question}\n\n💬 **Answer:**\n${answer}`);
     }
   }
 }
