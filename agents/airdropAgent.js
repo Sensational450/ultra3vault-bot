@@ -1,11 +1,8 @@
 /**
- * 🎁 AirdropAgent v6.1 (Configurable)
- * - Fetches airdrop announcements from configurable RSS feeds
- * - Posts exclusive airdrop alerts to a VIP/Premium channel
- * - Includes "Claim" button, rich embed with image
- * - Deduplication via DB cache
- * - AI-powered summary (if SummaryAgent is available)
- * - Configurable post limit, filters, colors, texts
+ * 🎁 AirdropAgent v6.2 (Global Dedup + Better Filtering)
+ * - Uses global database table for deduplication across feeds and restarts
+ * - Configurable keyword filter to skip non‑airdrop content
+ * - Feeds, filters, colors, texts fully configurable via env
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
@@ -15,31 +12,26 @@ class AirdropAgent extends BaseAgent {
   constructor(eventBus, deps) {
     super(eventBus, deps);
 
-    // ---- Parser with configurable User-Agent ----
+    // ---- Parser ----
     const userAgent = process.env.AIRDROP_USER_AGENT || 'Ultra3VaultBot/1.0';
     this.parser = new Parser({
       timeout: parseInt(process.env.AIRDROP_TIMEOUT_MS) || 10000,
       headers: { 'User-Agent': userAgent },
     });
 
-    // ---- Feeds (comma-separated) ----
+    // ---- Feeds ----
     const defaultFeeds = [
       'https://airdrops.io/feed/',
       'https://cryptopotato.com/category/airdrops/feed/',
       'https://cointelegraph.com/tags/airdrop/feed',
-      'https://coinmarketcal.com/feed/airdrop',
-      'https://airdropalert.com/feed',
     ];
-    const envFeeds = process.env.AIRDROP_FEEDS;
-    this.feeds = envFeeds ? envFeeds.split(',').map(u => u.trim()) : defaultFeeds;
+    this.feeds = (process.env.AIRDROP_FEEDS || defaultFeeds.join(','))
+      .split(',').map(u => u.trim()).filter(Boolean);
 
-    // ---- Filter keywords (comma-separated) ----
-    const defaultFilter = ['sponsor', 'partner', 'advertisement'];
-    const envFilter = process.env.AIRDROP_FILTER_KEYWORDS;
-    this.filterKeywords = envFilter ? envFilter.split(',').map(k => k.trim().toLowerCase()) : defaultFilter;
-
-    // ---- Limits ----
-    this.maxPostsPerCycle = parseInt(process.env.MAX_AIRDROPS_PER_CYCLE) || 3;
+    // ---- Filter keywords (title must NOT contain these) ----
+    const defaultSkip = ['sponsor', 'partner', 'advertisement', 'gold', 'bitcoin', 'btc', 'eth', 'trade', 'invest'];
+    this.skipKeywords = (process.env.AIRDROP_SKIP_KEYWORDS || defaultSkip.join(','))
+      .split(',').map(k => k.trim().toLowerCase()).filter(Boolean);
 
     // ---- Embed customization ----
     this.embedColor = parseInt(process.env.AIRDROP_EMBED_COLOR) || 0xffaa00;
@@ -47,43 +39,72 @@ class AirdropAgent extends BaseAgent {
     this.buttonLabel = process.env.AIRDROP_BUTTON_LABEL || '🚀 Claim Airdrop';
     this.fallbackDescription = process.env.AIRDROP_FALLBACK_DESCRIPTION || 'Click the button to learn more.';
 
-    // ---- Cache ----
-    this.lastPostCache = new Map();
-    this.postedLinks = new Set();
+    // ---- Limits ----
+    this.maxPostsPerCycle = parseInt(process.env.MAX_AIRDROPS_PER_CYCLE) || 3;
+
+    // ---- In‑memory caches ----
+    this.lastPostCache = new Map();       // feedUrl → last link (per‑feed, to avoid re‑fetch)
+    this.globalPosted = new Set();        // all posted links (loaded from DB at start)
   }
 
   async init() {
     await super.init();
-    await this._loadCacheFromDb();
+    await this._loadCaches();
     this.subscribe('job.airdropCheck', async () => {
       this.logger.debug('🎁 Checking for new airdrops...');
       await this._checkAirdrops();
     });
-    this.logger.info(`🎁 AirdropAgent v6.1 ready (feeds: ${this.feeds.length}, filter: ${this.filterKeywords.join(', ')})`);
+    this.logger.info(`🎁 AirdropAgent v6.2 ready (feeds: ${this.feeds.length}, skip keywords: ${this.skipKeywords.join(', ')})`);
   }
 
-  // ---------- Cache Helpers ----------
-  async _loadCacheFromDb() {
+  // ---------- Load caches from DB ----------
+  async _loadCaches() {
     try {
+      // 1. Load per‑feed last link
       const rows = await this.db.all(
         `SELECT feedUrl, lastItemLink FROM news_cache WHERE feedUrl LIKE 'airdrop:%'`
       );
       for (const row of rows) {
         this.lastPostCache.set(row.feedUrl, row.lastItemLink);
-        this.postedLinks.add(row.lastItemLink);
       }
-      this.logger.debug(`Loaded ${this.lastPostCache.size} airdrop cache entries`);
+
+      // 2. Load global posted links
+      const posted = await this.db.all(`SELECT link FROM airdrop_posted_links`);
+      for (const row of posted) {
+        this.globalPosted.add(row.link);
+      }
+      this.logger.debug(`Loaded ${this.lastPostCache.size} feed caches, ${this.globalPosted.size} global posted links`);
     } catch (err) {
-      this.logger.warn(`Could not load airdrop cache: ${err.message}`);
+      // Table might not exist – create it
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS airdrop_posted_links (
+          link TEXT PRIMARY KEY,
+          postedAt INTEGER
+        )
+      `);
     }
   }
 
-  async _saveCacheToDb(feedUrl, lastLink) {
+  // ---------- Save global posted link ----------
+  async _saveGlobalLink(link) {
+    try {
+      await this.db.run(
+        `INSERT OR IGNORE INTO airdrop_posted_links (link, postedAt) VALUES (?, ?)`,
+        [link, Date.now()]
+      );
+      this.globalPosted.add(link);
+    } catch (err) {
+      this.logger.error(`Failed to save global link: ${err.message}`);
+    }
+  }
+
+  // ---------- Save per‑feed cache ----------
+  async _saveFeedCache(feedUrl, lastLink) {
     const key = `airdrop:${feedUrl}`;
     await this.db.run(
       `INSERT OR REPLACE INTO news_cache (feedUrl, lastItemLink, lastPostAt) VALUES (?, ?, ?)`,
       [key, lastLink, Date.now()]
-    ).catch(err => this.logger.error(`Failed to save cache: ${err.message}`));
+    ).catch(err => this.logger.error(`Failed to save feed cache: ${err.message}`));
   }
 
   // ---------- Main Job ----------
@@ -108,31 +129,43 @@ class AirdropAgent extends BaseAgent {
         const items = feed.items || [];
         const lastPosted = this.lastPostCache.get(feedUrl);
 
-        const newItems = items.filter(item => item.link !== lastPosted);
+        // Filter new items (based on per‑feed cache)
+        let newItems = items.filter(item => item.link !== lastPosted);
         if (newItems.length === 0) continue;
 
-        for (const item of newItems.slice(0, 5)) {
-          if (this.postedLinks.has(item.link)) continue;
-          if (this.filterKeywords.some(kw => item.title?.toLowerCase().includes(kw))) continue;
+        // Further filter: skip if already posted globally or contains skip keywords
+        newItems = newItems.filter(item => {
+          if (this.globalPosted.has(item.link)) return false;
+          const title = (item.title || '').toLowerCase();
+          if (this.skipKeywords.some(kw => title.includes(kw))) return false;
+          return true;
+        });
 
+        if (newItems.length === 0) continue;
+
+        // Take the newest 5 per feed
+        for (const item of newItems.slice(0, 5)) {
           allNewItems.push({ ...item, feedUrl });
-          this.postedLinks.add(item.link);
         }
 
-        if (newItems.length > 0) {
-          const latestLink = newItems[0].link;
+        // Update per‑feed cache with the latest link (the newest item)
+        const latestLink = items[0]?.link;
+        if (latestLink) {
           this.lastPostCache.set(feedUrl, latestLink);
-          await this._saveCacheToDb(feedUrl, latestLink);
+          await this._saveFeedCache(feedUrl, latestLink);
         }
       } catch (err) {
         this.logger.error(`Airdrop feed error (${feedUrl}): ${err.message}`);
       }
     }
 
+    // Sort all new items by published date (newest first)
     allNewItems.sort((a, b) => new Date(b.isoDate || 0) - new Date(a.isoDate || 0));
 
+    // Post up to maxPostsPerCycle
     for (const item of allNewItems.slice(0, this.maxPostsPerCycle)) {
       await this._sendAirdrop(channel, item);
+      await this._saveGlobalLink(item.link);
       postedCount++;
     }
 
@@ -157,7 +190,7 @@ class AirdropAgent extends BaseAgent {
       image = item.thumbnail;
     }
 
-    // AI summary (optional)
+    // AI summary (if available)
     let summary = null;
     const summaryAgent = this.deps.orchestrator?.getAgent('SummaryAgent');
     if (summaryAgent && typeof summaryAgent.summarize === 'function') {
