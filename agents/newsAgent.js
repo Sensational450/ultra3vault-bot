@@ -1,11 +1,12 @@
 /**
- * 📰 NewsAgent v5.0 (Multi‑API + RSS fallback with AI prioritization support)
- * - Fetches crypto news from: GNews → NewsData.io → Currents API → RSS (Cointelegraph)
- * - Requires API keys: GNEWS_API_KEY, NEWSDATA_API_KEY, CURRENTS_API_KEY (optional)
- * - Auto‑subscribes to cryptoNews using DEFAULT_NEWS_CHANNEL_ID
+ * 📰 NewsAgent v6.0 (Configurable)
+ * - Fetches crypto news from: GNews → NewsData.io → Currents API → RSS (fallback)
+ * - All API keys and endpoints are configurable via env
+ * - Auto‑subscribes to a default channel
  * - Emits 'news.published' for every new article
  * - Listens to 'news.important' and sends only high‑value news (if AlertPrioritizationAgent is active)
- * - Falls back to sending all news if no prioritization agent is present
+ * - Uses configurable embed colors, footer, button label
+ * - Fixed cmdSubscribe category list
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
@@ -15,14 +16,35 @@ const Parser = require('rss-parser');
 class NewsAgent extends BaseAgent {
   constructor(eventBus, deps) {
     super(eventBus, deps);
+
+    // ---- API Keys ----
     this.gnewsKey = process.env.GNEWS_API_KEY;
     this.newsdataKey = process.env.NEWSDATA_API_KEY;
     this.currentsKey = process.env.CURRENTS_API_KEY;
-    this.fallbackRssUrl = 'https://cointelegraph.com/rss';
+
+    // ---- Config ----
+    this.fallbackRssUrl = process.env.NEWS_RSS_FALLBACK_URL || 'https://cointelegraph.com/rss';
+    this.footerText = process.env.NEWS_FOOTER_TEXT || 'Ultra3Vault News • Category: {category}';
+    this.buttonLabel = process.env.NEWS_BUTTON_LABEL || 'Read full article';
+    this.authorIconUrl = process.env.NEWS_AUTHOR_ICON_URL || 'https://cdn-icons-png.flaticon.com/512/3135/3135715.png';
+    this.embedColors = this._parseEmbedColors(process.env.NEWS_EMBED_COLORS) || {
+      Cointelegraph: 0x1a1e24,
+      GNews: 0x00ae86,
+      'NewsData.io': 0x3498db,
+      'Currents API': 0x9b59b6,
+      default: 0x1e88e5,
+    };
+
+    // Categories (for /subscribe command) – configurable via env
+    this.validCategories = (process.env.NEWS_CATEGORIES || 'cryptoNews,reddit,defi,nft')
+      .split(',').map(c => c.trim());
+
+    // Caches
     this.lastPostCache = new Map();
     this.subscriptions = new Map();
-    // Track if we have a prioritization agent (we'll detect via listener count later)
-    this.hasPrioritization = false;
+
+    // Prioritization flag (default false)
+    this.usePrioritization = process.env.USE_ALERT_PRIORITIZATION === 'true';
   }
 
   async init() {
@@ -30,16 +52,13 @@ class NewsAgent extends BaseAgent {
     await this.loadSubscriptionsAndCache();
     await this.ensureDefaultSubscriptions();
 
-    // Subscribe to news fetch job
     this.subscribe('job.newsUpdate', async () => {
       this.logger.debug('🔄 News job triggered – fetching news');
       await this.fetchAndEmitNews();
     });
 
-    // Listen for filtered important news (from AlertPrioritizationAgent)
     this.subscribe('news.important', async ({ item, category }) => {
       this.logger.debug(`📨 Received important news: ${item.title}`);
-      // Find the channel for this category and send it
       for (const [guildId, subs] of this.subscriptions.entries()) {
         const channelId = subs.get(category);
         if (channelId) {
@@ -48,52 +67,26 @@ class NewsAgent extends BaseAgent {
       }
     });
 
-    // Fallback: if no prioritization agent is registered, send everything.
-    // We'll check after a short delay if any listener exists for 'news.published'
-    setTimeout(() => {
-      // If we have no listeners for 'news.published', we are in fallback mode.
-      // We can detect by checking if any listener is registered, but we'll just
-      // rely on the fact that AlertPrioritizationAgent will also emit 'news.important'.
-      // We'll let the system work – if no prioritization agent, nothing will be sent.
-      // To handle fallback, we also listen to 'news.published' directly if no important listener.
-      // But we'll handle it differently: we already emit news.published; the prioritization agent
-      // will then emit news.important. If prioritization agent is not present, nothing happens.
-      // So we need a direct fallback: if after a certain time no important comes, we send anyway?
-      // Better: the orchestrator can decide. For simplicity, we'll let the AlertPrioritizationAgent
-      // be optional. If it's not registered, nothing will be sent. To maintain backward compatibility,
-      // we could also directly send if no prioritization agent is detected.
-      // We'll use the presence of a listener for 'news.important' – if we don't have one, we fallback.
-      // We'll detect this by checking if there's any listener for 'news.important' on the eventBus.
-      // But we can't easily check that. So we'll use a flag: we'll assume prioritization is active
-      // if the AlertPrioritizationAgent is registered. We'll set a flag in the constructor or here.
-      // Since we can't check directly, we'll rely on the user to register the agent. If they don't,
-      // we'll keep a fallback: we'll still send all news if no news.important listener is present.
-      // We'll do this by adding a listener to 'news.published' that sends directly if no important.
-      // Actually, we already have a subscription for 'news.important'. If AlertPrioritizationAgent
-      // is absent, that subscription won't be called. We need a fallback: we can also subscribe
-      // to 'news.published' and send if we haven't received any important event after a short time?
-      // That's complex. Simpler: we'll keep the old behavior by default, but allow the user to
-      // override by adding an environment variable to enable prioritization.
-      // Let's add an env var: USE_ALERT_PRIORITIZATION=true.
-      // If set, we only send via news.important; otherwise, we send all.
-      // This gives control to the user.
-      this.usePrioritization = process.env.USE_ALERT_PRIORITIZATION === 'true';
-      if (!this.usePrioritization) {
-        // Fallback: send all news via news.published (we'll handle it in fetchAndEmitNews)
-        this.logger.info('📰 Alert prioritization disabled – sending all news.');
-        // We'll override the 'news.important' listener to also send all? No, we'll handle in fetch.
-        // In fetchAndEmitNews, we'll directly send.
-        // But we've already refactored to only emit. So we'll change fetchAndEmitNews to either send
-        // directly or emit based on the flag.
-        // Better: we'll keep the emission, but also send directly if the flag is off.
-        // We'll modify fetchAndEmitNews: if !usePrioritization, send immediately.
-        // This way, both modes work.
-      }
-    }, 1000); // small delay to allow agents to register
-
-    this.logger.info('📰 NewsAgent ready (multi‑API + RSS fallback)');
+    this.logger.info(`📰 NewsAgent v6.0 ready (fallback: ${this.fallbackRssUrl})`);
   }
 
+  // ---------- Helper: Parse embed colors from env ----------
+  _parseEmbedColors(envString) {
+    if (!envString) return null;
+    try {
+      const parsed = JSON.parse(envString);
+      // Convert hex strings to numbers
+      const result = {};
+      for (const [key, value] of Object.entries(parsed)) {
+        result[key] = typeof value === 'string' ? parseInt(value.replace('#', ''), 16) : value;
+      }
+      return result;
+    } catch {
+      return null;
+    }
+  }
+
+  // ---------- Subscriptions ----------
   async ensureDefaultSubscriptions() {
     const defaultChannelId = process.env.DEFAULT_NEWS_CHANNEL_ID;
     if (!defaultChannelId) return;
@@ -134,13 +127,7 @@ class NewsAgent extends BaseAgent {
     }
   }
 
-  /**
-   * Fetch news from multiple sources in priority order:
-   * 1. GNews API (if key exists)
-   * 2. NewsData.io API (if key exists)
-   * 3. Currents API (if key exists)
-   * 4. Cointelegraph RSS (fallback) with real image extraction
-   */
+  // ---------- Fetch News ----------
   async fetchNews() {
     // 1️⃣ GNews API
     if (this.gnewsKey) {
@@ -212,13 +199,14 @@ class NewsAgent extends BaseAgent {
       }
     }
 
-    // 4️⃣ RSS fallback (Cointelegraph) - extract real images
+    // 4️⃣ RSS fallback
     try {
-      const parser = new Parser();
-      const feed = await parser.parseURL(this.fallbackRssUrl, {
-        headers: { 'User-Agent': 'Ultra3VaultBot/1.0' }
+      const parser = new Parser({
+        timeout: 10000,
+        headers: { 'User-Agent': process.env.NEWS_USER_AGENT || 'Ultra3VaultBot/1.0' },
       });
-      this.logger.debug('✅ Fetched news from RSS fallback (Cointelegraph)');
+      const feed = await parser.parseURL(this.fallbackRssUrl);
+      this.logger.debug('✅ Fetched news from RSS fallback');
       return feed.items.slice(0, 5).map(item => {
         let image = null;
         if (item.enclosure?.url && item.enclosure.type?.startsWith('image/')) {
@@ -236,7 +224,7 @@ class NewsAgent extends BaseAgent {
           title: item.title,
           link: item.link,
           description: item.contentSnippet || '',
-          source: 'Cointelegraph',
+          source: 'RSS',
           publishedAt: item.isoDate,
           image,
         };
@@ -247,18 +235,15 @@ class NewsAgent extends BaseAgent {
     }
   }
 
-  /**
-   * Fetch news and either emit or send directly based on prioritization flag.
-   */
+  // ---------- Fetch and Emit ----------
   async fetchAndEmitNews() {
     const articles = await this.fetchNews();
     if (!articles.length) {
       this.logger.debug('No articles from any source');
       return;
     }
-    // Check if we have a prioritization agent active (use env flag)
-    const usePrioritization = process.env.USE_ALERT_PRIORITIZATION === 'true';
-    if (!usePrioritization) {
+
+    if (!this.usePrioritization) {
       // Send all articles directly
       for (const [guildId, subs] of this.subscriptions.entries()) {
         for (const [category, channelId] of subs.entries()) {
@@ -272,16 +257,8 @@ class NewsAgent extends BaseAgent {
         }
       }
     } else {
-      // Emit news.published for each article (AlertPrioritizationAgent will filter)
-      // We need to avoid duplicates per guild/category – we'll emit once per new article per category.
-      // But we need to ensure we don't emit the same article multiple times for different categories.
-      // We'll emit once per article, and the prioritization agent will decide importance.
-      // The prioritization agent will then emit news.important, which will be sent to all subscribed categories.
-      // This means if multiple categories are subscribed, the same article will be sent to all.
-      // That's acceptable for now.
+      // Emit for AlertPrioritizationAgent to filter
       for (const article of articles) {
-        // Check if this article has been posted before (cache by category)
-        // We'll check if any category has this link already.
         let alreadyPosted = false;
         for (const [guildId, subs] of this.subscriptions.entries()) {
           for (const [category] of subs.entries()) {
@@ -294,19 +271,6 @@ class NewsAgent extends BaseAgent {
           if (alreadyPosted) break;
         }
         if (alreadyPosted) continue;
-        // Emit for each category (but we don't know which categories to associate with this article)
-        // We'll emit with a generic category, or we could loop over categories.
-        // Let's emit with the first subscribed category as a placeholder.
-        // Better: emit for all categories? That would cause duplicate processing.
-        // We'll emit with category: 'all' and let the prioritization agent handle it.
-        // But the agent might need category for scoring? We can pass the category we found.
-        // Simpler: we'll emit once per article and let the prioritization agent decide.
-        // The prioritization agent doesn't need category for scoring. It only scores the item.
-        // After scoring, it emits news.important with the item and the category? Actually, it receives
-        // data.item and data.category. So we need to pass the category.
-        // We'll emit news.published for each article and for each category? That would be duplicate.
-        // Instead, we'll emit once and include the category as 'all' or we can pick the first category.
-        // For simplicity, we'll pick the first category from subscriptions.
         let firstCategory = null;
         for (const [, subs] of this.subscriptions.entries()) {
           for (const [category] of subs.entries()) {
@@ -315,25 +279,15 @@ class NewsAgent extends BaseAgent {
           }
           if (firstCategory) break;
         }
-        if (!firstCategory) continue; // no subscriptions
-        // Emit with the first category. The prioritization agent doesn't care about category.
+        if (!firstCategory) continue;
         this.emit('news.published', { item: article, category: firstCategory });
-        // Update cache to avoid re-posting (though we might double-post if multiple categories)
-        // But since we only emit once per article, we'll store the link in a global cache.
-        // We'll use a separate cache for emitted articles.
         if (!this._emittedCache) this._emittedCache = new Map();
         this._emittedCache.set(article.link, Date.now());
-        // Also save to DB for persistence? Not necessary for now.
-        // But we need to avoid re-posting after restart. We'll rely on the news_cache table.
-        // We'll save the link for each category? That would duplicate.
-        // For now, we'll just emit and let the system handle it.
-        // To avoid re-posting after restart, we can store the link in news_cache with a special key.
-        // We'll skip that for simplicity; the user can set USE_ALERT_PRIORITIZATION and the
-        // prioritization agent will handle dedup.
       }
     }
   }
 
+  // ---------- Send News ----------
   async sendNews(article, guildId, channelId, category) {
     const channel = this.client.channels.cache.get(channelId);
     if (!channel || !channel.isTextBased()) {
@@ -341,11 +295,9 @@ class NewsAgent extends BaseAgent {
       return;
     }
 
-    let color = 0x1e88e5;
-    if (article.source === 'Cointelegraph') color = 0x1a1e24;
-    if (article.source === 'GNews') color = 0x00ae86;
-    if (article.source === 'NewsData.io') color = 0x3498db;
-    if (article.source === 'Currents API') color = 0x9b59b6;
+    const color = this.embedColors[article.source] || this.embedColors.default || 0x1e88e5;
+
+    const footer = this.footerText.replace(/{category}/g, category || 'General');
 
     const embed = new EmbedBuilder()
       .setTitle(article.title || 'Crypto News')
@@ -353,14 +305,14 @@ class NewsAgent extends BaseAgent {
       .setDescription(article.description || '')
       .setColor(color)
       .setTimestamp(new Date(article.publishedAt))
-      .setAuthor({ name: article.source, iconURL: 'https://cdn-icons-png.flaticon.com/512/3135/3135715.png' })
-      .setFooter({ text: `Ultra3Vault News • Category: ${category}` });
+      .setAuthor({ name: article.source || 'Unknown', iconURL: this.authorIconUrl })
+      .setFooter({ text: footer });
 
     if (article.image) embed.setImage(article.image);
 
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
-        .setLabel('Read full article')
+        .setLabel(this.buttonLabel)
         .setStyle(ButtonStyle.Link)
         .setURL(article.link)
     );
@@ -368,6 +320,7 @@ class NewsAgent extends BaseAgent {
     await channel.send({ embeds: [embed], components: [row] }).catch(err => this.logger.error(`Failed to send: ${err.message}`));
   }
 
+  // ---------- Cache ----------
   async saveCacheToDb(key, value) {
     await this.db.run(
       `INSERT OR REPLACE INTO news_cache (feedUrl, lastItemLink, lastPostAt) VALUES (?, ?, ?)`,
@@ -375,7 +328,7 @@ class NewsAgent extends BaseAgent {
     ).catch(() => {});
   }
 
-  // ---------- SLASH COMMANDS ----------
+  // ---------- Slash Commands ----------
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
     const { commandName } = interaction;
@@ -401,9 +354,11 @@ class NewsAgent extends BaseAgent {
     const category = interaction.options.getString('category');
     const channelTarget = interaction.options.getChannel('channel') || interaction.channel;
     if (!channelTarget.isTextBased()) return interaction.reply({ content: 'Must be a text channel.', ephemeral: true });
-    const validCategories = [...Object.keys(this.defaultConfig.feeds), 'reddit'];
-    if (!validCategories.includes(category)) {
-      return interaction.reply({ content: `Invalid category. Choose: ${validCategories.join(', ')}`, ephemeral: true });
+    if (!this.validCategories.includes(category)) {
+      return interaction.reply({
+        content: `Invalid category. Choose: ${this.validCategories.join(', ')}`,
+        ephemeral: true,
+      });
     }
     if (!this.subscriptions.has(interaction.guild.id)) this.subscriptions.set(interaction.guild.id, new Map());
     this.subscriptions.get(interaction.guild.id).set(category, channelTarget.id);
