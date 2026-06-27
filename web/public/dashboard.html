@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ultra3Vault • Dashboard</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <link rel="stylesheet" href="/dashboard.css">
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>🚀 Ultra3Vault Dashboard</h1>
+      <div id="status">🟢 Online</div>
+    </header>
+
+    <nav>
+      <button class="tab-btn active" data-tab="overview">📊 Overview</button>
+      <button class="tab-btn" data-tab="economy">💰 Economy</button>
+      <button class="tab-btn" data-tab="subscriptions">👑 Subscriptions</button>
+      <button class="tab-btn" data-tab="agents">🤖 Agents</button>
+      <button class="tab-btn" data-tab="activities">📅 Activities</button>
+      <button class="tab-btn" data-tab="admin">⚙️ Admin</button>
+    </nav>
+
+    <div id="tabs">
+      <div id="tab-overview" class="tab-content active">
+        <div class="stats-grid">
+          <div class="stat-card"><h3>Uptime</h3><p id="uptime">-</p></div>
+          <div class="stat-card"><h3>Users</h3><p id="users">-</p></div>
+          <div class="stat-card"><h3>Guilds</h3><p id="guilds">-</p></div>
+          <div class="stat-card"><h3>Messages</h3><p id="messages">-</p></div>
+          <div class="stat-card"><h3>Commands</h3><p id="commands">-</p></div>
+          <div class="stat-card"><h3>Agents</h3><p id="agents">-</p></div>
+        </div>
+        <div class="chart-container">
+          <canvas id="overviewChart"></canvas>
+        </div>
+      </div>
+
+      <div id="tab-economy" class="tab-content">
+        <h2>💰 Economy Stats</h2>
+        <div class="stats-grid">
+          <div class="stat-card"><h3>Total Tokens</h3><p id="totalTokens">-</p></div>
+          <div class="stat-card"><h3>Daily Rewards (24h)</h3><p id="dailyCount">-</p></div>
+          <div class="stat-card"><h3>Daily Amount</h3><p id="dailyTotal">-</p></div>
+        </div>
+        <h3>Top 10 Balances</h3>
+        <ul id="topBalances"></ul>
+      </div>
+
+      <div id="tab-subscriptions" class="tab-content">
+        <h2>👑 Subscriptions</h2>
+        <div class="stats-grid">
+          <div class="stat-card"><h3>Total</h3><p id="subTotal">-</p></div>
+          <div class="stat-card"><h3>Active</h3><p id="subActive">-</p></div>
+          <div class="stat-card"><h3>VIP</h3><p id="subVip">-</p></div>
+          <div class="stat-card"><h3>Premium</h3><p id="subPremium">-</p></div>
+          <div class="stat-card"><h3>Expiring Soon</h3><p id="subExpiring">-</p></div>
+          <div class="stat-card"><h3>Active Trials</h3><p id="activeTrials">-</p></div>
+        </div>
+      </div>
+
+      <div id="tab-agents" class="tab-content">
+        <h2>🤖 Agent Health</h2>
+        <ul id="agentHealth"></ul>
+      </div>
+
+      <div id="tab-activities" class="tab-content">
+        <h2>📅 Recent Activities</h2>
+        <ul id="activitiesList"></ul>
+      </div>
+
+      <div id="tab-admin" class="tab-content">
+        <h2>⚙️ Admin Actions</h2>
+        <div class="admin-form">
+          <h3>Grant Subscription</h3>
+          <input type="text" id="grantUserId" placeholder="User ID">
+          <input type="text" id="grantGuildId" placeholder="Guild ID">
+          <select id="grantTier"><option value="vip">VIP</option><option value="premium">Premium</option></select>
+          <input type="number" id="grantDays" placeholder="Days (default 30)" value="30">
+          <button id="grantBtn">Grant</button>
+        </div>
+        <div class="admin-form">
+          <h3>Revoke Subscription</h3>
+          <input type="text" id="revokeUserId" placeholder="User ID">
+          <input type="text" id="revokeGuildId" placeholder="Guild ID">
+          <button id="revokeBtn">Revoke</button>
+        </div>
+        <div id="adminResult"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/dashboard.js"></script>
+</body>
+</html>
