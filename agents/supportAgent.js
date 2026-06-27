@@ -1,10 +1,10 @@
 /**
- * 🧠 SupportAgent v5.0
- * - Answers FAQs about VIP subscriptions, payments, balances, referrals, etc.
- * - Uses rule-based responses (fast) and falls back to OpenAI (if key present)
+ * 🧠 SupportAgent v6.0 – AI‑First, No Hardcoded Content
+ * - Answers questions about VIP, payments, balances, referrals, commands, etc.
+ * - Uses OpenAI for all responses (if key present)
+ * - Falls back to a simple generic message if AI fails
+ * - Ignores the AMA channel to prevent conflicts with AMAAgent
  * - Works in DMs and optional #help-support channel
- * - Configurable per guild (enable/disable, channel override)
- * - Safe error handling – never crashes
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
@@ -12,34 +12,31 @@ const { EmbedBuilder } = require('discord.js');
 class SupportAgent extends BaseAgent {
   constructor(eventBus, deps) {
     super(eventBus, deps);
+
     this.defaultConfig = {
       enabled: true,
       channelId: null,          // optional dedicated channel (e.g., #help-support)
       respondInDMs: true,
-      useAI: !!process.env.OPENAI_API_KEY,
     };
     this.guildConfigs = new Map();
-    // Keyword-based FAQ map
-    this.faq = new Map([
-      ['vip', '💎 **VIP Subscription**\n• Price: $5 for 30 days\n• Perks: Access to VIP channels, early news\n• Purchase: `/buy 30d`'],
-      ['premium', '💎 **Premium Subscription**\n• Price: $15 for 30 days\n• Perks: All VIP perks + exclusive signals & airdrops\n• Purchase: `/buy 30d` and choose `premium`'],
-      ['price', '💰 **VIP Pricing**\n• 7 days: $5\n• 14 days: $9\n• 30 days: $15\n\nUse `/buy 7d` to purchase.'],
-      ['payment', '💳 **Payment Info**\n• Payments are processed via NowPayments (crypto).\n• You will receive a payment link after `/buy`.\n• After payment, your VIP role is automatically assigned.'],
-      ['balance', '📊 **Check your balance** with `/balance`.\n• Earn coins daily with `/daily`.\n• Transfer coins with `/transfer`.'],
-      ['referral', '🔗 **Referral System**\n• Get your referral code with `/refer`.\n• Friends use `/redeem <code>` to claim rewards.\n• You earn coins for each successful referral.'],
-      ['daily', '🎁 **Daily Rewards**\n• Claim once every 24h with `/daily`.\n• Reward amount: 100–500 coins.'],
-      ['shop', '🛒 **Shop**\n• View items with `/shop`.\n• Purchase with `/buy <item_name>` (coins).'],
-      ['buy', '💎 **Purchase VIP**\n• Use `/buy 7d` / `/buy 14d` / `/buy 30d`.\n• You\'ll receive a payment link.'],
-      ['redeem', '🎟️ **Redeem**\n• Use `/redeem <code>` to claim referral rewards or promo codes.'],
-      ['help', '🤖 **Available Commands**\n• `/balance`, `/daily`, `/shop`, `/buy`, `/refer`, `/redeem`, `/vip`, `/subscribe`, `/cancel`, `/renew`, `/price`, `/ping`, `/stats`, `/leaderboard`, `/transfer`, `/gamble`, `/inventory`, `/trending-protocols`, `/gecko-trending`, `/social-trends`, `/chain-tvl`, `/global-tvl`\n• For more, ask me anything!'],
-    ]);
+
+    // OpenAI client (injected via deps)
+    this.openai = this.deps.openai || null;
+    if (!this.openai && process.env.OPENAI_API_KEY) {
+      try {
+        this.openai = new (require('openai')).OpenAI({
+          apiKey: process.env.OPENAI_API_KEY,
+        });
+      } catch (err) {
+        this.logger.error(`OpenAI init failed: ${err.message}`);
+      }
+    }
   }
 
   async init() {
     await super.init();
-    // Load guild configs (stored in guild_configs table)
     await this.loadConfigs();
-    this.logger.info('🧠 SupportAgent ready' + (this.deps.openai ? ' (AI‑powered)' : ' (rule‑based)'));
+    this.logger.info('🧠 SupportAgent v6.0 ready' + (this.openai ? ' (AI‑powered)' : ' (fallback only)'));
   }
 
   async loadConfigs() {
@@ -79,6 +76,12 @@ class SupportAgent extends BaseAgent {
   async onMessage(message) {
     if (message.author.bot) return;
     const isDM = !message.guild;
+
+    // 🚫 Skip AMA channel to avoid conflicts with AMAAgent
+    if (message.guild && message.channel.id === process.env.AMA_CHANNEL_ID) {
+      return;
+    }
+
     if (isDM) {
       // Always respond to DMs (if enabled globally)
       await this.handleQuery(message, message.author);
@@ -101,49 +104,47 @@ class SupportAgent extends BaseAgent {
 
   // ---------- HANDLE A QUERY ----------
   async handleQuery(source, user) {
-    const content = source.content.toLowerCase();
-    // 1️⃣ Try rule‑based FAQ
+    const content = source.content;
     let response = null;
-    for (const [key, value] of this.faq.entries()) {
-      if (content.includes(key)) {
-        response = value;
-        break;
-      }
-    }
 
-    // 2️⃣ If no match, try OpenAI (if available)
-    if (!response && this.deps.openai) {
+    // 1️⃣ Try OpenAI (if available)
+    if (this.openai) {
       response = await this.getAIResponse(content);
     }
 
-    // 3️⃣ Fallback to generic response
+    // 2️⃣ Fallback (if AI fails or not available)
     if (!response) {
-      response = "❓ I'm not sure about that. Try asking about `VIP`, `payment`, `balance`, `referral`, or `help`. You can also use `/help` for a list of commands.";
+      response = "🤖 I'm here to help! Please ask a specific question about VIP, payments, balances, referrals, or commands. If I can't answer, an admin will assist you shortly.";
     }
 
-    // Send response
+    // Send response as an embed
     const embed = new EmbedBuilder()
       .setTitle('🤖 Support')
       .setDescription(response)
       .setColor(0x00ae86)
       .setFooter({ text: 'Need more help? Ask an admin.' });
+
     await source.reply({ embeds: [embed] }).catch(err => this.logger.error(`Failed to reply: ${err.message}`));
   }
 
-  // ---------- OPENAI FALLBACK ----------
+  // ---------- OPENAI CALL ----------
   async getAIResponse(query) {
     try {
-      const openai = this.deps.openai;
-      const response = await openai.chat.completions.create({
+      const response = await this.openai.chat.completions.create({
         model: 'gpt-3.5-turbo',
         messages: [
-          { role: 'system', content: 'You are a helpful assistant for a crypto Discord bot called Ultra3Vault. Answer questions about VIP subscriptions, payments, coins, referrals, and commands. Be concise and friendly.' },
-          { role: 'user', content: query },
+          {
+            role: 'system',
+            content: `You are a helpful assistant for a crypto Discord bot called Ultra3Vault.
+            Answer questions about VIP subscriptions, payments, coins, referrals, commands, and general crypto topics.
+            Be concise, friendly, and informative. If you don't know the answer, suggest they ask an admin.`
+          },
+          { role: 'user', content: query }
         ],
-        max_tokens: 150,
+        max_tokens: 200,
         temperature: 0.7,
       });
-      return response.choices[0].message.content;
+      return response.choices[0].message.content.trim();
     } catch (err) {
       this.logger.error(`OpenAI fallback error: ${err.message}`);
       return null;
@@ -154,20 +155,39 @@ class SupportAgent extends BaseAgent {
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
     const { commandName, guild, member } = interaction;
-    if (commandName === 'support') {
-      await interaction.reply({ content: 'Please ask your question in the `#help-support` channel or DM me directly!', ephemeral: true });
-    }
-    if (commandName === 'set-support-channel' && member.permissions.has('Administrator')) {
-      const channel = interaction.options.getChannel('channel');
-      if (!channel.isTextBased()) return interaction.reply({ content: 'Must be a text channel.', ephemeral: true });
-      await this.updateConfig(guild.id, { channelId: channel.id, enabled: true });
-      await interaction.reply({ content: `✅ Support channel set to ${channel}.`, ephemeral: true });
-    }
-    if (commandName === 'toggle-support' && member.permissions.has('Administrator')) {
-      const config = await this.getGuildConfig(guild.id);
-      config.enabled = !config.enabled;
-      await this.updateConfig(guild.id, { enabled: config.enabled });
-      await interaction.reply({ content: `✅ Support AI ${config.enabled ? 'enabled' : 'disabled'}.`, ephemeral: true });
+
+    switch (commandName) {
+      case 'support':
+        await interaction.reply({
+          content: 'Please ask your question in the `#help-support` channel or DM me directly!',
+          ephemeral: true,
+        });
+        break;
+
+      case 'set-support-channel':
+        if (!member.permissions.has('Administrator')) {
+          return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+        }
+        const channel = interaction.options.getChannel('channel');
+        if (!channel.isTextBased()) {
+          return interaction.reply({ content: 'Must be a text channel.', ephemeral: true });
+        }
+        await this.updateConfig(guild.id, { channelId: channel.id, enabled: true });
+        await interaction.reply({ content: `✅ Support channel set to ${channel}.`, ephemeral: true });
+        break;
+
+      case 'toggle-support':
+        if (!member.permissions.has('Administrator')) {
+          return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+        }
+        const config = await this.getGuildConfig(guild.id);
+        config.enabled = !config.enabled;
+        await this.updateConfig(guild.id, { enabled: config.enabled });
+        await interaction.reply({
+          content: `✅ Support AI ${config.enabled ? 'enabled' : 'disabled'}.`,
+          ephemeral: true,
+        });
+        break;
     }
   }
 }
