@@ -138,13 +138,14 @@ try {
     if (AiChatAgent) {
       orchestrator.registerAgent(new AiChatAgent(eventBus, { client, logger, db, models }), 50);
     }
+    // 👇 AMA Agent (high priority for AMA channel)
+    orchestrator.registerAgent(new AMAAgent(eventBus, { client, logger, db, models, orchestrator }), 48);
     orchestrator.registerAgent(new SupportAgent(eventBus, { client, logger, db, models }), 45);
     orchestrator.registerAgent(new ReferralAgent(eventBus, { client, logger, db, models }), 40);
     orchestrator.registerAgent(new AirdropAgent(eventBus, { client, logger, db, models }), 35);
     orchestrator.registerAgent(new InfoAgent(eventBus, { client, logger, db, models }), 30);
     orchestrator.registerAgent(new SummaryAgent(eventBus, { client, logger, db, models }), 25);
     orchestrator.registerAgent(new CommunityManagerAgent(eventBus, { client, logger, db, models }), 20);
-    orchestrator.registerAgent(new AMAAgent(eventBus, { client, logger, db, models, orchestrator }), 19);
     orchestrator.registerAgent(new ContentPlanningAgent(eventBus, { client, logger, db, models, orchestrator }), 18);
     orchestrator.registerAgent(new LocalizationAgent(eventBus, { client, logger, db, models }), 15);
     orchestrator.registerAgent(new RecommendationAgent(eventBus, { client, logger, db, models }), 10);
