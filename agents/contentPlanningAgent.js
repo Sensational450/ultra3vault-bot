@@ -1,5 +1,5 @@
 /**
- * 📅 ContentPlanningAgent v12.0 (AI‑Only with Gemini Fallback)
+ * 📅 ContentPlanningAgent v12.1 (AI‑Only with Gemini Fallback)
  * - All content is dynamically generated via OpenAI (primary)
  * - Falls back to Google Gemini if OpenAI fails
  * - Real data from agents (price, whale, signals)
@@ -8,7 +8,7 @@
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-const { GoogleGenAI } = require('@google/genai'); // 👈 Gemini SDK
+const { GoogleGenerativeAI } = require('@google/generative-ai'); // ✅ Correct SDK
 
 class ContentPlanningAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -36,9 +36,7 @@ class ContentPlanningAgent extends BaseAgent {
     // ---- Gemini (Fallback) ----
     this.useGemini = !!process.env.GEMINI_API_KEY;
     if (this.useGemini) {
-      this.genAI = new GoogleGenAI({
-        apiKey: process.env.GEMINI_API_KEY,
-      });
+      this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
       this.geminiModel = process.env.GEMINI_MODEL || 'gemini-2.0-flash-exp';
       this.logger.info(`🧠 Gemini available (model: ${this.geminiModel})`);
     } else {
@@ -79,7 +77,7 @@ class ContentPlanningAgent extends BaseAgent {
       await this._postPremiumContent();
     });
 
-    this.logger.info('📅 ContentPlanningAgent v12.0 ready (OpenAI + Gemini)');
+    this.logger.info('📅 ContentPlanningAgent v12.1 ready (OpenAI + Gemini)');
   }
 
   // ===================== DAILY CONTENT =====================
@@ -284,22 +282,21 @@ class ContentPlanningAgent extends BaseAgent {
 
   /**
    * Call Gemini with automatic retry on rate limits (429)
+   * Uses the official @google/generative-ai SDK
    */
   async _callGemini(prompt, maxRetries = 2) {
+    const model = this.genAI.getGenerativeModel({ model: this.geminiModel });
     let lastError;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        const response = await this.genAI.models.generateContent({
-          model: this.geminiModel,
-          contents: [
-            { role: 'user', parts: [{ text: `You are a crypto community manager. ${prompt}` }] },
-          ],
-          config: {
+        const result = await model.generateContent({
+          contents: [{ role: 'user', parts: [{ text: `You are a crypto community manager. ${prompt}` }] }],
+          generationConfig: {
             maxOutputTokens: 200,
             temperature: 0.8,
           },
         });
-        return response.text;
+        return result.response.text();
       } catch (err) {
         lastError = err;
         this.logger.warn(`Gemini attempt ${attempt}/${maxRetries} failed: ${err.message}`);
@@ -313,8 +310,78 @@ class ContentPlanningAgent extends BaseAgent {
   }
 
   // ===================== DATA FETCHING HELPERS =====================
-  // (unchanged — _getMarketSummary, _getWhaleSummary, _getTechnicalSummary)
-  // I'm omitting them here for brevity, but they remain exactly as before.
+  async _getMarketSummary() {
+    const priceAgent = this.deps.orchestrator?.getAgent('PriceFeedAgent');
+    if (!priceAgent || !priceAgent.priceCache) {
+      return '📊 No price data available. Check back later!';
+    }
+    const coins = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'DOGE', 'DOT', 'AVAX', 'MATIC'];
+    let gainers = [];
+    let losers = [];
+    for (const [symbol, data] of priceAgent.priceCache.entries()) {
+      if (!coins.includes(symbol)) continue;
+      const change24h = data.change24h || 0;
+      const price = data.price || 0;
+      if (change24h > 0) {
+        gainers.push({ symbol, price, change: change24h });
+      } else {
+        losers.push({ symbol, price, change: change24h });
+      }
+    }
+    gainers.sort((a, b) => b.change - a.change);
+    losers.sort((a, b) => a.change - b.change);
+
+    let summary = '📊 **Top Performers & Trends**\n\n';
+    if (gainers.length > 0) {
+      summary += '🚀 **Top Gainers (24h):**\n';
+      for (const g of gainers.slice(0, 3)) {
+        summary += `• **${g.symbol}** — $${g.price.toFixed(2)} (📈 ${g.change.toFixed(1)}%)\n`;
+      }
+    }
+    if (losers.length > 0) {
+      summary += '\n📉 **Top Losers (24h):**\n';
+      for (const l of losers.slice(0, 3)) {
+        summary += `• **${l.symbol}** — $${l.price.toFixed(2)} (📉 ${l.change.toFixed(1)}%)\n`;
+      }
+    }
+    if (gainers.length === 0 && losers.length === 0) {
+      summary += '📊 No price data available.';
+    }
+    return summary;
+  }
+
+  async _getWhaleSummary() {
+    const whaleAgent = this.deps.orchestrator?.getAgent('WhaleAgent');
+    if (!whaleAgent) return '🐋 No recent whale activity detected.';
+    const recent = whaleAgent.recentWhales || [];
+    if (recent.length === 0) return '🐋 No recent whale activity.';
+    let summary = '🐋 **Recent Whale Movements**\n\n';
+    for (const w of recent.slice(0, 3)) {
+      const value = w.usdValue || 0;
+      summary += `• **${w.amount || '?'} ${w.symbol || 'Unknown'}** — $${(value / 1e6).toFixed(1)}M\n`;
+    }
+    return summary;
+  }
+
+  async _getTechnicalSummary() {
+    const signalAgent = this.deps.orchestrator?.getAgent('SignalAgent');
+    if (!signalAgent) return '📈 No recent technical signals.';
+    const lastSignals = signalAgent.lastSignal || new Map();
+    if (lastSignals.size === 0) return '📈 No recent signals.';
+    let summary = '📈 **Recent Technical Signals**\n\n';
+    let count = 0;
+    for (const [key, timestamp] of lastSignals) {
+      if (count >= 3) break;
+      const parts = key.split('_');
+      if (parts.length === 2) {
+        const [coin, action] = parts;
+        summary += `• **${coin}**: ${action} (${Math.round((Date.now() - timestamp) / 60000)} min ago)\n`;
+        count++;
+      }
+    }
+    if (count === 0) summary += '📈 No recent signals.';
+    return summary;
+  }
 
   // ===================== SEND TO CHANNEL =====================
   async _sendToChannel(channelKey, content, components = []) {
@@ -411,7 +478,7 @@ class ContentPlanningAgent extends BaseAgent {
       .setColor(0x00ff88)
       .setDescription(calendar)
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Content Planning AI v12.0' });
+      .setFooter({ text: 'Ultra3Vault • Content Planning AI v12.1' });
 
     await interaction.reply({ embeds: [embed], ephemeral: true });
   }
@@ -420,7 +487,6 @@ class ContentPlanningAgent extends BaseAgent {
   async onInteractionCreate(interaction) {
     if (!interaction.isButton()) return;
     if (interaction.customId === 'trivia_reveal') {
-      // We could generate a dynamic answer here, but for simplicity we use stored answer
       const answer = this.lastTriviaQuestion || '🔍 Answer will be revealed soon!';
       await interaction.reply({
         content: `🔍 **Answer:** ${answer}`,
