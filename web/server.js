@@ -1,6 +1,6 @@
 /**
  * 🌐 WebServer v5.0
- * - Express server with webhook, static files, admin API
+ * - Express server with webhook, static files, admin API, dashboard API
  * - Integrated with eventBus, logger, and orchestrator
  * - Emits events for payment success, referral, etc.
  */
@@ -9,6 +9,7 @@ const crypto = require('crypto');
 const path = require('path');
 const authMiddleware = require('./middleware/auth');
 const { createAdminRouter } = require('./routes/adminApi');
+const dashboardApi = require('./routes/dashboardApi'); // 👈 NEW
 
 class WebServer {
   constructor(options = {}) {
@@ -62,6 +63,9 @@ class WebServer {
 
     // 🔒 Admin API (protected)
     this._setupAdminRoutes();
+
+    // 📊 Dashboard API (protected via its own admin key validation)
+    this._setupDashboardRoutes();
   }
 
   _setupAdminRoutes() {
@@ -84,6 +88,13 @@ class WebServer {
     );
 
     this.app.use('/api/admin', auth, adminRouter);
+  }
+
+  _setupDashboardRoutes() {
+    // Dashboard API uses its own X-Admin-Key validation inside the router
+    const router = dashboardApi(this.orchestrator, this.db, this.models);
+    this.app.use('/api/dashboard', router);
+    this.logger.info('📊 Dashboard API mounted at /api/dashboard');
   }
 
   async _handleWebhook(req, res) {
