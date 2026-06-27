@@ -1,12 +1,11 @@
 /**
- * 🎙️ AMAAgent v6.8 — Default to gemini-pro
- * - Uses OpenAI (primary), falls back to Gemini (default: gemini-pro)
- * - Allows override via GEMINI_MODEL env
+ * 🎙️ AMAAgent v7.0 — OpenAI Only (Gemini Removed)
+ * - Uses OpenAI (primary). If OpenAI fails, uses hardcoded fallback.
+ * - No Gemini integration.
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
 const { OpenAI } = require('openai');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 class AMAAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -30,17 +29,6 @@ class AMAAgent extends BaseAgent {
       this.logger.error(`❌ OpenAI init failed: ${err.message}`);
     }
 
-    // ---- Gemini ----
-    this.useGemini = !!process.env.GEMINI_API_KEY;
-    if (this.useGemini) {
-      this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-      // Use the stable gemini-pro model by default (works with free tier)
-      this.geminiModel = process.env.GEMINI_MODEL || 'gemini-pro';
-      this.logger.info(`🧠 Gemini available (model: ${this.geminiModel})`);
-    } else {
-      this.logger.warn('⚠️ GEMINI_API_KEY missing – Gemini disabled.');
-    }
-
     this.fallbackResponses = [
       "That's a great question! Let me get back to you on that.",
       "Interesting question! I'll look into this and get back to you.",
@@ -59,7 +47,7 @@ class AMAAgent extends BaseAgent {
     this.subscribe('job.amasummary', async () => {
       await this._postAMASummary();
     });
-    this.logger.info(`🎙️ AMAAgent v6.8 ready (channel: ${this.amaChannelId})`);
+    this.logger.info(`🎙️ AMAAgent v7.0 ready (channel: ${this.amaChannelId})`);
   }
 
   // ---------- Table Creation ----------
@@ -114,7 +102,7 @@ class AMAAgent extends BaseAgent {
     const prompt = this._buildPrompt(question, context);
     let result = null;
 
-    // 1. Try OpenAI
+    // Try OpenAI
     if (this.openai) {
       try {
         this.logger.debug('⏳ Asking OpenAI...');
@@ -139,37 +127,17 @@ class AMAAgent extends BaseAgent {
       } catch (err) {
         this.logger.error(`❌ OpenAI failed: ${err.message}`);
         if (err.status === 429) {
-          this.logger.warn('⚠️ OpenAI quota exceeded – trying Gemini');
+          this.logger.error('💡 OpenAI quota exceeded. Add billing or get a new key.');
         }
       }
+    } else {
+      this.logger.warn('⚠️ OpenAI not available – skipping AI call.');
     }
 
-    // 2. Try Gemini (if OpenAI failed or not available)
-    if (!result && this.useGemini) {
-      try {
-        this.logger.debug(`⏳ Asking Gemini (${this.geminiModel})...`);
-        const model = this.genAI.getGenerativeModel({ model: this.geminiModel });
-        const geminiResult = await model.generateContent({
-          contents: [{ role: 'user', parts: [{ text: `You are a friendly crypto community manager. ${prompt}` }] }],
-          generationConfig: { maxOutputTokens: 200, temperature: 0.7 },
-        });
-        result = geminiResult.response.text().trim();
-        this.logger.debug('✅ Gemini answer success');
-      } catch (err) {
-        this.logger.error(`❌ Gemini failed: ${err.message}`);
-        if (err.response) {
-          this.logger.error(`Status: ${err.response.status} - ${err.response.statusText}`);
-        }
-        if (err.message.includes('404')) {
-          this.logger.error('💡 Try setting GEMINI_MODEL to "gemini-1.5-pro" or "gemini-pro" in Render environment.');
-        }
-      }
-    }
-
-    // 3. Fallback
+    // Fallback (if OpenAI failed or not available)
     if (!result) {
       result = this.fallbackResponses[Math.floor(Math.random() * this.fallbackResponses.length)];
-      this.logger.warn('⚠️ Using fallback answer – check API keys and model name.');
+      this.logger.warn('⚠️ Using fallback answer – check OpenAI API key and quota.');
     }
 
     return result;
@@ -246,20 +214,7 @@ class AMAAgent extends BaseAgent {
         });
         summary = response.choices[0].message.content.trim();
       } catch (err) {
-        this.logger.warn(`⚠️ OpenAI summary failed: ${err.message} – trying Gemini`);
-      }
-    }
-
-    if (!summary && this.useGemini) {
-      try {
-        const model = this.genAI.getGenerativeModel({ model: this.geminiModel });
-        const geminiResult = await model.generateContent({
-          contents: [{ role: 'user', parts: [{ text: `You are a community manager. Summarize these AMA questions and answers:\n\n${summaryText}` }] }],
-          generationConfig: { maxOutputTokens: 300, temperature: 0.5 },
-        });
-        summary = geminiResult.response.text().trim();
-      } catch (err) {
-        this.logger.warn(`⚠️ Gemini summary failed: ${err.message}`);
+        this.logger.warn(`⚠️ OpenAI summary failed: ${err.message}`);
       }
     }
 
