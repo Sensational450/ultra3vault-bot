@@ -92,7 +92,8 @@ const LocalizationAgent = require('./agents/localizationAgent');
 const ContentPlanningAgent = require('./agents/contentPlanningAgent');
 const AMAAgent = require('./agents/amaAgent');
 const SelfImprovementAgent = require('./agents/selfImprovementAgent');
-const EngagementAgent = require('./agents/engagementAgent'); // 👈 NEW
+const EngagementAgent = require('./agents/engagementAgent');
+const SocialFeedAgent = require('./agents/socialFeedAgent'); // 👈 NEW
 
 let AiChatAgent = null;
 try {
@@ -147,9 +148,10 @@ try {
     orchestrator.registerAgent(new InfoAgent(eventBus, { client, logger, db, models }), 30);
     orchestrator.registerAgent(new SummaryAgent(eventBus, { client, logger, db, models }), 25);
     orchestrator.registerAgent(new CommunityManagerAgent(eventBus, { client, logger, db, models }), 20);
-    orchestrator.registerAgent(new EngagementAgent(eventBus, { client, logger, db, models, orchestrator }), 19); // 🎯 NEW
+    orchestrator.registerAgent(new EngagementAgent(eventBus, { client, logger, db, models, orchestrator }), 19);
     orchestrator.registerAgent(new ContentPlanningAgent(eventBus, { client, logger, db, models, orchestrator }), 18);
     orchestrator.registerAgent(new LocalizationAgent(eventBus, { client, logger, db, models }), 15);
+    orchestrator.registerAgent(new SocialFeedAgent(eventBus, { client, logger, db, models, orchestrator }), 14); // 📡 NEW
     orchestrator.registerAgent(new RecommendationAgent(eventBus, { client, logger, db, models }), 10);
     orchestrator.registerAgent(new GrowthRetentionAgent(eventBus, { client, logger, db, models }), 5);
     orchestrator.registerAgent(new OptimizationAgent(eventBus, { client, logger, db, models, orchestrator }), 1);
@@ -402,7 +404,10 @@ try {
     const dailyDebate = async () => eventBus.emit('job.dailyDebate');
     const trivia = async () => eventBus.emit('job.trivia');
     const mentor = async () => eventBus.emit('job.mentor');
-    const autoSummarize = async () => eventBus.emit('job.autoSummarize'); // for news summarization job
+    const autoSummarize = async () => eventBus.emit('job.autoSummarize');
+
+    // 👇 SOCIAL FEED JOB
+    const socialFeed = async () => eventBus.emit('job.socialFeed');
 
     scheduler.registerJob('priceUpdater', '*/1 * * * *', priceUpdater);
     scheduler.registerJob('leaderboardReset', '0 0 * * 0', leaderboardReset);
@@ -503,14 +508,18 @@ try {
     logger.info('⏰ Trial expiry job scheduled (every hour)');
 
     // 👇 ENGAGEMENT JOB SCHEDULES
-    scheduler.registerJob('conversationStarter', '0 9 * * *', conversationStarter); // 9 AM UTC daily
-    scheduler.registerJob('dailyPoll', '0 10 * * *', dailyPoll); // 10 AM UTC daily
-    scheduler.registerJob('dailyQuiz', '0 11 * * *', dailyQuiz); // 11 AM UTC daily
-    scheduler.registerJob('dailyDebate', '0 12 * * *', dailyDebate); // 12 PM UTC daily
-    scheduler.registerJob('trivia', '0 14 * * *', trivia); // 2 PM UTC daily
-    scheduler.registerJob('mentor', '0 15 * * *', mentor); // 3 PM UTC daily
-    scheduler.registerJob('autoSummarize', '*/10 * * * *', autoSummarize); // every 10 min (sync with news fetch)
+    scheduler.registerJob('conversationStarter', '0 9 * * *', conversationStarter);
+    scheduler.registerJob('dailyPoll', '0 10 * * *', dailyPoll);
+    scheduler.registerJob('dailyQuiz', '0 11 * * *', dailyQuiz);
+    scheduler.registerJob('dailyDebate', '0 12 * * *', dailyDebate);
+    scheduler.registerJob('trivia', '0 14 * * *', trivia);
+    scheduler.registerJob('mentor', '0 15 * * *', mentor);
+    scheduler.registerJob('autoSummarize', '*/10 * * * *', autoSummarize);
     logger.info('🎯 Engagement jobs scheduled');
+
+    // 👇 SOCIAL FEED JOB SCHEDULE
+    scheduler.registerJob('socialFeed', process.env.SOCIAL_FEED_INTERVAL || '*/30 * * * *', socialFeed);
+    logger.info('📡 Social feed job scheduled');
 
     // Self‑ping job (keep Render awake)
     if (process.env.RENDER_EXTERNAL_URL) {
