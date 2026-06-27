@@ -1,13 +1,15 @@
 /**
- * 🎙️ AMAAgent v5.0 — AI Co‑Host for AMA Sessions
+ * 🎙️ AMAAgent v6.0 — AI Co‑Host for AMA Sessions
  * - Auto‑replies to questions in #ama-chat
- * - Uses OpenAI for intelligent responses
+ * - Uses OpenAI for intelligent responses, falls back to Gemini
  * - Fetches market data from PriceFeedAgent
  * - Logs Q&A pairs to database
- * - Generates AMA summaries
+ * - Generates AMA summaries using AI (OpenAI → Gemini → fallback)
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
+const { OpenAI } = require('openai');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 class AMAAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -16,21 +18,33 @@ class AMAAgent extends BaseAgent {
     // Configuration
     this.amaChannelId = process.env.AMA_CHANNEL_ID;
     this.enabled = !!this.amaChannelId;
-    this.openai = null;
     this.conversationMemory = new Map(); // channelId → messages[]
     this.memoryLimit = 50;
 
-    // Initialize OpenAI
-    if (process.env.OPENAI_API_KEY) {
-      this.openai = new (require('openai')).OpenAI({
-        apiKey: process.env.OPENAI_API_KEY,
-      });
-      this.logger.info('🧠 OpenAI initialized for AMAAgent');
-    } else {
-      this.logger.warn('⚠️ OPENAI_API_KEY missing — AMAAgent will use fallback responses');
+    // ---- OpenAI ----
+    this.openai = null;
+    try {
+      if (process.env.OPENAI_API_KEY) {
+        this.openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+        this.logger.info('🧠 OpenAI initialized for AMAAgent');
+      } else {
+        this.logger.warn('⚠️ OPENAI_API_KEY missing – OpenAI disabled.');
+      }
+    } catch (err) {
+      this.logger.error(`❌ OpenAI init failed: ${err.message}`);
     }
 
-    // Fallback responses
+    // ---- Gemini (Fallback) ----
+    this.useGemini = !!process.env.GEMINI_API_KEY;
+    if (this.useGemini) {
+      this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+      this.geminiModel = process.env.GEMINI_MODEL || 'gemini-2.0-flash-exp';
+      this.logger.info(`🧠 Gemini available (model: ${this.geminiModel})`);
+    } else {
+      this.logger.warn('⚠️ GEMINI_API_KEY missing – Gemini disabled.');
+    }
+
+    // Fallback responses (only used if both AI providers fail)
     this.fallbackResponses = [
       "That's a great question! Let me get back to you on that.",
       "Interesting question! I'll look into this and get back to you.",
@@ -52,7 +66,7 @@ class AMAAgent extends BaseAgent {
       await this._postAMASummary();
     });
 
-    this.logger.info(`🎙️ AMAAgent ready (channel: ${this.amaChannelId})`);
+    this.logger.info(`🎙️ AMAAgent v6.0 ready (channel: ${this.amaChannelId})`);
   }
 
   // ===================== MESSAGE HANDLER =====================
@@ -61,30 +75,25 @@ class AMAAgent extends BaseAgent {
     if (message.author.bot) return;
     if (message.channel.id !== this.amaChannelId) return;
 
-    // Ignore short messages, commands, and mentions without question
     if (message.content.length < 10) return;
     if (message.content.startsWith('/')) return;
     if (message.content.startsWith('!')) return;
 
-    // Check if it's a question (contains ? or starts with who/what/where/when/why/how)
     const isQuestion = /[?？]/.test(message.content) ||
       /^(who|what|where|when|why|how|can|could|would|will|do|does|is|are)/i.test(message.content);
 
     if (!isQuestion) return;
 
-    // Store in conversation memory
     this._addToMemory(message.channel.id, {
       role: 'user',
       content: message.content,
       author: message.author.username,
     });
 
-    // Generate and send response
     try {
       const response = await this._generateResponse(message);
       if (response) {
         await message.reply(response);
-        // Log the Q&A
         await this._logQA(message.author.id, message.content, response);
       }
     } catch (err) {
@@ -94,12 +103,13 @@ class AMAAgent extends BaseAgent {
 
   // ===================== AI RESPONSE GENERATION =====================
   async _generateResponse(message) {
-    // Try OpenAI first
+    const context = this._getConversationContext(message.channel.id);
+    const prompt = this._buildPrompt(message.content, context);
+    let result = null;
+
+    // 1. Try OpenAI
     if (this.openai) {
       try {
-        const context = this._getConversationContext(message.channel.id);
-        const prompt = this._buildPrompt(message.content, context);
-
         const response = await this.openai.chat.completions.create({
           model: 'gpt-3.5-turbo',
           messages: [
@@ -116,16 +126,35 @@ class AMAAgent extends BaseAgent {
           max_tokens: 200,
           temperature: 0.7,
         });
-
-        return response.choices[0].message.content.trim();
+        result = response.choices[0].message.content.trim();
+        this.logger.debug('✅ OpenAI AMA response success');
       } catch (err) {
-        this.logger.debug(`OpenAI AMA response failed: ${err.message}`);
-        // Fall through to fallback
+        this.logger.warn(`⚠️ OpenAI AMA response failed: ${err.message} – trying Gemini`);
       }
     }
 
-    // Use fallback
-    return this.fallbackResponses[Math.floor(Math.random() * this.fallbackResponses.length)];
+    // 2. Try Gemini (if OpenAI failed or not available)
+    if (!result && this.useGemini) {
+      try {
+        const model = this.genAI.getGenerativeModel({ model: this.geminiModel });
+        const geminiResult = await model.generateContent({
+          contents: [{ role: 'user', parts: [{ text: `You are a friendly crypto community manager. ${prompt}` }] }],
+          generationConfig: { maxOutputTokens: 200, temperature: 0.7 },
+        });
+        result = geminiResult.response.text().trim();
+        this.logger.debug('✅ Gemini AMA response success');
+      } catch (err) {
+        this.logger.warn(`⚠️ Gemini AMA response failed: ${err.message}`);
+      }
+    }
+
+    // 3. Fallback to hardcoded responses
+    if (!result) {
+      result = this.fallbackResponses[Math.floor(Math.random() * this.fallbackResponses.length)];
+      this.logger.warn('⚠️ Using fallback AMA response');
+    }
+
+    return result;
   }
 
   // ===================== CONVERSATION MEMORY =====================
@@ -160,13 +189,7 @@ class AMAAgent extends BaseAgent {
       await this.db.run(
         `INSERT INTO ama_history (userId, question, answer, timestamp, guildId)
          VALUES (?, ?, ?, ?, ?)`,
-        [
-          userId,
-          question,
-          answer,
-          Date.now(),
-          this.client.guilds.cache.first()?.id || 'unknown'
-        ]
+        [userId, question, answer, Date.now(), this.client.guilds.cache.first()?.id || 'unknown']
       );
     } catch (err) {
       this.logger.debug(`Failed to log AMA Q&A: ${err.message}`);
@@ -178,7 +201,6 @@ class AMAAgent extends BaseAgent {
     const channel = this.client.channels.cache.get(this.amaChannelId);
     if (!channel || !channel.isTextBased()) return;
 
-    // Fetch recent Q&A from database (last 7 days)
     const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
     const rows = await this.db.all(
       `SELECT * FROM ama_history WHERE timestamp > ? ORDER BY timestamp DESC LIMIT 20`,
@@ -190,27 +212,40 @@ class AMAAgent extends BaseAgent {
       return;
     }
 
-    // Generate summary using OpenAI (if available)
-    let summary = '';
-    let summaryText = rows.map((row, i) => `${i+1}. Q: ${row.question}\n   A: ${row.answer}\n`).join('\n');
+    const summaryText = rows.map((row, i) => `${i+1}. Q: ${row.question}\n   A: ${row.answer}\n`).join('\n');
+    let summary = null;
 
+    // 1. Try OpenAI
     if (this.openai) {
       try {
         const response = await this.openai.chat.completions.create({
           model: 'gpt-3.5-turbo',
           messages: [
-            {
-              role: 'system',
-              content: 'You are a community manager summarizing an AMA session. Create a concise summary of the key topics discussed.'
-            },
+            { role: 'system', content: 'You are a community manager summarizing an AMA session. Create a concise summary of the key topics discussed.' },
             { role: 'user', content: `Summarize these AMA questions and answers:\n\n${summaryText}` }
           ],
           max_tokens: 300,
           temperature: 0.5,
         });
         summary = response.choices[0].message.content.trim();
+        this.logger.debug('✅ OpenAI AMA summary success');
       } catch (err) {
-        this.logger.debug(`AMA summary generation failed: ${err.message}`);
+        this.logger.warn(`⚠️ OpenAI AMA summary failed: ${err.message} – trying Gemini`);
+      }
+    }
+
+    // 2. Try Gemini
+    if (!summary && this.useGemini) {
+      try {
+        const model = this.genAI.getGenerativeModel({ model: this.geminiModel });
+        const geminiResult = await model.generateContent({
+          contents: [{ role: 'user', parts: [{ text: `You are a community manager. Summarize these AMA questions and answers:\n\n${summaryText}` }] }],
+          generationConfig: { maxOutputTokens: 300, temperature: 0.5 },
+        });
+        summary = geminiResult.response.text().trim();
+        this.logger.debug('✅ Gemini AMA summary success');
+      } catch (err) {
+        this.logger.warn(`⚠️ Gemini AMA summary failed: ${err.message}`);
       }
     }
 
@@ -221,7 +256,6 @@ class AMAAgent extends BaseAgent {
       .setTimestamp();
 
     if (rows.length > 0) {
-      // Add top 5 questions as fields
       const topQuestions = rows.slice(0, 5);
       for (const row of topQuestions) {
         embed.addFields({
@@ -258,7 +292,6 @@ class AMAAgent extends BaseAgent {
 
     await interaction.deferReply({ ephemeral: true });
 
-    // Fetch last 20 questions from current AMA session
     const rows = await this.db.all(
       `SELECT * FROM ama_history WHERE guildId = ? ORDER BY timestamp DESC LIMIT 20`,
       [interaction.guild.id]
@@ -287,7 +320,6 @@ class AMAAgent extends BaseAgent {
   async cmdAMAQuestion(interaction) {
     const question = interaction.options.getString('question');
 
-    // Store question in database for future reference
     await this.db.run(
       `INSERT INTO ama_history (userId, question, answer, timestamp, guildId)
        VALUES (?, ?, ?, ?, ?)`,
@@ -299,7 +331,6 @@ class AMAAgent extends BaseAgent {
       ephemeral: true,
     });
 
-    // Also post to AMA channel
     const channel = this.client.channels.cache.get(this.amaChannelId);
     if (channel && channel.isTextBased()) {
       await channel.send(`📋 **Question from ${interaction.user.username}:**\n${question}\n\n_Answer pending..._`);
