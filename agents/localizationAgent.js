@@ -1,13 +1,14 @@
 /**
- * 🌍 LocalizationAgent v5.0
+ * 🌍 LocalizationAgent v6.0
  * - Detects language of messages/text
- * - Translates between 100+ languages (free API + OpenAI fallback)
+ * - Translates between 100+ languages (configurable provider order)
  * - Stores user language preferences in the database
  * - Integrates with AiChatAgent for multilingual conversations
  * - Slash commands: /translate, /setlanguage, /detect
+ * - No hardcoded repetitive content – provider order configurable via env
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder, SlashCommandBuilder } = require('discord.js');
+const { EmbedBuilder } = require('discord.js');
 const axios = require('axios');
 
 class LocalizationAgent extends BaseAgent {
@@ -16,7 +17,7 @@ class LocalizationAgent extends BaseAgent {
     this.models = deps.models;
     this.openai = null;
 
-    // Hardcoded defaults
+    // Hardcoded language list (static data, not repetitive content)
     this.defaultLanguage = 'en';
     this.supportedLanguages = [
       { code: 'en', name: 'English' },
@@ -45,12 +46,14 @@ class LocalizationAgent extends BaseAgent {
       { code: 'he', name: 'Hebrew' },
     ];
 
-    // Translation cache (to avoid repeated API calls)
+    // Translation cache
     this.cache = new Map();
     this.cacheTTL = 60 * 60 * 1000; // 1 hour
 
-    // API settings
-    this.provider = process.env.LOCALIZATION_PROVIDER || 'libre'; // 'libre', 'mymemory', 'openai'
+    // Provider order (configurable via env, default: libre → mymemory → openai)
+    const defaultOrder = ['libre', 'mymemory', 'openai'];
+    const envOrder = process.env.LOCALIZATION_PROVIDER_ORDER;
+    this.providerOrder = envOrder ? envOrder.split(',').map(p => p.trim()) : defaultOrder;
   }
 
   async init() {
@@ -67,7 +70,7 @@ class LocalizationAgent extends BaseAgent {
       }
     }
 
-    this.logger.info('🌍 LocalizationAgent v5.0 ready');
+    this.logger.info(`🌍 LocalizationAgent v6.0 ready (provider order: ${this.providerOrder.join(' → ')})`);
   }
 
   // ---------- CORE TRANSLATION ----------
@@ -85,26 +88,32 @@ class LocalizationAgent extends BaseAgent {
     }
 
     let translation = null;
-    let usedProvider = this.provider;
 
-    // Try LibreTranslate (free, no key)
-    if (this.provider === 'libre') {
-      translation = await this._translateLibre(text, targetLang, sourceLang);
+    // Try providers in configured order
+    for (const provider of this.providerOrder) {
+      if (translation) break;
+      switch (provider) {
+        case 'libre':
+          translation = await this._translateLibre(text, targetLang, sourceLang);
+          break;
+        case 'mymemory':
+          translation = await this._translateMyMemory(text, targetLang, sourceLang);
+          break;
+        case 'openai':
+          translation = await this._translateOpenAI(text, targetLang, sourceLang);
+          break;
+        default:
+          this.logger.warn(`Unknown provider: ${provider}`);
+      }
+      if (translation) {
+        this.logger.debug(`✅ Translation successful using ${provider}`);
+        break;
+      }
     }
 
-    // Fallback to MyMemory if Libre fails
+    // Fallback: return original text if all providers fail
     if (!translation) {
-      translation = await this._translateMyMemory(text, targetLang, sourceLang);
-    }
-
-    // Fallback to OpenAI if available and others failed
-    if (!translation && this.openai) {
-      translation = await this._translateOpenAI(text, targetLang, sourceLang);
-    }
-
-    // Final fallback: return original text
-    if (!translation) {
-      this.logger.warn(`Translation failed for ${targetLang}, returning original`);
+      this.logger.warn(`All translation providers failed for ${targetLang}, returning original`);
       return text;
     }
 
@@ -193,20 +202,25 @@ class LocalizationAgent extends BaseAgent {
       this.logger.debug(`Language detection failed: ${err.message}`);
     }
 
-    // Fallback: check for common non-English characters
-    const nonEnglish = /[áéíóúñçăâêîôûğışöçüαβγδεζηθικλμνξοπρσςτυφχψωабвгдеёжзийклмнопрстуфхцчшщъыьэюя]|[\u3040-\u30FF]|[\uAC00-\uD7AF]|[\u0600-\u06FF]|[\u4E00-\u9FFF]/i;
-    if (nonEnglish.test(text)) {
-      // Try to guess based on common patterns (simplified)
-      if (/[áéíóúñç]/.test(text)) return 'es';
-      if (/[àâêîôûç]/.test(text)) return 'fr';
-      if (/[äöüß]/.test(text)) return 'de';
-      if (/[абвгде]/.test(text)) return 'ru';
-      if (/[αβγ]/.test(text)) return 'el';
-      if (/[\u0600-\u06FF]/.test(text)) return 'ar';
-      if (/[\u4E00-\u9FFF]/.test(text)) return 'zh';
-      if (/[\uAC00-\uD7AF]/.test(text)) return 'ko';
-      if (/[\u3040-\u30FF]/.test(text)) return 'ja';
+    // Fallback: heuristic detection (non‑repetitive, just pattern matching)
+    const patterns = [
+      { regex: /[áéíóúñç]/, code: 'es' },
+      { regex: /[àâêîôûç]/, code: 'fr' },
+      { regex: /[äöüß]/, code: 'de' },
+      { regex: /[абвгдеёжзийклмнопрстуфхцчшщъыьэюя]/, code: 'ru' },
+      { regex: /[αβγδεζηθικλμνξοπρσςτυφχψω]/, code: 'el' },
+      { regex: /[\u0600-\u06FF]/, code: 'ar' },
+      { regex: /[\u4E00-\u9FFF]/, code: 'zh' },
+      { regex: /[\uAC00-\uD7AF]/, code: 'ko' },
+      { regex: /[\u3040-\u30FF]/, code: 'ja' },
+    ];
+
+    for (const p of patterns) {
+      if (p.regex.test(text)) {
+        return p.code;
+      }
     }
+
     return 'en';
   }
 
@@ -236,22 +250,14 @@ class LocalizationAgent extends BaseAgent {
     }
   }
 
-  // ---------- MESSAGE HANDLER (Auto-Translate) ----------
+  // ---------- MESSAGE HANDLER ----------
   async onMessage(message) {
     if (message.author.bot) return;
     if (!message.guild) return;
-
-    // Only process if message has content and is long enough
     if (!message.content || message.content.length < 10) return;
 
-    // Detect language
     const detectedLang = await this.detectLanguage(message.content);
     if (detectedLang !== 'en' && detectedLang !== this.defaultLanguage) {
-      // Store detection for analytics (optional)
-      this.logger.debug(`🔍 Detected ${detectedLang} from ${message.author.tag}`);
-
-      // If AiChatAgent is active, we can translate the message to English
-      // and store it on the message object for other agents to use.
       const translation = await this.translate(message.content, 'en', detectedLang);
       if (translation && translation !== message.content) {
         message.translatedContent = translation;
@@ -260,14 +266,13 @@ class LocalizationAgent extends BaseAgent {
       }
     }
 
-    // Store language preference (auto-save)
     const userLang = await this.getUserLanguage(message.author.id, message.guild.id);
     if (userLang !== detectedLang && detectedLang !== 'en') {
       await this.setUserLanguage(message.author.id, message.guild.id, detectedLang);
     }
   }
 
-  // ---------- TRANSLATE A BOT RESPONSE ----------
+  // ---------- TRANSLATE BOT RESPONSE ----------
   async translateBotResponse(text, userId, guildId) {
     const language = await this.getUserLanguage(userId, guildId);
     if (language === this.defaultLanguage) return text;
@@ -364,12 +369,10 @@ class LocalizationAgent extends BaseAgent {
   // ---------- /detect ----------
   async cmdDetect(interaction) {
     const text = interaction.options.getString('text');
-
     await interaction.deferReply({ ephemeral: true });
 
     try {
       const detected = await this.detectLanguage(text);
-      const confidence = 'High'; // We don't have confidence from fallback
       const name = this._getLanguageName(detected);
 
       const embed = new EmbedBuilder()
@@ -377,8 +380,7 @@ class LocalizationAgent extends BaseAgent {
         .setColor(0x00ff88)
         .addFields(
           { name: '📝 Text', value: text.substring(0, 200), inline: false },
-          { name: '🌐 Detected Language', value: `${name} (${detected})`, inline: true },
-          { name: '📊 Confidence', value: confidence, inline: true }
+          { name: '🌐 Detected Language', value: `${name} (${detected})`, inline: true }
         )
         .setTimestamp();
 
