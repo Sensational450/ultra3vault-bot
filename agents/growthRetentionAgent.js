@@ -1,9 +1,9 @@
 /**
- * 📈 GrowthRetentionAgent v5.0
+ * 📈 GrowthRetentionAgent v6.0 (Configurable)
  * - Tracks user activity (messages)
- * - Rewards milestones (10, 50, 100, 500, 1000 messages)
+ * - Rewards milestones (configurable list)
  * - Posts weekly leaderboard of top chatters
- * - Nudges inactive users (7+ days) with a reward offer
+ * - Nudges inactive users with configurable message
  * - Generates weekly growth reports
  * - Fully automated – uses existing channels
  */
@@ -14,15 +14,22 @@ class GrowthRetentionAgent extends BaseAgent {
   constructor(eventBus, deps) {
     super(eventBus, deps);
     this.models = deps.models;
-    
-    // Hardcoded defaults
-    this.minMessagesForMilestone = 10;
-    this.milestones = [10, 50, 100, 500, 1000, 5000];
-    this.dailyRewardAmount = 50;
-    this.inactivityDays = 7;
-    this.inactivityReward = 100;
-    this.topChattersLimit = 10;
-    
+
+    // ---- Config from Environment ----
+    this.milestones = (process.env.GROWTH_MILESTONES || '10,50,100,500,1000,5000')
+      .split(',').map(Number);
+    this.dailyRewardAmount = parseInt(process.env.DAILY_RETENTION_REWARD) || 50;
+    this.inactivityDays = parseInt(process.env.INACTIVITY_DAYS) || 7;
+    this.inactivityReward = parseInt(process.env.INACTIVITY_REWARD) || 100;
+    this.topChattersLimit = parseInt(process.env.TOP_CHATTERS_LIMIT) || 10;
+    this.vipTrialDays = parseInt(process.env.RETENTION_VIP_TRIAL_DAYS) || 3;
+
+    // ---- Nudge Message (configurable) ----
+    this.inactivityNudgeMessage = process.env.INACTIVITY_NUDGE_MESSAGE ||
+      "👋 Hey! We haven't seen you in **{days} days**.\n" +
+      "We miss you! Come back and claim **{reward} tokens** as a welcome-back gift! 🎁\n" +
+      "Just send `/daily` to claim!";
+
     // Cache to avoid duplicate processing per message
     this.processedMessages = new Set();
     this.cacheTTL = 60000; // 1 minute
@@ -30,38 +37,37 @@ class GrowthRetentionAgent extends BaseAgent {
 
   async init() {
     await super.init();
-    
+
     this.subscribe('job.dailyRetention', async () => {
       await this._dailyRetentionCheck();
     });
-    
+
     this.subscribe('job.weeklyGrowthReport', async () => {
       await this._generateWeeklyReport();
     });
-    
+
     this.subscribe('job.inactivityCheck', async () => {
       await this._nudgeInactiveUsers();
     });
 
-    this.logger.info('📈 GrowthRetentionAgent v5.0 ready');
+    this.logger.info(`📈 GrowthRetentionAgent v6.0 ready (milestones: ${this.milestones.join(', ')})`);
   }
 
   // ---------- MESSAGE TRACKING ----------
   async onMessage(message) {
     if (message.author.bot) return;
     if (!message.guild) return;
-    
+
     const key = `${message.author.id}_${message.guild.id}_${Date.now()}`;
     if (this.processedMessages.has(key)) return;
     this.processedMessages.add(key);
     setTimeout(() => this.processedMessages.delete(key), this.cacheTTL);
-    
+
     await this._trackActivity(message.author.id, message.guild.id);
   }
 
   async _trackActivity(userId, guildId) {
     try {
-      // Get or create user stats
       let stats = await this.models.User.findOne({ where: { userId, guildId } });
       if (!stats) {
         stats = await this.models.User.create({
@@ -103,12 +109,10 @@ class GrowthRetentionAgent extends BaseAgent {
     const user = await this.client.users.fetch(userId).catch(() => null);
     if (!user) return;
 
-    // Emit economy event (if economyAgent is listening)
     this.emit('economy.addBalance', { userId, guildId, amount, reason: `Milestone: ${count} messages` });
 
     this.logger.info(`🎉 Milestone: ${user.tag} reached ${count} messages (+${amount} tokens)`);
-    
-    // Optionally DM the user
+
     try {
       await user.send(`🎉 You reached **${count} messages**! You earned **${amount} tokens**! Keep it up!`);
     } catch {}
@@ -119,33 +123,28 @@ class GrowthRetentionAgent extends BaseAgent {
     const guilds = this.client.guilds.cache;
     for (const [guildId, guild] of guilds) {
       try {
-        // Top chatters today
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
         const users = await this.models.User.findAll({
           where: { guildId },
           order: [['messageCount', 'DESC']],
           limit: this.topChattersLimit,
         });
-        
+
         if (users.length === 0) return;
 
-        // Random retention bonus (give 1 random active member a VIP trial)
         const randomIdx = Math.floor(Math.random() * Math.min(users.length, 5));
         const luckyUser = users[randomIdx];
         if (luckyUser) {
-          // Emit VIP trial event (VipAgent listens to this)
-          this.emit('vip.grantTrial', { 
-            userId: luckyUser.userId, 
-            guildId, 
-            days: 3,
-            reason: 'Daily retention bonus' 
+          this.emit('vip.grantTrial', {
+            userId: luckyUser.userId,
+            guildId,
+            days: this.vipTrialDays,
+            reason: 'Daily retention bonus'
           });
           const user = await this.client.users.fetch(luckyUser.userId).catch(() => null);
           if (user) {
-            this.logger.info(`🎁 Retention bonus: ${user.tag} got 3-day VIP trial`);
+            this.logger.info(`🎁 Retention bonus: ${user.tag} got ${this.vipTrialDays}-day VIP trial`);
             try {
-              await user.send(`🎁 You've been randomly selected for a **3-day VIP trial**! Enjoy exclusive perks!`);
+              await user.send(`🎁 You've been randomly selected for a **${this.vipTrialDays}-day VIP trial**! Enjoy exclusive perks!`);
             } catch {}
           }
         }
@@ -170,17 +169,16 @@ class GrowthRetentionAgent extends BaseAgent {
       try {
         const user = await this.client.users.fetch(stats.userId).catch(() => null);
         if (!user) continue;
-        
-        // Check if they've already been nudged recently (optional: track lastNudge field)
-        await user.send({
-          content: `👋 Hey! We haven't seen you in **${this.inactivityDays} days**.\n` +
-                   `We miss you! Come back and claim **${this.inactivityReward} tokens** as a welcome-back gift! 🎁\n` +
-                   `Just send `/daily` to claim!`,
-        });
+
+        const message = this.inactivityNudgeMessage
+          .replace(/{days}/g, this.inactivityDays)
+          .replace(/{reward}/g, this.inactivityReward);
+
+        await user.send(message);
         this.logger.info(`💤 Inactivity nudge sent to ${user.tag}`);
-        
-        // Update lastNudge to avoid spam (add a field in DB or just update lastActive)
-        stats.lastActive = new Date(); // Reset so they don't get spammed
+
+        // Reset lastActive to avoid repeated nudges
+        stats.lastActive = new Date();
         await stats.save();
       } catch (err) {
         this.logger.debug(`Inactivity nudge failed for ${stats.userId}: ${err.message}`);
@@ -207,7 +205,7 @@ class GrowthRetentionAgent extends BaseAgent {
         const topUsers = await this.models.User.findAll({
           where: { guildId },
           order: [['messageCount', 'DESC']],
-          limit: 5,
+          limit: this.topChattersLimit,
         });
 
         let topList = '';
@@ -228,7 +226,7 @@ class GrowthRetentionAgent extends BaseAgent {
             { name: '📈 Top Chatters', value: topList || 'No data yet.', inline: false }
           )
           .setTimestamp()
-          .setFooter({ text: 'Ultra3Vault • Growth AI v5.0' });
+          .setFooter({ text: 'Ultra3Vault • Growth AI v6.0' });
 
         await channel.send({ embeds: [embed] });
         this.logger.info(`📊 Weekly growth report posted to #${channel.name}`);
