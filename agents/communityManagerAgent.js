@@ -1,10 +1,11 @@
 /**
- * 👥 CommunityManagerAgent v5.0 (Web3 Focused)
+ * 👥 CommunityManagerAgent v6.0 (Web3 Focused – Configurable)
  * - Sends scheduled welcome messages to new members
  * - Auto‑assigns a default role on join
  * - Posts automated announcements (token launches, NFT drops, AMAs)
  * - Tracks active members and rewards engagement (optional)
  * - Fully automated – no manual commands needed
+ * - Configurable messages via environment variables
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
@@ -12,33 +13,41 @@ const { EmbedBuilder } = require('discord.js');
 class CommunityManagerAgent extends BaseAgent {
   constructor(eventBus, deps) {
     super(eventBus, deps);
+
+    // ---- Config from Env ----
     this.welcomeChannelId = process.env.WELCOME_CHANNEL_ID;
     this.welcomeMessage = process.env.WELCOME_MESSAGE || 
-      'Welcome to the **Ultra3Vault** community, {user}! 🚀\n' +
-      'We are a Web3 hub for crypto enthusiasts, traders, and builders.\n\n' +
-      '📌 Check out <#announcements> for the latest updates.\n' +
-      '💬 Introduce yourself in <#general>!\n' +
-      '💰 Explore our economy with `/daily`, `/shop`, and more!';
+      'Welcome to the community, {user}! 🚀\nCheck out <#announcements> for updates and use `/help` to get started.';
 
     this.autoRoleId = process.env.AUTO_ROLE_ID;
     this.announcementChannelId = process.env.ANNOUNCEMENT_CHANNEL_ID;
     this.giveawayRoleId = process.env.GIVEAWAY_ROLE_ID;
 
-    // Web3 specific configs
+    // Web3 specific configs (optional)
     this.tokenLaunches = JSON.parse(process.env.TOKEN_LAUNCHES || '[]');
     this.nftGiveaways = JSON.parse(process.env.NFT_GIVEAWAYS || '[]');
     this.amaSchedule = process.env.AMA_SCHEDULE || '0 18 * * 5'; // Every Friday at 6 PM UTC
 
+    // DM welcome message (configurable, with fallback)
+    this.dmWelcomeMessage = process.env.DM_WELCOME_MESSAGE ||
+      'Welcome to the server! Check out the channels and feel free to introduce yourself.';
+
+    // AMA reminder texts (configurable)
+    this.amaReminderTitle = process.env.AMA_REMINDER_TITLE || '🎙️ AMA Session Starting Now!';
+    this.amaReminderDescription = process.env.AMA_REMINDER_DESCRIPTION ||
+      'Join us for our weekly Ask Me Anything session with our core team.';
+    this.amaReminderLocation = process.env.AMA_REMINDER_LOCATION || '<#voice-channel> or <#ama-chat>';
+    this.amaReminderWhen = process.env.AMA_REMINDER_WHEN || 'Right now!';
+
     // Engagement tracking (cached in memory)
     this.activeUsers = new Map();
     this.lastActivity = new Map();
-    this.engagementThreshold = parseInt(process.env.ENGAGEMENT_THRESHOLD) || 5; // messages per day
+    this.engagementThreshold = parseInt(process.env.ENGAGEMENT_THRESHOLD) || 5;
   }
 
   async init() {
     await super.init();
 
-    // Subscribe to scheduled jobs
     this.subscribe('job.announcementCheck', async () => {
       await this.postScheduledAnnouncements();
     });
@@ -47,12 +56,12 @@ class CommunityManagerAgent extends BaseAgent {
       await this.rewardActiveMembers();
     });
 
-    this.logger.info('👥 CommunityManagerAgent v5.0 ready (Web3 focused)');
+    this.logger.info('👥 CommunityManagerAgent v6.0 ready');
   }
 
   // ---------- Event Handlers ----------
   async onGuildMemberAdd(member) {
-    // 1. Welcome message
+    // 1. Welcome message in channel
     if (this.welcomeChannelId) {
       const channel = member.guild.channels.cache.get(this.welcomeChannelId);
       if (channel?.isTextBased()) {
@@ -71,18 +80,11 @@ class CommunityManagerAgent extends BaseAgent {
       }
     }
 
-    // 3. Optionally DM the user with a Web3 welcome packet
+    // 3. DM welcome (configurable)
     try {
       const dmEmbed = new EmbedBuilder()
-        .setTitle('🌐 Welcome to Ultra3Vault')
-        .setDescription(
-          'You\'ve joined a vibrant Web3 community!\n\n' +
-          '• 🔔 Stay updated with `/news subscribe`\n' +
-          '• 💰 Earn tokens with `/daily`\n' +
-          '• 🎁 Join giveaways and airdrops\n' +
-          '• 🐋 Track whale movements with our alerts\n\n' +
-          'Check out <#announcements> for the latest news!'
-        )
+        .setTitle('🌐 Welcome!')
+        .setDescription(this.dmWelcomeMessage)
         .setColor(0x9b59b6)
         .setTimestamp();
       await member.send({ embeds: [dmEmbed] });
@@ -100,12 +102,12 @@ class CommunityManagerAgent extends BaseAgent {
 
     const today = new Date().toISOString().split('T')[0];
 
-    // 1. Token launches
+    // 1. Token launches (from env)
     for (const launch of this.tokenLaunches) {
       if (launch.date === today) {
         const embed = new EmbedBuilder()
           .setTitle(`🚀 Token Launch: ${launch.name}`)
-          .setDescription(launch.description || 'A new token is launching on our platform!')
+          .setDescription(launch.description || 'A new token is launching!')
           .setColor(0x00ff88)
           .addFields(
             { name: '📅 Date', value: launch.date, inline: true },
@@ -114,11 +116,11 @@ class CommunityManagerAgent extends BaseAgent {
           )
           .setTimestamp();
         await channel.send({ embeds: [embed] });
-        this.logger.info(`🚀 Posted token launch announcement: ${launch.name}`);
+        this.logger.info(`🚀 Posted token launch: ${launch.name}`);
       }
     }
 
-    // 2. NFT giveaways
+    // 2. NFT giveaways (from env)
     for (const giveaway of this.nftGiveaways) {
       if (giveaway.date === today) {
         const embed = new EmbedBuilder()
@@ -135,16 +137,16 @@ class CommunityManagerAgent extends BaseAgent {
       }
     }
 
-    // 3. AMA schedule reminder
+    // 3. AMA reminder (configurable via env)
     const now = new Date();
     if (this._matchCron(this.amaSchedule, now)) {
       const embed = new EmbedBuilder()
-        .setTitle('🎙️ AMA Session Starting Now!')
-        .setDescription('Join us for our weekly Ask Me Anything session with our core team.')
+        .setTitle(this.amaReminderTitle)
+        .setDescription(this.amaReminderDescription)
         .setColor(0x3498db)
         .addFields(
-          { name: '📍 Where', value: '<#voice-channel> or <#ama-chat>', inline: true },
-          { name: '⏰ When', value: 'Right now!', inline: true }
+          { name: '📍 Where', value: this.amaReminderLocation, inline: true },
+          { name: '⏰ When', value: this.amaReminderWhen, inline: true }
         )
         .setTimestamp();
       await channel.send({ embeds: [embed] });
@@ -155,8 +157,7 @@ class CommunityManagerAgent extends BaseAgent {
   // ---------- Engagement Rewards ----------
   async rewardActiveMembers() {
     this.logger.debug('📊 Engagement check running...');
-    // Placeholder – implement database integration here
-    // Example: get top active users from database and reward them
+    // Implement database integration here if needed
   }
 
   // ---------- Slash Commands ----------
@@ -224,7 +225,7 @@ class CommunityManagerAgent extends BaseAgent {
         { name: '👥 Total Members', value: memberCount.toString(), inline: true },
         { name: '🟢 Online Now', value: onlineCount.toString(), inline: true },
         { name: '🤖 Bots', value: botCount.toString(), inline: true },
-        { name: '🚀 Web3 Focus', value: 'Crypto • NFTs • DeFi', inline: false }
+        { name: '🚀 Focus', value: 'Crypto • Web3 • DeFi', inline: false }
       )
       .setTimestamp();
 
