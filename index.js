@@ -92,6 +92,7 @@ const LocalizationAgent = require('./agents/localizationAgent');
 const ContentPlanningAgent = require('./agents/contentPlanningAgent');
 const AMAAgent = require('./agents/amaAgent');
 const SelfImprovementAgent = require('./agents/selfImprovementAgent');
+const EngagementAgent = require('./agents/engagementAgent'); // 👈 NEW
 
 let AiChatAgent = null;
 try {
@@ -146,6 +147,7 @@ try {
     orchestrator.registerAgent(new InfoAgent(eventBus, { client, logger, db, models }), 30);
     orchestrator.registerAgent(new SummaryAgent(eventBus, { client, logger, db, models }), 25);
     orchestrator.registerAgent(new CommunityManagerAgent(eventBus, { client, logger, db, models }), 20);
+    orchestrator.registerAgent(new EngagementAgent(eventBus, { client, logger, db, models, orchestrator }), 19); // 🎯 NEW
     orchestrator.registerAgent(new ContentPlanningAgent(eventBus, { client, logger, db, models, orchestrator }), 18);
     orchestrator.registerAgent(new LocalizationAgent(eventBus, { client, logger, db, models }), 15);
     orchestrator.registerAgent(new RecommendationAgent(eventBus, { client, logger, db, models }), 10);
@@ -393,6 +395,15 @@ try {
     // 👇 TRIAL EXPIRY JOB
     const trialExpiry = require('./jobs/trialExpiry')({ eventBus, logger, orchestrator });
 
+    // 👇 ENGAGEMENT JOBS
+    const conversationStarter = async () => eventBus.emit('job.conversationStarter');
+    const dailyPoll = async () => eventBus.emit('job.dailyPoll');
+    const dailyQuiz = async () => eventBus.emit('job.dailyQuiz');
+    const dailyDebate = async () => eventBus.emit('job.dailyDebate');
+    const trivia = async () => eventBus.emit('job.trivia');
+    const mentor = async () => eventBus.emit('job.mentor');
+    const autoSummarize = async () => eventBus.emit('job.autoSummarize'); // for news summarization job
+
     scheduler.registerJob('priceUpdater', '*/1 * * * *', priceUpdater);
     scheduler.registerJob('leaderboardReset', '0 0 * * 0', leaderboardReset);
     scheduler.registerJob('subscriptionRenewal', '0 */6 * * *', subscriptionRenewal);
@@ -490,6 +501,16 @@ try {
     // 👇 TRIAL EXPIRY JOB SCHEDULE (every hour)
     scheduler.registerJob('trialExpiry', '0 * * * *', trialExpiry);
     logger.info('⏰ Trial expiry job scheduled (every hour)');
+
+    // 👇 ENGAGEMENT JOB SCHEDULES
+    scheduler.registerJob('conversationStarter', '0 9 * * *', conversationStarter); // 9 AM UTC daily
+    scheduler.registerJob('dailyPoll', '0 10 * * *', dailyPoll); // 10 AM UTC daily
+    scheduler.registerJob('dailyQuiz', '0 11 * * *', dailyQuiz); // 11 AM UTC daily
+    scheduler.registerJob('dailyDebate', '0 12 * * *', dailyDebate); // 12 PM UTC daily
+    scheduler.registerJob('trivia', '0 14 * * *', trivia); // 2 PM UTC daily
+    scheduler.registerJob('mentor', '0 15 * * *', mentor); // 3 PM UTC daily
+    scheduler.registerJob('autoSummarize', '*/10 * * * *', autoSummarize); // every 10 min (sync with news fetch)
+    logger.info('🎯 Engagement jobs scheduled');
 
     // Self‑ping job (keep Render awake)
     if (process.env.RENDER_EXTERNAL_URL) {
