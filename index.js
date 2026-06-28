@@ -15,6 +15,38 @@ const { WebServer } = require('./web/server');
 const secrets = require('./config/secrets');
 const axios = require('axios');
 const ButtonHandler = require('./tools/discord/buttonHandler');
+const WebhookSender = require('./tools/discord/webhookSender'); // ✅ NEW
+
+// ================= WEBHOOK MAPPING =================
+const WEBHOOKS = {
+  announcements: process.env.ANNOUNCEMENTS_WEBHOOK_URL,
+  cryptoNews: process.env.NEWS_WEBHOOK_URL,
+  whaleAlerts: process.env.WHALE_WEBHOOK_URL,
+  priceAlerts: process.env.PRICE_WEBHOOK_URL,
+  leaderboard: process.env.LEADERBOARD_WEBHOOK_URL,
+  socialFeed: process.env.SOCIAL_FEED_WEBHOOK_URL,
+  vipNews: process.env.VIP_WEBHOOK_URL,
+  vipGiveaways: process.env.VIP_GIVEAWAY_WEBHOOK_URL,
+  premiumSignals: process.env.PREMIUM_SIGNAL_WEBHOOK_URL,
+  premiumAirdrops: process.env.PREMIUM_AIRDROP_WEBHOOK_URL,
+  modLog: process.env.MODLOG_WEBHOOK_URL,
+  ama: process.env.AMA_WEBHOOK_URL,
+  giveaways: process.env.GIVEAWAY_WEBHOOK_URL,
+};
+
+// Helper: safely send via webhook
+async function sendWebhook(key, payload) {
+  const url = WEBHOOKS[key];
+  if (!url) {
+    logger.warn(`⚠️ Webhook URL missing for key: ${key}`);
+    return;
+  }
+  try {
+    await WebhookSender.send(url, payload);
+  } catch (err) {
+    logger.error(`Webhook send failed (${key}): ${err.message}`);
+  }
+}
 
 // ================= UNHANDLED ERROR HANDLERS =================
 process.on('uncaughtException', (err) => {
@@ -93,7 +125,7 @@ const ContentPlanningAgent = require('./agents/contentPlanningAgent');
 const AMAAgent = require('./agents/amaAgent');
 const SelfImprovementAgent = require('./agents/selfImprovementAgent');
 const EngagementAgent = require('./agents/engagementAgent');
-const SocialFeedAgent = require('./agents/socialFeedAgent'); // 👈 NEW
+const SocialFeedAgent = require('./agents/socialFeedAgent');
 
 let AiChatAgent = null;
 try {
@@ -119,16 +151,14 @@ try {
 
     // 👇 INITIALIZE BUTTON HANDLER
     const buttonHandler = new ButtonHandler({ logger, eventBus });
-    // Register trivia reveal button
     buttonHandler.register('trivia_reveal', async (interaction) => {
       await interaction.reply({
         content: '🔍 **Answer:** Bitcoin was created in **2009** by the pseudonymous creator **Satoshi Nakamoto**.',
         ephemeral: true,
       });
     });
-    // Register any other buttons (e.g., pagination, confirmations) as needed
 
-    // Register all agents (priorities: higher = more important)
+    // Register all agents
     orchestrator.registerAgent(new ModerationAgent(eventBus, { client, logger, db, models }), 100);
     orchestrator.registerAgent(new EconomyAgent(eventBus, { client, logger, db, models }), 90);
     orchestrator.registerAgent(new VipAgent(eventBus, { client, logger, db, models }), 80);
@@ -140,7 +170,6 @@ try {
     if (AiChatAgent) {
       orchestrator.registerAgent(new AiChatAgent(eventBus, { client, logger, db, models }), 50);
     }
-    // 👇 AMA Agent (high priority for AMA channel)
     orchestrator.registerAgent(new AMAAgent(eventBus, { client, logger, db, models, orchestrator }), 48);
     orchestrator.registerAgent(new SupportAgent(eventBus, { client, logger, db, models }), 45);
     orchestrator.registerAgent(new ReferralAgent(eventBus, { client, logger, db, models }), 40);
@@ -151,7 +180,7 @@ try {
     orchestrator.registerAgent(new EngagementAgent(eventBus, { client, logger, db, models, orchestrator }), 19);
     orchestrator.registerAgent(new ContentPlanningAgent(eventBus, { client, logger, db, models, orchestrator }), 18);
     orchestrator.registerAgent(new LocalizationAgent(eventBus, { client, logger, db, models }), 15);
-    orchestrator.registerAgent(new SocialFeedAgent(eventBus, { client, logger, db, models, orchestrator }), 14); // 📡 NEW
+    orchestrator.registerAgent(new SocialFeedAgent(eventBus, { client, logger, db, models, orchestrator }), 14);
     orchestrator.registerAgent(new RecommendationAgent(eventBus, { client, logger, db, models }), 10);
     orchestrator.registerAgent(new GrowthRetentionAgent(eventBus, { client, logger, db, models }), 5);
     orchestrator.registerAgent(new OptimizationAgent(eventBus, { client, logger, db, models, orchestrator }), 1);
@@ -159,12 +188,12 @@ try {
 
     logger.info('✅ All agents registered');
 
-    // 🔔 Check for required API keys (optional)
+    // API key checks (unchanged)
     if (!process.env.NEWSDATA_API_KEY) {
-      logger.warn('⚠️ NEWSDATA_API_KEY is not set. NewsAgent will not fetch articles. Please add the key to Render environment variables.');
+      logger.warn('⚠️ NEWSDATA_API_KEY is not set. NewsAgent will not fetch articles.');
     }
     if (!process.env.PREMIUM_AIRDROP_CHANNEL_ID) {
-      logger.warn('⚠️ PREMIUM_AIRDROP_CHANNEL_ID is not set. AirdropAgent will be disabled.');
+      logger.warn('⚠️ PREMIUM_AIRDROP_CHANNEL_ID not set. AirdropAgent will be disabled.');
     }
     if (!process.env.WHALE_ALERT_CHANNEL_ID && !process.env.ETHERSCAN_API_KEY) {
       logger.warn('⚠️ No whale alert channel or Etherscan key set. WhaleAgent may not function.');
@@ -191,7 +220,7 @@ try {
       }
     });
 
-    // ================= AUTO‑SUMMARY POSTER =================
+    // ================= AUTO‑SUMMARY POSTER (kept as‑is for dynamic subscriptions) =================
     eventBus.on('news.summarized', async (data) => {
       const { summary, original, category } = data;
       logger.debug(`📝 Auto‑summary generated for: ${original.title}`);
@@ -228,146 +257,92 @@ try {
       }
     });
 
-    // ================= WHALE ALERT POSTER =================
+    // ================= WHALE ALERT POSTER (webhook) =================
     eventBus.on('whale.detected', async (tx) => {
-      const channelId = process.env.WHALE_ALERT_CHANNEL_ID;
-      if (!channelId) {
-        logger.warn('⚠️ WHALE_ALERT_CHANNEL_ID not set – whale alerts disabled.');
-        return;
-      }
-
       try {
-        const channel = client.channels.cache.get(channelId);
-        if (!channel || !channel.isTextBased()) {
-          logger.warn(`Whale channel ${channelId} not found`);
-          return;
-        }
-
         const whaleAgent = orchestrator.getAgent('WhaleAgent');
         if (!whaleAgent) {
           logger.warn('WhaleAgent not found');
           return;
         }
-
-        const embed = whaleAgent.formatWhaleEmbed(tx);
-        await channel.send({ embeds: [embed] });
-        logger.info(`🐋 Whale alert posted to #${channel.name}`);
+        // formatWhaleEmbed returns an EmbedBuilder – convert to JSON
+        const embed = whaleAgent.formatWhaleEmbed(tx).toJSON();
+        await sendWebhook('whaleAlerts', { embeds: [embed] });
+        logger.info(`🐋 Whale alert posted via webhook`);
       } catch (err) {
         logger.error(`Failed to post whale alert: ${err.message}`);
       }
     });
 
-    // ================= PREMIUM SIGNAL POSTER =================
+    // ================= PREMIUM SIGNAL POSTER (webhook) =================
     eventBus.on('signal.generated', async (signal) => {
-      const channelId = process.env.PREMIUM_SIGNAL_CHANNEL_ID;
-      if (!channelId) {
-        logger.warn('⚠️ PREMIUM_SIGNAL_CHANNEL_ID not set – signals disabled.');
-        return;
-      }
-
       try {
-        const channel = client.channels.cache.get(channelId);
-        if (!channel || !channel.isTextBased()) {
-          logger.warn(`Premium signal channel ${channelId} not found`);
-          return;
-        }
-
         const signalAgent = orchestrator.getAgent('SignalAgent');
         if (!signalAgent) {
           logger.warn('SignalAgent not found');
           return;
         }
-
-        const embed = signalAgent.formatSignalEmbed(signal);
-        await channel.send({ embeds: [embed] });
-        logger.info(`📈 Premium signal posted to #${channel.name}`);
+        const embed = signalAgent.formatSignalEmbed(signal).toJSON();
+        await sendWebhook('premiumSignals', { embeds: [embed] });
+        logger.info(`📈 Premium signal posted via webhook`);
       } catch (err) {
         logger.error(`Failed to post premium signal: ${err.message}`);
       }
     });
 
-    // ================= RECOMMENDATION POSTERS =================
-    // VIP Recommendations
+    // ================= RECOMMENDATION POSTERS (webhooks) =================
+    // VIP Recommendations → vipNews
     eventBus.on('recommendation.generated', async (rec) => {
       if (rec.tier !== 'vip') return;
-
-      const channelId = process.env.VIP_RECOMMENDATION_CHANNEL_ID;
-      if (!channelId) {
-        logger.warn('⚠️ VIP_RECOMMENDATION_CHANNEL_ID not set – VIP recs disabled.');
-        return;
-      }
-
       try {
-        const channel = client.channels.cache.get(channelId);
-        if (!channel || !channel.isTextBased()) {
-          logger.warn(`VIP rec channel ${channelId} not found`);
-          return;
-        }
-
         const recAgent = orchestrator.getAgent('RecommendationAgent');
         if (!recAgent) {
           logger.warn('RecommendationAgent not found');
           return;
         }
-
-        const embed = recAgent.formatRecommendationEmbed(rec);
-        await channel.send({ embeds: [embed] });
-        logger.info(`🔶 VIP recommendation posted to #${channel.name}`);
+        const embed = recAgent.formatRecommendationEmbed(rec).toJSON();
+        await sendWebhook('vipNews', { embeds: [embed] });
+        logger.info(`🔶 VIP recommendation posted via webhook`);
       } catch (err) {
         logger.error(`Failed to post VIP recommendation: ${err.message}`);
       }
     });
 
-    // Premium Recommendations
+    // Premium Recommendations → premiumSignals
     eventBus.on('recommendation.generated', async (rec) => {
       if (rec.tier !== 'premium') return;
-
-      const channelId = process.env.PREMIUM_RECOMMENDATION_CHANNEL_ID;
-      if (!channelId) {
-        logger.warn('⚠️ PREMIUM_RECOMMENDATION_CHANNEL_ID not set – Premium recs disabled.');
-        return;
-      }
-
       try {
-        const channel = client.channels.cache.get(channelId);
-        if (!channel || !channel.isTextBased()) {
-          logger.warn(`Premium rec channel ${channelId} not found`);
-          return;
-        }
-
         const recAgent = orchestrator.getAgent('RecommendationAgent');
         if (!recAgent) {
           logger.warn('RecommendationAgent not found');
           return;
         }
-
-        const embed = recAgent.formatRecommendationEmbed(rec);
-        await channel.send({ embeds: [embed] });
-        logger.info(`💎 Premium recommendation posted to #${channel.name}`);
+        const embed = recAgent.formatRecommendationEmbed(rec).toJSON();
+        await sendWebhook('premiumSignals', { embeds: [embed] });
+        logger.info(`💎 Premium recommendation posted via webhook`);
       } catch (err) {
         logger.error(`Failed to post Premium recommendation: ${err.message}`);
       }
     });
 
-    // Attach Discord events (pass buttonHandler)
+    // ================= ATTACH DISCORD EVENTS =================
     require('./events/messageCreate')(client, orchestrator, { logger });
     require('./events/interactionCreate')(client, orchestrator, { logger, buttonHandler });
     require('./events/guildMemberAdd')(client, orchestrator, { logger });
     require('./events/ready')(client, orchestrator, { logger, registerCommands: require('./commands/register') });
 
     // ================= SCHEDULED JOBS =================
+    // (All jobs unchanged – they emit events that we've updated above)
     const priceUpdater = require('./jobs/priceUpdater')({ eventBus, logger, cache: null });
     const leaderboardReset = require('./jobs/leaderboardReset')({ eventBus, logger, models });
     const subscriptionRenewal = require('./jobs/subscriptionRenewal')({ eventBus, logger, models, client });
     const cleanupTempData = require('./jobs/cleanupTempData')({ eventBus, logger });
     const newsUpdater = require('./jobs/newsUpdater')({ eventBus, logger });
 
-    // 👇 GROWTH/RETENTION JOBS
     const dailyRetention = require('./jobs/dailyRetention')({ eventBus, logger, models, client, orchestrator });
     const weeklyGrowthReport = require('./jobs/weeklyGrowthReport')({ eventBus, logger, models, client, orchestrator });
     const inactivityCheck = require('./jobs/inactivityCheck')({ eventBus, logger, models, client, orchestrator });
 
-    // 👇 OPTIMIZATION JOBS
     const healthCheck = require('./jobs/healthCheck')({ eventBus, logger, orchestrator });
     const cacheCleanup = require('./jobs/cacheCleanup')({ eventBus, logger, orchestrator });
     const memoryMonitor = require('./jobs/memoryMonitor')({ eventBus, logger, orchestrator });
@@ -375,7 +350,6 @@ try {
     const tempCleanup = require('./jobs/tempCleanup')({ eventBus, logger, orchestrator });
     const performanceReport = require('./jobs/performanceReport')({ eventBus, logger, orchestrator });
 
-    // 👇 CONTENT PLANNING JOBS
     const dailyContent = require('./jobs/dailyContent')({ eventBus, logger, orchestrator });
     const educationalContent = require('./jobs/educationalContent')({ eventBus, logger, orchestrator });
     const marketRecap = require('./jobs/marketRecap')({ eventBus, logger, orchestrator });
@@ -384,20 +358,16 @@ try {
     const vipContent = require('./jobs/vipContent')({ eventBus, logger, orchestrator });
     const premiumContent = require('./jobs/premiumContent')({ eventBus, logger, orchestrator });
 
-    // 👇 AMA JOB
     const amaSummary = require('./jobs/amaSummary')({ eventBus, logger, orchestrator });
 
-    // 👇 SELF-IMPROVEMENT JOBS
     const performanceAnalysis = require('./jobs/performanceAnalysis')({ eventBus, logger, orchestrator });
     const feedbackMining = require('./jobs/feedbackMining')({ eventBus, logger, orchestrator });
     const trendDetection = require('./jobs/trendDetection')({ eventBus, logger, orchestrator });
     const sentimentAnalysis = require('./jobs/sentimentAnalysis')({ eventBus, logger, orchestrator });
     const suggestionReport = require('./jobs/suggestionReport')({ eventBus, logger, orchestrator });
 
-    // 👇 TRIAL EXPIRY JOB
     const trialExpiry = require('./jobs/trialExpiry')({ eventBus, logger, orchestrator });
 
-    // 👇 ENGAGEMENT JOBS
     const conversationStarter = async () => eventBus.emit('job.conversationStarter');
     const dailyPoll = async () => eventBus.emit('job.dailyPoll');
     const dailyQuiz = async () => eventBus.emit('job.dailyQuiz');
@@ -405,17 +375,15 @@ try {
     const trivia = async () => eventBus.emit('job.trivia');
     const mentor = async () => eventBus.emit('job.mentor');
     const autoSummarize = async () => eventBus.emit('job.autoSummarize');
-
-    // 👇 SOCIAL FEED JOB
     const socialFeed = async () => eventBus.emit('job.socialFeed');
 
+    // Scheduler registrations (unchanged)
     scheduler.registerJob('priceUpdater', '*/1 * * * *', priceUpdater);
     scheduler.registerJob('leaderboardReset', '0 0 * * 0', leaderboardReset);
     scheduler.registerJob('subscriptionRenewal', '0 */6 * * *', subscriptionRenewal);
     scheduler.registerJob('cleanupTempData', '0 */2 * * *', cleanupTempData);
     scheduler.registerJob('newsUpdater', '*/10 * * * *', newsUpdater);
 
-    // Weekly leaderboard posting job
     const leaderboardChannelId = process.env.LEADERBOARD_CHANNEL_ID;
     if (leaderboardChannelId) {
       const weeklyLeaderboard = require('./jobs/weeklyLeaderboard')({
@@ -431,31 +399,26 @@ try {
       logger.warn('⚠️ LEADERBOARD_CHANNEL_ID not set – weekly leaderboard posting disabled');
     }
 
-    // ================= AIRDROP JOB (every 30 minutes) =================
     scheduler.registerJob('airdropCheck', '*/30 * * * *', async () => {
       eventBus.emit('job.airdropCheck');
     });
     logger.info('🎁 Airdrop check job scheduled (every 30 minutes)');
 
-    // ================= WHALE CHECK JOB (every 5 minutes) =================
     scheduler.registerJob('whaleCheck', process.env.WHALE_CHECK_INTERVAL || '*/5 * * * *', async () => {
       eventBus.emit('job.whaleCheck');
     });
     logger.info('🐋 Whale check job scheduled');
 
-    // ================= SIGNAL CHECK JOB (every 5 minutes) =================
     scheduler.registerJob('signalCheck', '*/5 * * * *', async () => {
       eventBus.emit('job.signalCheck');
     });
     logger.info('📈 Signal check job scheduled');
 
-    // ================= RECOMMENDATION SCAN JOB (every 15 minutes) =================
     scheduler.registerJob('recommendationCheck', '*/15 * * * *', async () => {
       eventBus.emit('job.recommendationCheck');
     });
     logger.info('🧠 Recommendation scan job scheduled (every 15 minutes)');
 
-    // ================= COMMUNITY MANAGER JOBS =================
     scheduler.registerJob('announcementCheck', '0 * * * *', async () => {
       eventBus.emit('job.announcementCheck');
     });
@@ -466,13 +429,11 @@ try {
     });
     logger.info('📊 Engagement check job scheduled (daily at midnight)');
 
-    // 👇 GROWTH/RETENTION JOB SCHEDULES
     scheduler.registerJob('dailyRetention', '0 20 * * *', dailyRetention);
     scheduler.registerJob('weeklyGrowthReport', '0 9 * * 1', weeklyGrowthReport);
     scheduler.registerJob('inactivityCheck', '0 10 * * 0', inactivityCheck);
     logger.info('📈 Growth/Retention jobs scheduled');
 
-    // 👇 OPTIMIZATION JOB SCHEDULES
     scheduler.registerJob('healthCheck', '*/15 * * * *', healthCheck);
     scheduler.registerJob('cacheCleanup', '*/30 * * * *', cacheCleanup);
     scheduler.registerJob('memoryMonitor', '*/10 * * * *', memoryMonitor);
@@ -481,7 +442,6 @@ try {
     scheduler.registerJob('performanceReport', '0 20 * * 0', performanceReport);
     logger.info('⚡ Optimization jobs scheduled');
 
-    // 👇 CONTENT PLANNING JOB SCHEDULES
     scheduler.registerJob('dailyContent', '0 9 * * *', dailyContent);
     scheduler.registerJob('educationalContent', '0 */6 * * *', educationalContent);
     scheduler.registerJob('marketRecap', '0 20 * * *', marketRecap);
@@ -491,11 +451,9 @@ try {
     scheduler.registerJob('premiumContent', '0 12 * * *', premiumContent);
     logger.info('📅 Content planning jobs scheduled');
 
-    // 👇 AMA JOB SCHEDULE
     scheduler.registerJob('amasummary', '0 20 * * 0', amaSummary);
     logger.info('🎙️ AMA summary job scheduled (Sunday 8 PM UTC)');
 
-    // 👇 SELF-IMPROVEMENT JOB SCHEDULES
     scheduler.registerJob('performanceAnalysis', '0 */6 * * *', performanceAnalysis);
     scheduler.registerJob('feedbackMining', '0 * * * *', feedbackMining);
     scheduler.registerJob('trendDetection', '0 0 * * *', trendDetection);
@@ -503,11 +461,9 @@ try {
     scheduler.registerJob('suggestionReport', '0 20 * * 0', suggestionReport);
     logger.info('🧠 Self-improvement jobs scheduled');
 
-    // 👇 TRIAL EXPIRY JOB SCHEDULE (every hour)
     scheduler.registerJob('trialExpiry', '0 * * * *', trialExpiry);
     logger.info('⏰ Trial expiry job scheduled (every hour)');
 
-    // 👇 ENGAGEMENT JOB SCHEDULES
     scheduler.registerJob('conversationStarter', '0 9 * * *', conversationStarter);
     scheduler.registerJob('dailyPoll', '0 10 * * *', dailyPoll);
     scheduler.registerJob('dailyQuiz', '0 11 * * *', dailyQuiz);
@@ -517,11 +473,9 @@ try {
     scheduler.registerJob('autoSummarize', '*/10 * * * *', autoSummarize);
     logger.info('🎯 Engagement jobs scheduled');
 
-    // 👇 SOCIAL FEED JOB SCHEDULE
     scheduler.registerJob('socialFeed', process.env.SOCIAL_FEED_INTERVAL || '*/30 * * * *', socialFeed);
     logger.info('📡 Social feed job scheduled');
 
-    // Self‑ping job (keep Render awake)
     if (process.env.RENDER_EXTERNAL_URL) {
       scheduler.registerJob('selfPing', '*/10 * * * *', async () => {
         try {
