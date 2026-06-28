@@ -1,16 +1,12 @@
 /**
- * 👑 VipAgent v6.2 (Persistent + Trial System + Plan Pricing + Extend)
- * - Subscription management (VIP / Premium tiers)
- * - Trial system: claim, status, expiry, admin grant
- * - Plan-based pricing: 7d, 14d, 30d (USD + tokens)
- * - Token-based purchase method with subscription extension
- * - Uses models layer (Subscription) – fully persistent
- * - Listens to payment.success and admin events
- * - Handles role assignment/removal
- * - Auto-expiry via scheduler event
+ * 👑 VipAgent v6.3 (Webhook Integration)
+ * - All subscription events now post to designated webhooks
+ * - Uses WebhookSender for consistent Ultra3Vault branding
+ * - Maintains existing commands and trial system
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
+const WebhookSender = require('../tools/discord/webhookSender'); // ✅ added
 
 class VipAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -24,6 +20,7 @@ class VipAgent extends BaseAgent {
         priceCoins: 500,
         durationDays: 30,
         perks: 'Access to VIP channels, early news',
+        webhookKey: 'vipNews', // 👈 maps to WEBHOOKS in index.js
       },
       premium: {
         name: 'Premium',
@@ -32,6 +29,7 @@ class VipAgent extends BaseAgent {
         priceCoins: 1500,
         durationDays: 30,
         perks: 'All VIP perks + exclusive signals & airdrop alerts',
+        webhookKey: 'premiumSignals',
       },
     };
 
@@ -63,7 +61,16 @@ class VipAgent extends BaseAgent {
       await this.expireTrials();
     });
     await this._ensureTrialTable();
-    this.logger.info('👑 VipAgent v6.2 ready (with extension support)');
+    this.logger.info('👑 VipAgent v6.3 ready (with webhook announcements)');
+  }
+
+  // ---------- WEBHOOK HELPER ----------
+  async sendWebhook(key, embed) {
+    try {
+      await WebhookSender.send(process.env[`${key.toUpperCase()}_WEBHOOK_URL`], { embeds: [embed] });
+    } catch (err) {
+      this.logger.warn(`Webhook send failed for ${key}: ${err.message}`);
+    }
   }
 
   // ---------- DATABASE HELPERS ----------
@@ -138,16 +145,31 @@ class VipAgent extends BaseAgent {
 
   async expireSubscription(userId, guildId, tier) {
     const guild = this.client.guilds.cache.get(guildId);
+    let userTag = 'Unknown';
     if (guild) {
       const member = await guild.members.fetch(userId).catch(() => null);
       if (member) await this.removeRole(member, tier);
     }
-    await this.deleteSubscription(userId, guildId);
     const user = await this.client.users.fetch(userId).catch(() => null);
     if (user) {
+      userTag = user.tag;
       user.send(`⚠️ Your **${this.tiers[tier]?.name || tier}** subscription has expired. Use \`/subscribe\` to renew.`).catch(() => {});
     }
+    await this.deleteSubscription(userId, guildId);
     this.emit('vip.expired', { userId, guildId, tier });
+
+    // ➕ Post expiry notification to webhook
+    const tierData = this.tiers[tier];
+    if (tierData && tierData.webhookKey) {
+      const embed = WebhookSender.buildUltraEmbed({
+        title: `⏳ ${tierData.name} Subscription Expired`,
+        description: `${userTag} has lost access to ${tierData.name} benefits.`,
+        color: 0xE74C3C,
+        footer: 'Ultra3Vault • Auto-expired',
+      });
+      await this.sendWebhook(tierData.webhookKey, embed);
+    }
+
     this.logger.info(`⌛ Expired ${tier} for user ${userId} in guild ${guildId}`);
   }
 
@@ -264,7 +286,6 @@ class VipAgent extends BaseAgent {
     if (existing && extend && existing.expiresAt > Date.now()) {
       // Extend existing subscription
       expiresAt = existing.expiresAt + duration * 24 * 60 * 60 * 1000;
-      // Keep the existing tier (should be the same)
       await this.setSubscription(userId, guildId, tier, expiresAt, autoRenew);
       this.logger.info(`↗️ Extended ${tier} for ${userId} by ${duration} days (new expiry: ${new Date(expiresAt).toISOString()})`);
     } else {
@@ -284,30 +305,66 @@ class VipAgent extends BaseAgent {
 
     // Assign the role (if not already assigned)
     const guild = this.client.guilds.cache.get(guildId);
+    let userTag = 'Unknown';
     if (guild) {
       const member = await guild.members.fetch(userId).catch(() => null);
-      if (member) await this.assignRole(member, tier);
+      if (member) {
+        await this.assignRole(member, tier);
+        userTag = member.user.tag;
+      }
     }
 
     this.emit('vip.granted', { userId, guildId, tier, expiresAt, paymentMethod });
+
+    // ➕ Post subscription announcement to webhook
+    if (tierData.webhookKey) {
+      const embed = WebhookSender.buildUltraEmbed({
+        title: `✨ ${tierData.name} Subscription ${existing && extend ? 'Extended' : 'Activated'}`,
+        description: `${userTag} has ${existing && extend ? 'extended' : 'gained'} access to **${tierData.name}** benefits for **${duration} days**.`,
+        fields: [
+          { name: 'Expires', value: `<t:${Math.floor(expiresAt / 1000)}:R>`, inline: true },
+          { name: 'Payment Method', value: paymentMethod, inline: true },
+        ],
+        color: 0x9B59B6,
+        footer: `Ultra3Vault • ${paymentMethod} purchase`,
+      });
+      await this.sendWebhook(tierData.webhookKey, embed);
+    }
+
     return expiresAt;
   }
 
   async renewSubscription(userId, guildId, tier, additionalDays = null, paymentMethod = 'manual') {
-    // This is similar to grantSubscription with extend=true
     return this.grantSubscription(userId, guildId, tier, additionalDays, 0, paymentMethod, true);
   }
 
   async cancelSubscription(userId, guildId) {
     const sub = await this.getSubscription(userId, guildId);
     if (!sub) return false;
+    const tierData = this.tiers[sub.tier];
     const guild = this.client.guilds.cache.get(guildId);
+    let userTag = 'Unknown';
     if (guild) {
       const member = await guild.members.fetch(userId).catch(() => null);
-      if (member) await this.removeRole(member, sub.tier);
+      if (member) {
+        await this.removeRole(member, sub.tier);
+        userTag = member.user.tag;
+      }
     }
     await this.deleteSubscription(userId, guildId);
     this.emit('vip.cancelled', { userId, guildId, tier: sub.tier });
+
+    // ➕ Post cancellation notification to webhook
+    if (tierData && tierData.webhookKey) {
+      const embed = WebhookSender.buildUltraEmbed({
+        title: `🚫 ${tierData.name} Subscription Cancelled`,
+        description: `${userTag} has cancelled their ${tierData.name} subscription. Access will continue until expiry.`,
+        color: 0xE74C3C,
+        footer: 'Ultra3Vault • Cancellation',
+      });
+      await this.sendWebhook(tierData.webhookKey, embed);
+    }
+
     return true;
   }
 
@@ -328,15 +385,6 @@ class VipAgent extends BaseAgent {
     return parseFloat(((tierData.priceUSD / tierData.durationDays) * days).toFixed(2));
   }
 
-  /**
-   * 💰 Purchase subscription using economy tokens (extends if already subscribed)
-   * @param {string} userId - Discord user ID
-   * @param {string} guildId - Discord guild ID
-   * @param {string} tier - 'vip' or 'premium'
-   * @param {number} days - Number of days (7, 14, or 30)
-   * @param {Object} economyAgent - Reference to EconomyAgent
-   * @returns {Promise<{ success: boolean, message: string, expiresAt?: Date }>}
-   */
   async purchaseWithTokens(userId, guildId, tier, days, economyAgent) {
     const tierData = this.tiers[tier];
     if (!tierData) {
@@ -363,7 +411,6 @@ class VipAgent extends BaseAgent {
       return { success: false, message: 'Failed to deduct tokens. Please try again.' };
     }
 
-    // Grant subscription with extension (so remaining time is added)
     const expiresAt = await this.grantSubscription(userId, guildId, tier, days, 0, 'tokens', true);
 
     this.logger.info(`💰 User ${userId} purchased ${tier} for ${days} days using ${totalCost} tokens (extended)`);
