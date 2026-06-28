@@ -1,13 +1,14 @@
 /**
- * 🧠 SelfImprovementAgent v12.0
+ * 🧠 SelfImprovementAgent v12.1 (Webhook Ready)
  * - Advanced performance benchmarking and anomaly detection
  * - User sentiment analysis (reactions)
  * - Predictive maintenance and auto‑correction
  * - Persistent suggestion storage and impact tracking
  * - Admin dashboard commands
+ * - Sends weekly suggestion report via "Insight" webhook (if configured)
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder } = require('discord.js');
+const { EmbedBuilder, WebhookClient } = require('discord.js');
 
 class SelfImprovementAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -17,6 +18,11 @@ class SelfImprovementAgent extends BaseAgent {
     this.feedbackChannelId = process.env.FEEDBACK_CHANNEL_ID;
     this.suggestionsChannelId = process.env.SUGGESTIONS_CHANNEL_ID || this.feedbackChannelId;
     this.reportChannelId = process.env.BOT_LOGS_CHANNEL_ID || process.env.MODLOG_CHANNEL_ID;
+
+    // ---- Webhook for suggestion report ----
+    this.reportWebhookUrl = process.env.SELFIMPROVEMENT_REPORT_WEBHOOK_URL;
+    this.reportWebhookUsername = 'Insight';
+    this.reportWebhookAvatar = process.env.SELFIMPROVEMENT_REPORT_WEBHOOK_AVATAR || null;
 
     // ---- Performance Metrics ----
     this.performanceHistory = [];
@@ -34,7 +40,7 @@ class SelfImprovementAgent extends BaseAgent {
     this.resourceSnapshots = [];
 
     // ---- Feedback Scan Tracking ----
-    this.lastFeedbackScan = Date.now(); // ✅ Fixed
+    this.lastFeedbackScan = Date.now();
 
     // ---- Internal State ----
     this.initialized = false;
@@ -54,7 +60,39 @@ class SelfImprovementAgent extends BaseAgent {
 
     this.subscribe('message.reaction', async (data) => await this._handleReaction(data));
 
-    this.logger.info('🧠 SelfImprovementAgent v12.0 ready');
+    this.logger.info(`🧠 SelfImprovementAgent v12.1 ready (report webhook: ${this.reportWebhookUrl ? '✅' : '❌'})`);
+  }
+
+  // ---------- Helper: Send via Webhook or Channel ----------
+  async _sendReport(embed) {
+    // 1. Try webhook if available
+    if (this.reportWebhookUrl) {
+      try {
+        const webhook = new WebhookClient({ url: this.reportWebhookUrl });
+        await webhook.send({
+          username: this.reportWebhookUsername,
+          avatarURL: this.reportWebhookAvatar || undefined,
+          embeds: [embed],
+        });
+        this.logger.debug('✅ Suggestion report sent via Insight webhook');
+        return;
+      } catch (err) {
+        this.logger.warn(`Webhook failed: ${err.message} – falling back to channel.send`);
+      }
+    }
+
+    // 2. Fallback to channel.send
+    if (!this.reportChannelId) {
+      this.logger.warn('No report channel configured – cannot send report');
+      return;
+    }
+    const channel = this.client.channels.cache.get(this.reportChannelId);
+    if (!channel?.isTextBased()) {
+      this.logger.warn(`Report channel ${this.reportChannelId} not found or not text-based`);
+      return;
+    }
+    await channel.send({ embeds: [embed] });
+    this.logger.debug('✅ Suggestion report sent via channel.send');
   }
 
   // ----- Database Helpers -----
@@ -375,13 +413,8 @@ class SelfImprovementAgent extends BaseAgent {
     }
   }
 
-  // ----- Suggestion Report -----
+  // ----- Suggestion Report (Webhook) -----
   async _postSuggestionReport() {
-    const channelId = this.reportChannelId;
-    if (!channelId) return;
-    const channel = this.client.channels.cache.get(channelId);
-    if (!channel?.isTextBased()) return;
-
     const pending = this.suggestionLog.filter(s => !s.applied).slice(-10);
     const applied = this.suggestionLog.filter(s => s.applied).slice(-5);
 
@@ -395,7 +428,7 @@ class SelfImprovementAgent extends BaseAgent {
         { name: '📈 Total Suggestions', value: this.suggestionLog.length.toString(), inline: true }
       )
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Self-Improvement AI v12.0' });
+      .setFooter({ text: 'Ultra3Vault • Self-Improvement AI v12.1' });
 
     if (pending.length > 0) {
       const top = pending.slice(0, 5);
@@ -408,7 +441,8 @@ class SelfImprovementAgent extends BaseAgent {
       }
     }
 
-    await channel.send({ embeds: [embed] });
+    await this._sendReport(embed);
+    this.logger.info('📊 Suggestion report sent');
   }
 
   // ----- Admin Commands -----
