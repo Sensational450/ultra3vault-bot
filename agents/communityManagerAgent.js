@@ -1,14 +1,14 @@
 /**
- * 👥 CommunityManagerAgent v6.0 (Web3 Focused – Configurable)
+ * 👥 CommunityManagerAgent v7.0 (Web3 Focused – Webhook Support)
  * - Sends scheduled welcome messages to new members
  * - Auto‑assigns a default role on join
- * - Posts automated announcements (token launches, NFT drops, AMAs)
+ * - Posts automated announcements (token launches, NFT drops, AMAs) via webhook
  * - Tracks active members and rewards engagement (optional)
  * - Fully automated – no manual commands needed
  * - Configurable messages via environment variables
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder } = require('discord.js');
+const { EmbedBuilder, WebhookClient } = require('discord.js');
 
 class CommunityManagerAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -23,23 +23,28 @@ class CommunityManagerAgent extends BaseAgent {
     this.announcementChannelId = process.env.ANNOUNCEMENT_CHANNEL_ID;
     this.giveawayRoleId = process.env.GIVEAWAY_ROLE_ID;
 
-    // Web3 specific configs (optional)
+    // ---- Webhook for announcements ----
+    this.announcementWebhookUrl = process.env.ANNOUNCEMENTS_WEBHOOK_URL;
+    this.webhookUsername = 'Herald';
+    this.webhookAvatarURL = process.env.ANNOUNCEMENTS_WEBHOOK_AVATAR || null;
+
+    // ---- Web3 specific configs (optional) ----
     this.tokenLaunches = JSON.parse(process.env.TOKEN_LAUNCHES || '[]');
     this.nftGiveaways = JSON.parse(process.env.NFT_GIVEAWAYS || '[]');
     this.amaSchedule = process.env.AMA_SCHEDULE || '0 18 * * 5'; // Every Friday at 6 PM UTC
 
-    // DM welcome message (configurable, with fallback)
+    // ---- DM welcome message (configurable) ----
     this.dmWelcomeMessage = process.env.DM_WELCOME_MESSAGE ||
       'Welcome to the server! Check out the channels and feel free to introduce yourself.';
 
-    // AMA reminder texts (configurable)
+    // ---- AMA reminder texts (configurable) ----
     this.amaReminderTitle = process.env.AMA_REMINDER_TITLE || '🎙️ AMA Session Starting Now!';
     this.amaReminderDescription = process.env.AMA_REMINDER_DESCRIPTION ||
       'Join us for our weekly Ask Me Anything session with our core team.';
     this.amaReminderLocation = process.env.AMA_REMINDER_LOCATION || '<#voice-channel> or <#ama-chat>';
     this.amaReminderWhen = process.env.AMA_REMINDER_WHEN || 'Right now!';
 
-    // Engagement tracking (cached in memory)
+    // ---- Engagement tracking ----
     this.activeUsers = new Map();
     this.lastActivity = new Map();
     this.engagementThreshold = parseInt(process.env.ENGAGEMENT_THRESHOLD) || 5;
@@ -56,7 +61,37 @@ class CommunityManagerAgent extends BaseAgent {
       await this.rewardActiveMembers();
     });
 
-    this.logger.info('👥 CommunityManagerAgent v6.0 ready');
+    this.logger.info('👥 CommunityManagerAgent v7.0 ready');
+  }
+
+  // ---------- Helper: Send via Webhook or Channel ----------
+  async _sendAnnouncement(embed) {
+    if (!this.announcementChannelId) return;
+
+    // 1. Try webhook if available
+    if (this.announcementWebhookUrl) {
+      try {
+        const webhook = new WebhookClient({ url: this.announcementWebhookUrl });
+        await webhook.send({
+          username: this.webhookUsername,
+          avatarURL: this.webhookAvatarURL || undefined,
+          embeds: [embed],
+        });
+        this.logger.debug('✅ Announcement sent via webhook (Herald)');
+        return;
+      } catch (err) {
+        this.logger.warn(`Webhook failed: ${err.message} – falling back to channel.send`);
+      }
+    }
+
+    // 2. Fallback to regular channel.send
+    const channel = this.client.channels.cache.get(this.announcementChannelId);
+    if (!channel?.isTextBased()) {
+      this.logger.warn(`Announcement channel ${this.announcementChannelId} not found`);
+      return;
+    }
+    await channel.send({ embeds: [embed] });
+    this.logger.debug('✅ Announcement sent via channel.send');
   }
 
   // ---------- Event Handlers ----------
@@ -95,12 +130,8 @@ class CommunityManagerAgent extends BaseAgent {
 
   // ---------- Automated Announcements ----------
   async postScheduledAnnouncements() {
-    if (!this.announcementChannelId) return;
-
-    const channel = this.client.channels.cache.get(this.announcementChannelId);
-    if (!channel?.isTextBased()) return;
-
     const today = new Date().toISOString().split('T')[0];
+    const now = new Date();
 
     // 1. Token launches (from env)
     for (const launch of this.tokenLaunches) {
@@ -115,7 +146,7 @@ class CommunityManagerAgent extends BaseAgent {
             { name: '📋 Details', value: launch.details || 'Check our website for more info.', inline: false }
           )
           .setTimestamp();
-        await channel.send({ embeds: [embed] });
+        await this._sendAnnouncement(embed);
         this.logger.info(`🚀 Posted token launch: ${launch.name}`);
       }
     }
@@ -132,13 +163,12 @@ class CommunityManagerAgent extends BaseAgent {
             { name: '🎯 How to Enter', value: giveaway.entryMethod || 'React below to enter!', inline: false }
           )
           .setTimestamp();
-        await channel.send({ embeds: [embed] });
+        await this._sendAnnouncement(embed);
         this.logger.info(`🎁 Posted NFT giveaway: ${giveaway.name}`);
       }
     }
 
     // 3. AMA reminder (configurable via env)
-    const now = new Date();
     if (this._matchCron(this.amaSchedule, now)) {
       const embed = new EmbedBuilder()
         .setTitle(this.amaReminderTitle)
@@ -149,7 +179,7 @@ class CommunityManagerAgent extends BaseAgent {
           { name: '⏰ When', value: this.amaReminderWhen, inline: true }
         )
         .setTimestamp();
-      await channel.send({ embeds: [embed] });
+      await this._sendAnnouncement(embed);
       this.logger.info('🎙️ AMA reminder posted');
     }
   }
@@ -193,6 +223,23 @@ class CommunityManagerAgent extends BaseAgent {
       .setTimestamp()
       .setFooter({ text: `Posted by ${interaction.user.tag}` });
 
+    // Use webhook if the target channel is the announcement channel, else use regular send
+    if (channel.id === this.announcementChannelId && this.announcementWebhookUrl) {
+      try {
+        const webhook = new WebhookClient({ url: this.announcementWebhookUrl });
+        await webhook.send({
+          username: this.webhookUsername,
+          avatarURL: this.webhookAvatarURL || undefined,
+          embeds: [embed],
+        });
+        await interaction.reply({ content: '✅ Announcement posted via webhook.', ephemeral: true });
+        return;
+      } catch (err) {
+        this.logger.warn(`Webhook failed for manual announce: ${err.message} – falling back`);
+      }
+    }
+
+    // Fallback: regular send
     await channel.send({ embeds: [embed] });
     await interaction.reply({ content: '✅ Announcement posted.', ephemeral: true });
   }
