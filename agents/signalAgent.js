@@ -1,15 +1,16 @@
 /**
- * 📈 SignalAgent v6.0 (Configurable + AI‑Enhanced)
+ * 📈 SignalAgent v6.1 (Webhook Ready)
  * - Generates trading signals using:
  *   • Price + RSI (CoinGecko)
  *   • MACD, SMA crossovers
  *   • Whale correlation (from WhaleAgent)
  *   • News sentiment (from SummaryAgent)
+ * - Sends signals via "Quant" webhook (if PREMIUM_SIGNAL_WEBHOOK_URL is set)
+ * - Falls back to emitting 'signal.generated' event
  * - All thresholds and coin list are configurable via env
- * - Uses OpenAI to enhance reason text (if key present)
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder } = require('discord.js');
+const { EmbedBuilder, WebhookClient } = require('discord.js');
 const axios = require('axios');
 
 class SignalAgent extends BaseAgent {
@@ -30,7 +31,12 @@ class SignalAgent extends BaseAgent {
     this.min24hChange = parseFloat(process.env.SIGNAL_MIN_24H_CHANGE) || 5; // 5%
     this.historyLimit = parseInt(process.env.SIGNAL_HISTORY_LIMIT) || 50;
 
-    // ---- OpenAI (for enhanced reasons) ----
+    // ---- Webhook ----
+    this.webhookUrl = process.env.PREMIUM_SIGNAL_WEBHOOK_URL;
+    this.webhookUsername = 'Quant';
+    this.webhookAvatar = process.env.PREMIUM_SIGNAL_WEBHOOK_AVATAR || null;
+
+    // ---- OpenAI ----
     this.openai = null;
     try {
       if (process.env.OPENAI_API_KEY) {
@@ -63,7 +69,32 @@ class SignalAgent extends BaseAgent {
       await this.handleNewsEvent(data);
     });
 
-    this.logger.info(`📈 SignalAgent v6.0 ready (coins: ${this.coins.join(', ')})`);
+    this.logger.info(`📈 SignalAgent v6.1 ready (coins: ${this.coins.join(', ')})` +
+      (this.webhookUrl ? ' (Quant webhook)' : ''));
+  }
+
+  // ---------- Helper: Send via Webhook or Emit Event ----------
+  async _sendSignal(signal) {
+    // 1. Try webhook if available
+    if (this.webhookUrl) {
+      try {
+        const embed = this.formatSignalEmbed(signal);
+        const webhook = new WebhookClient({ url: this.webhookUrl });
+        await webhook.send({
+          username: this.webhookUsername,
+          avatarURL: this.webhookAvatar || undefined,
+          embeds: [embed],
+        });
+        this.logger.debug(`✅ Signal sent via Quant webhook (${signal.coin} ${signal.action})`);
+        return; // Success – skip event emission
+      } catch (err) {
+        this.logger.warn(`Webhook failed: ${err.message} – falling back to event emission`);
+      }
+    }
+
+    // 2. Fallback: emit event (handled by index.js)
+    this.emit('signal.generated', signal);
+    this.logger.debug(`✅ Signal emitted as event (fallback)`);
   }
 
   // ---------- GENERATE SIGNALS ----------
@@ -75,7 +106,7 @@ class SignalAgent extends BaseAgent {
           const key = `${coin}_${signal.action}`;
           if (this.lastSignal.has(key) && Date.now() - this.lastSignal.get(key) < 60 * 60 * 1000) continue;
           this.lastSignal.set(key, Date.now());
-          this.emit('signal.generated', signal);
+          await this._sendSignal(signal);
           this.logger.info(`📈 Signal: ${coin} ${signal.action} (${signal.confidence}%)`);
         }
       } catch (err) {
@@ -191,7 +222,7 @@ class SignalAgent extends BaseAgent {
       rsi: rsi !== null ? Math.round(rsi) : null,
       reasons: reasonText,
       timestamp: new Date().toISOString(),
-      source: 'SignalAI v6.0',
+      source: 'SignalAI v6.1',
       icon: action === 'BUY' ? '🟢' : action === 'SELL' ? '🔴' : '🟡',
     };
   }
@@ -232,7 +263,7 @@ class SignalAgent extends BaseAgent {
       source: 'WhaleAlert',
       icon: '🐋',
     };
-    this.emit('signal.generated', signal);
+    await this._sendSignal(signal);
     this.logger.info(`🐋 Whale signal: ${tx.symbol} ($${(tx.usdValue / 1e6).toFixed(1)}M)`);
   }
 
@@ -273,7 +304,7 @@ class SignalAgent extends BaseAgent {
         source: 'NewsSentiment',
         icon: '📰',
       };
-      this.emit('signal.generated', signal);
+      await this._sendSignal(signal);
       this.logger.info(`📰 News signal: ${action} (score: ${score})`);
     }
   }
@@ -360,7 +391,7 @@ class SignalAgent extends BaseAgent {
         { name: '⏰ Time', value: `<t:${Math.floor(new Date(signal.timestamp).getTime() / 1000)}:R>`, inline: true }
       )
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Signal AI v6.0' });
+      .setFooter({ text: 'Ultra3Vault • Signal AI v6.1' });
   }
 }
 
