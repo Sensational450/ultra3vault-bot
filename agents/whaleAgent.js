@@ -1,15 +1,16 @@
 /**
- * 🐋 WhaleAgent v5.1 (Free Multi‑Chain)
+ * 🐋 WhaleAgent v5.2 (Webhook Ready)
  * - Fetches large transactions from:
  *   • Whale Alert (if API key is set – paid/trial)
  *   • Etherscan (ETH + ERC‑20 tokens) – free with API key
  *   • Blockchair (Bitcoin) – free, no key needed
  * - Converts amounts to USD via CoinGecko
- * - Emits 'whale.detected' for each new transaction
+ * - Sends whale alerts via "Cetus" webhook (if configured)
+ * - Falls back to emitting 'whale.detected' events
  * - Caches tx hashes to prevent duplicates
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder } = require('discord.js');
+const { EmbedBuilder, WebhookClient } = require('discord.js');
 const axios = require('axios');
 
 class WhaleAgent extends BaseAgent {
@@ -25,6 +26,11 @@ class WhaleAgent extends BaseAgent {
     // ---- Free API keys ----
     this.etherscanKey = process.env.ETHERSCAN_API_KEY; // Required for EVM chains
     this.blockchairKey = process.env.BLOCKCHAIR_API_KEY || ''; // Optional
+
+    // ---- Webhook ----
+    this.webhookUrl = process.env.WHALE_WEBHOOK_URL;
+    this.webhookUsername = 'Cetus';
+    this.webhookAvatar = process.env.WHALE_WEBHOOK_AVATAR || null;
 
     // ---- Cache ----
     this.seenTxs = new Map();
@@ -44,7 +50,7 @@ class WhaleAgent extends BaseAgent {
       DOGE: 'https://dogechain.info/tx/',
     };
 
-    // ---- EVM chain configs (Etherscan‑compatible) ----
+    // ---- EVM chain configs ----
     this.evmChains = [
       { name: 'ETH', api: 'https://api.etherscan.io/api' },
       { name: 'BSC', api: 'https://api.bscscan.com/api' },
@@ -53,8 +59,7 @@ class WhaleAgent extends BaseAgent {
       { name: 'OPTIMISM', api: 'https://api-optimistic.etherscan.io/api' },
     ];
 
-    // ---- Token list (address → symbol) ----
-    // You can extend this list or fetch from CoinGecko; we'll keep a minimal set for demo
+    // ---- Token list ----
     this.tokenAddresses = {
       USDT: '0xdac17f958d2ee523a2206206994597c13d831ec7',
       USDC: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
@@ -76,27 +81,47 @@ class WhaleAgent extends BaseAgent {
     if (!this.whaleKey && !this.etherscanKey) {
       this.logger.warn('⚠️ No API keys set. WhaleAgent will only check Bitcoin via Blockchair (no ETH).');
     }
-    this.logger.info(`🐋 WhaleAgent ready (mode: ${mode}, threshold: $${(this.minValueUsd / 1e6).toFixed(0)}M)`);
+    this.logger.info(`🐋 WhaleAgent v5.2 ready (mode: ${mode}, threshold: $${(this.minValueUsd / 1e6).toFixed(0)}M)` +
+      (this.webhookUrl ? ' (Cetus webhook)' : ''));
   }
 
-  /**
-   * Main method: fetch and emit whale transactions
-   */
+  // ---------- Helper: Send via Webhook or Emit Event ----------
+  async _sendWhaleAlert(embed, tx) {
+    // 1. Try webhook if available
+    if (this.webhookUrl) {
+      try {
+        const webhook = new WebhookClient({ url: this.webhookUrl });
+        await webhook.send({
+          username: this.webhookUsername,
+          avatarURL: this.webhookAvatar || undefined,
+          embeds: [embed],
+        });
+        this.logger.debug(`✅ Whale alert sent via Cetus webhook (${tx.symbol} ${tx.amount})`);
+        return; // Success – skip event emission
+      } catch (err) {
+        this.logger.warn(`Webhook failed: ${err.message} – falling back to event emission`);
+      }
+    }
+
+    // 2. Fallback: emit event (handled by index.js)
+    this.emit('whale.detected', tx);
+    this.logger.debug('🐋 Whale alert emitted as event (fallback)');
+  }
+
+  // ---------- Main method ----------
   async checkWhales() {
     try {
       const txs = await this.fetchAllTransactions();
       if (!txs.length) return;
 
       for (const tx of txs) {
-        // Deduplicate
         const cacheKey = `${tx.hash}_${tx.amount}_${tx.timestamp}`;
         if (this.seenTxs.has(cacheKey)) continue;
-
-        // Filter by asset (if the symbol is in our list)
         if (!this.assets.includes(tx.symbol.toUpperCase())) continue;
 
         this.logger.info(`🐋 Whale: ${tx.amount} ${tx.symbol} ($${tx.usdValue.toLocaleString()}) on ${tx.blockchain}`);
-        this.emit('whale.detected', tx);
+        const embed = this.formatWhaleEmbed(tx);
+        await this._sendWhaleAlert(embed, tx);
 
         this.seenTxs.set(cacheKey, Date.now());
         this._cleanCache();
@@ -106,19 +131,15 @@ class WhaleAgent extends BaseAgent {
     }
   }
 
-  /**
-   * Fetch from all configured sources
-   */
+  // ---------- Fetch from all sources ----------
   async fetchAllTransactions() {
     let allTxs = [];
 
-    // 1. Whale Alert (if key exists)
     if (this.whaleKey) {
       const whaletxs = await this._fetchWhaleAlert();
       allTxs = allTxs.concat(whaletxs);
     }
 
-    // 2. Etherscan (EVM chains) – only if we have an API key
     if (this.etherscanKey) {
       for (const chain of this.evmChains) {
         try {
@@ -130,7 +151,6 @@ class WhaleAgent extends BaseAgent {
       }
     }
 
-    // 3. Blockchair (Bitcoin)
     try {
       const btcTxs = await this._fetchBlockchair();
       allTxs = allTxs.concat(btcTxs);
@@ -138,14 +158,11 @@ class WhaleAgent extends BaseAgent {
       this.logger.debug(`Blockchair BTC failed: ${err.message}`);
     }
 
-    // Sort by timestamp descending (newest first)
     allTxs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-
-    // Limit to 50 per run
     return allTxs.slice(0, 50);
   }
 
-  // ---------- Source 1: Whale Alert (existing code) ----------
+  // ---------- Source 1: Whale Alert ----------
   async _fetchWhaleAlert() {
     const url = 'https://api.whale-alert.io/v1/transactions';
     const params = {
@@ -174,50 +191,26 @@ class WhaleAgent extends BaseAgent {
     }
   }
 
-  // ---------- Source 2: Etherscan (EVM chains) ----------
+  // ---------- Source 2: Etherscan ----------
   async _fetchEtherscan(chain) {
-    // We fetch the last 100 ERC-20 transfers and filter by USD value
-    // For simplicity, we'll query the "tokentx" endpoint for a known address?
-    // Actually, we need to get large transfers globally – Etherscan doesn't have a global "large transfers" endpoint.
-    // Workaround: we can monitor a few high‑activity addresses (like exchange wallets) or use the "txlist" for known whales.
-    // But that's limited.
-    // A better approach: use the "token" endpoint? Not available.
-    // We'll skip global ETH token tracking for now and only track BTC via Blockchair.
-    // Instead, we can use the "transactions" endpoint to watch ETH itself.
-    // But that also requires an address.
-    // Realistically, for free, you can't get all large transfers on Ethereum without a paid service.
-    // However, we can use the "big transactions" from an aggregator like Dune? Not via API.
-    // We'll implement a limited version that tracks a fixed set of "whale" addresses (you can add them).
-    // For now, we'll just fetch the latest ETH transfers from a well‑known whale address.
-    // This is a placeholder – you can replace with your own logic.
-    // I'll implement a simple check for ETH transfers > threshold.
-    // We'll use the "txlist" for a known address (like a Binance wallet).
-    // To keep it generic, we'll skip the ETH large transfers in the free version.
-    // Instead, we'll only track Bitcoin via Blockchair, which is simpler.
-    // I'll note this in the code.
-    // For a production bot, consider using a service like Etherscan's "big transactions" list (not available via API)
-    // or use a 3rd party like bitquery (paid).
-    // We'll return an empty array for EVM chains in this free version to keep it simple.
+    // Placeholder – large transfers not available for free via Etherscan API.
+    // You can monitor specific whale addresses or use a paid service.
     this.logger.debug(`Etherscan (${chain.name}) – large transfers not implemented in free version.`);
     return [];
   }
 
   // ---------- Source 3: Blockchair (Bitcoin) ----------
   async _fetchBlockchair() {
-    // Blockchair's "transactions" endpoint can be filtered by value.
-    // We'll fetch the latest 50 transactions that are > $1M.
     const url = 'https://api.blockchair.com/bitcoin/transactions';
     const params = {
       limit: 50,
       order: 'desc',
       q: `value_usd > ${this.minValueUsd}`,
-      // We'll need to estimate the USD value; Blockchair includes a "value_usd" field.
     };
     try {
       const response = await axios.get(url, { params, timeout: 15000 });
       const txs = response.data.data || [];
       return txs.map(tx => {
-        // Convert satoshis to BTC (1 BTC = 100,000,000 sat)
         const amountBtc = tx.inputs ? tx.inputs.reduce((sum, inp) => sum + inp.value, 0) / 1e8 : 0;
         return {
           id: tx.hash,
@@ -258,7 +251,7 @@ class WhaleAgent extends BaseAgent {
     const fromLabel = tx.from.owner !== 'Unknown' ? tx.from.owner : tx.from.address.substring(0, 10) + '...';
     const toLabel = tx.to.owner !== 'Unknown' ? tx.to.owner : tx.to.address.substring(0, 10) + '...';
 
-    const embed = new EmbedBuilder()
+    return new EmbedBuilder()
       .setTitle(`🐋 Whale Alert: ${tx.amount.toFixed(2)} ${tx.symbol}`)
       .setDescription(`**${tx.transactionType === 'transfer' ? 'Transfer' : 'Interaction'}** on **${tx.blockchain}**`)
       .setColor(0xff7700)
@@ -271,8 +264,6 @@ class WhaleAgent extends BaseAgent {
       )
       .setTimestamp(new Date(tx.timestamp))
       .setFooter({ text: 'Ultra3Vault • Whale Monitor' });
-
-    return embed;
   }
 }
 
