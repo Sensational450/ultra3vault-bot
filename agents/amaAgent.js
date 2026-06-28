@@ -1,11 +1,15 @@
 /**
- * 🎙️ AMAAgent v7.0 — OpenAI Only (Gemini Removed)
- * - Uses OpenAI (primary). If OpenAI fails, uses hardcoded fallback.
- * - No Gemini integration.
+ * 🎙️ AMAAgent v7.2 — Webhook Ready (Judge)
+ * - Uses OpenAI (primary), falls back to Gemini if OpenAI fails
+ * - Configurable model, temperature, max tokens via env
+ * - Logs Q&A pairs to database
+ * - Generates AMA summaries using AI (OpenAI → Gemini → fallback)
+ * - Sends AMA summaries and questions via "Judge" webhook
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder } = require('discord.js');
+const { EmbedBuilder, WebhookClient } = require('discord.js');
 const { OpenAI } = require('openai');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 class AMAAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -15,6 +19,16 @@ class AMAAgent extends BaseAgent {
     this.enabled = !!this.amaChannelId;
     this.conversationMemory = new Map();
     this.memoryLimit = 50;
+
+    // ---- Model config ----
+    this.model = process.env.AMA_MODEL || 'gpt-3.5-turbo';
+    this.temperature = parseFloat(process.env.AMA_TEMPERATURE) || 0.7;
+    this.maxTokens = parseInt(process.env.AMA_MAX_TOKENS) || 200;
+
+    // ---- Webhook ----
+    this.webhookUrl = process.env.AMA_WEBHOOK_URL;
+    this.webhookUsername = 'Judge';
+    this.webhookAvatarURL = process.env.AMA_WEBHOOK_AVATAR || null;
 
     // ---- OpenAI ----
     this.openai = null;
@@ -29,12 +43,26 @@ class AMAAgent extends BaseAgent {
       this.logger.error(`❌ OpenAI init failed: ${err.message}`);
     }
 
+    // ---- Gemini (Fallback) ----
+    this.useGemini = !!process.env.GEMINI_API_KEY;
+    if (this.useGemini) {
+      this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+      this.geminiModel = process.env.GEMINI_MODEL || 'gemini-1.5-pro';
+      this.logger.info(`🧠 Gemini available (model: ${this.geminiModel})`);
+    } else {
+      this.logger.warn('⚠️ GEMINI_API_KEY missing – Gemini disabled.');
+    }
+
+    // ---- Fallback responses ----
     this.fallbackResponses = [
       "That's a great question! Let me get back to you on that.",
       "Interesting question! I'll look into this and get back to you.",
       "Thanks for asking! I'm checking on this for you.",
       "Let me find the best answer for you. One moment!",
     ];
+
+    // ---- Summary fallback ----
+    this.fallbackSummary = 'Here are the top questions from this AMA session:';
   }
 
   async init() {
@@ -47,7 +75,43 @@ class AMAAgent extends BaseAgent {
     this.subscribe('job.amasummary', async () => {
       await this._postAMASummary();
     });
-    this.logger.info(`🎙️ AMAAgent v7.0 ready (channel: ${this.amaChannelId})`);
+    this.logger.info(`🎙️ AMAAgent v7.2 ready (channel: ${this.amaChannelId})`);
+  }
+
+  // ---------- Helper: Send via Webhook or Channel ----------
+  async _sendAMAMessage(content, embed = null, components = null) {
+    // 1. Try webhook if available
+    if (this.webhookUrl) {
+      try {
+        const webhook = new WebhookClient({ url: this.webhookUrl });
+        const payload = {
+          username: this.webhookUsername,
+          avatarURL: this.webhookAvatarURL || undefined,
+        };
+        if (embed) payload.embeds = [embed];
+        if (components) payload.components = components;
+        if (content && typeof content === 'string') payload.content = content;
+        await webhook.send(payload);
+        this.logger.debug('✅ AMA message sent via webhook (Judge)');
+        return;
+      } catch (err) {
+        this.logger.warn(`Webhook failed: ${err.message} – falling back to channel.send`);
+      }
+    }
+
+    // 2. Fallback: use the channel directly
+    const channel = this.client.channels.cache.get(this.amaChannelId);
+    if (!channel?.isTextBased()) {
+      this.logger.warn(`AMA channel ${this.amaChannelId} not found or not text-based`);
+      return;
+    }
+
+    if (content && typeof content === 'string') {
+      await channel.send(content);
+    } else if (embed) {
+      await channel.send({ embeds: [embed], components: components || [] });
+    }
+    this.logger.debug('✅ AMA message sent via channel.send');
   }
 
   // ---------- Table Creation ----------
@@ -97,17 +161,17 @@ class AMAAgent extends BaseAgent {
     }
   }
 
-  // ---------- AI Answer Generation ----------
+  // ---------- AI Answer Generation (OpenAI → Gemini → Fallback) ----------
   async _generateAnswer(question, context = '') {
     const prompt = this._buildPrompt(question, context);
     let result = null;
 
-    // Try OpenAI
+    // 1. Try OpenAI
     if (this.openai) {
       try {
         this.logger.debug('⏳ Asking OpenAI...');
         const response = await this.openai.chat.completions.create({
-          model: 'gpt-3.5-turbo',
+          model: this.model,
           messages: [
             {
               role: 'system',
@@ -119,25 +183,42 @@ class AMAAgent extends BaseAgent {
             },
             { role: 'user', content: prompt }
           ],
-          max_tokens: 200,
-          temperature: 0.7,
+          max_tokens: this.maxTokens,
+          temperature: this.temperature,
         });
         result = response.choices[0].message.content.trim();
         this.logger.debug('✅ OpenAI answer success');
       } catch (err) {
         this.logger.error(`❌ OpenAI failed: ${err.message}`);
         if (err.status === 429) {
-          this.logger.error('💡 OpenAI quota exceeded. Add billing or get a new key.');
+          this.logger.error('💡 OpenAI quota exceeded – trying Gemini');
         }
       }
-    } else {
-      this.logger.warn('⚠️ OpenAI not available – skipping AI call.');
     }
 
-    // Fallback (if OpenAI failed or not available)
+    // 2. Try Gemini (if OpenAI failed or not available)
+    if (!result && this.useGemini) {
+      try {
+        this.logger.debug('⏳ Asking Gemini...');
+        const model = this.genAI.getGenerativeModel({ model: this.geminiModel });
+        const geminiResult = await model.generateContent({
+          contents: [{ role: 'user', parts: [{ text: `You are a friendly crypto community manager. ${prompt}` }] }],
+          generationConfig: {
+            maxOutputTokens: this.maxTokens,
+            temperature: this.temperature,
+          },
+        });
+        result = geminiResult.response.text().trim();
+        this.logger.debug('✅ Gemini answer success');
+      } catch (err) {
+        this.logger.error(`❌ Gemini failed: ${err.message}`);
+      }
+    }
+
+    // 3. Fallback (if both fail)
     if (!result) {
       result = this.fallbackResponses[Math.floor(Math.random() * this.fallbackResponses.length)];
-      this.logger.warn('⚠️ Using fallback answer – check OpenAI API key and quota.');
+      this.logger.warn('⚠️ Using fallback answer – check API keys and quota.');
     }
 
     return result;
@@ -182,11 +263,8 @@ class AMAAgent extends BaseAgent {
     }
   }
 
-  // ---------- AMA Summary ----------
+  // ---------- AMA Summary (OpenAI → Gemini → Fallback) ----------
   async _postAMASummary() {
-    const channel = this.client.channels.cache.get(this.amaChannelId);
-    if (!channel || !channel.isTextBased()) return;
-
     const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
     const rows = await this.db.all(
       `SELECT * FROM ama_history WHERE timestamp > ? ORDER BY timestamp DESC LIMIT 20`,
@@ -194,13 +272,14 @@ class AMAAgent extends BaseAgent {
     );
 
     if (!rows || rows.length === 0) {
-      await channel.send('📋 No AMA questions recorded this week. Ask away!');
+      await this._sendAMAMessage('📋 No AMA questions recorded this week. Ask away!');
       return;
     }
 
     const summaryText = rows.map((row, i) => `${i+1}. Q: ${row.question}\n   A: ${row.answer}\n`).join('\n');
     let summary = null;
 
+    // 1. Try OpenAI
     if (this.openai) {
       try {
         const response = await this.openai.chat.completions.create({
@@ -213,14 +292,30 @@ class AMAAgent extends BaseAgent {
           temperature: 0.5,
         });
         summary = response.choices[0].message.content.trim();
+        this.logger.debug('✅ OpenAI summary success');
       } catch (err) {
-        this.logger.warn(`⚠️ OpenAI summary failed: ${err.message}`);
+        this.logger.warn(`⚠️ OpenAI summary failed: ${err.message} – trying Gemini`);
+      }
+    }
+
+    // 2. Try Gemini
+    if (!summary && this.useGemini) {
+      try {
+        const model = this.genAI.getGenerativeModel({ model: this.geminiModel });
+        const geminiResult = await model.generateContent({
+          contents: [{ role: 'user', parts: [{ text: `You are a community manager. Summarize these AMA questions and answers:\n\n${summaryText}` }] }],
+          generationConfig: { maxOutputTokens: 300, temperature: 0.5 },
+        });
+        summary = geminiResult.response.text().trim();
+        this.logger.debug('✅ Gemini summary success');
+      } catch (err) {
+        this.logger.warn(`⚠️ Gemini summary failed: ${err.message}`);
       }
     }
 
     const embed = new EmbedBuilder()
       .setTitle('🎙️ AMA Session Summary')
-      .setDescription(summary || `Here are the top questions from this AMA session:`)
+      .setDescription(summary || this.fallbackSummary)
       .setColor(0x9b59b6)
       .setTimestamp();
 
@@ -235,7 +330,7 @@ class AMAAgent extends BaseAgent {
       }
     }
 
-    await channel.send({ embeds: [embed] });
+    await this._sendAMAMessage(null, embed);
     this.logger.info('🎙️ AMA summary posted');
   }
 
@@ -305,10 +400,14 @@ class AMAAgent extends BaseAgent {
       content: `✅ Your question:\n**${question}**\n\n🤖 Answer:\n${answer}`,
     });
 
-    const channel = this.client.channels.cache.get(this.amaChannelId);
-    if (channel && channel.isTextBased()) {
-      await channel.send(`📋 **Question from ${interaction.user.username}:**\n${question}\n\n💬 **Answer:**\n${answer}`);
-    }
+    // Post to the AMA channel via webhook
+    const embed = new EmbedBuilder()
+      .setTitle(`📋 Question from ${interaction.user.username}`)
+      .setDescription(`**Question:** ${question}\n\n**Answer:** ${answer}`)
+      .setColor(0x9b59b6)
+      .setTimestamp();
+
+    await this._sendAMAMessage(null, embed);
   }
 }
 
