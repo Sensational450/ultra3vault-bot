@@ -1,11 +1,12 @@
 /**
- * 🧠 AiChatAgent v5.0 (Persistent)
- * - AI chat, sentiment analysis, image generation (OpenAI)
+ * 🧠 AiChatAgent v6.0 (Multi‑AI Support)
+ * - AI chat, sentiment analysis, image generation (OpenAI primary, Gemini fallback)
  * - Per‑guild configuration (enabled, whitelist, model, etc.)
  * - Conversation memory stored in DB (survives restarts)
  * - Rate limiting stored in DB (survives restarts)
  * - Optional VIP/Premium only restriction
  * - Only handles its own commands – does not interfere with others
+ * - Smart provider routing: OpenAI → Gemini → fallback
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
@@ -13,18 +14,32 @@ const { EmbedBuilder } = require('discord.js');
 class AiChatAgent extends BaseAgent {
   constructor(eventBus, deps) {
     super(eventBus, deps);
-    // Lazy‑load OpenAI only if API key is present
+
+    // ---- OpenAI ----
     this.openai = null;
     this.openaiApiKey = process.env.OPENAI_API_KEY;
     if (this.openaiApiKey) {
       const OpenAI = require('openai');
       this.openai = new OpenAI({ apiKey: this.openaiApiKey });
+      this.logger.info('🧠 OpenAI initialized for AiChatAgent');
     } else {
-      this.logger.warn('⚠️ OPENAI_API_KEY missing – AI features disabled');
+      this.logger.warn('⚠️ OPENAI_API_KEY missing – OpenAI disabled');
     }
 
+    // ---- Gemini (Fallback) ----
+    this.useGemini = !!process.env.GEMINI_API_KEY;
+    if (this.useGemini) {
+      const { GoogleGenerativeAI } = require('@google/generative-ai');
+      this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+      this.geminiModel = process.env.GEMINI_MODEL || 'gemini-pro';
+      this.logger.info(`🧠 Gemini available (model: ${this.geminiModel})`);
+    } else {
+      this.logger.warn('⚠️ GEMINI_API_KEY missing – Gemini disabled');
+    }
+
+    // ---- Config ----
     this.defaultConfig = {
-      enabled: !!this.openaiApiKey,
+      enabled: !!(this.openaiApiKey || this.useGemini),
       channelWhitelist: [],
       roleWhitelist: [],
       maxTokens: 500,
@@ -33,22 +48,31 @@ class AiChatAgent extends BaseAgent {
       systemPrompt: 'You are a helpful assistant in a Discord crypto community. Be friendly and informative.',
       rateLimitPerUser: 5,
       memoryTimeoutMinutes: 30,
-      requireSubscription: false, // set to true to restrict to VIP/Premium
+      requireSubscription: false,
     };
     this.guildConfigs = new Map();
-    // We won't keep in‑memory maps for memory and rate limits – we'll use DB
+
+    // ---- Fallback responses ----
+    this.fallbackResponses = [
+      "That's a great question! Let me get back to you on that.",
+      "Interesting question! I'll look into this and get back to you.",
+      "Thanks for asking! I'm checking on this for you.",
+      "Let me find the best answer for you. One moment!",
+    ];
   }
 
   async init() {
     await super.init();
     await this._ensureTables();
     await this._loadConfigs();
-    this.logger.info('🧠 AiChatAgent ready' + (this.openai ? '' : ' (disabled – no API key)'));
+    const providers = [];
+    if (this.openai) providers.push('OpenAI');
+    if (this.useGemini) providers.push('Gemini');
+    this.logger.info(`🧠 AiChatAgent v6.0 ready (providers: ${providers.join(' + ') || 'none'})`);
   }
 
   async _ensureTables() {
     const db = this.deps.db;
-    // Conversation memory table
     await db.run(`CREATE TABLE IF NOT EXISTS ai_conversations (
       userId TEXT,
       guildId TEXT,
@@ -57,7 +81,6 @@ class AiChatAgent extends BaseAgent {
       timestamp INTEGER,
       PRIMARY KEY (userId, guildId, timestamp)
     )`);
-    // Rate limits table
     await db.run(`CREATE TABLE IF NOT EXISTS ai_rate_limits (
       userId TEXT,
       guildId TEXT,
@@ -68,28 +91,21 @@ class AiChatAgent extends BaseAgent {
   }
 
   async _loadConfigs() {
-    if (!this.deps.models?.AIConfig) {
-      const db = this.deps.db;
-      await db.run(`CREATE TABLE IF NOT EXISTS ai_config (
-        guildId TEXT PRIMARY KEY,
-        config TEXT
-      )`);
-      const rows = await db.all(`SELECT guildId, config FROM ai_config`);
-      for (const row of rows) {
-        this.guildConfigs.set(row.guildId, JSON.parse(row.config));
-      }
-    } else {
-      const configs = await this.deps.models.AIConfig.findAll();
-      for (const cfg of configs) {
-        this.guildConfigs.set(cfg.guildId, cfg.config);
-      }
+    const db = this.deps.db;
+    await db.run(`CREATE TABLE IF NOT EXISTS ai_config (
+      guildId TEXT PRIMARY KEY,
+      config TEXT
+    )`);
+    const rows = await db.all(`SELECT guildId, config FROM ai_config`);
+    for (const row of rows) {
+      this.guildConfigs.set(row.guildId, JSON.parse(row.config));
     }
   }
 
   async getGuildConfig(guildId) {
     if (this.guildConfigs.has(guildId)) return this.guildConfigs.get(guildId);
     const config = { ...this.defaultConfig };
-    if (!this.openaiApiKey) config.enabled = false;
+    config.enabled = !!(this.openaiApiKey || this.useGemini);
     this.guildConfigs.set(guildId, config);
     await this._saveGuildConfig(guildId, config);
     return config;
@@ -139,7 +155,6 @@ class AiChatAgent extends BaseAgent {
        ORDER BY timestamp ASC LIMIT 20`,
       [userId, guildId, cutoff]
     );
-    // Also clean up old entries older than timeout
     await db.run(`DELETE FROM ai_conversations WHERE userId = ? AND guildId = ? AND timestamp < ?`,
       [userId, guildId, cutoff]);
     return rows.map(row => ({ role: row.role, content: row.content }));
@@ -159,51 +174,120 @@ class AiChatAgent extends BaseAgent {
     await db.run(`DELETE FROM ai_conversations WHERE userId = ? AND guildId = ?`, [userId, guildId]);
   }
 
-  // ---------- AI CALLS ----------
+  // ---------- AI CALLS (OpenAI → Gemini → Fallback) ----------
   async askAI(userId, guildId, prompt, config, systemPromptOverride = null) {
-    if (!this.openai) return '❌ AI service is not configured (missing API key).';
+    if (!this.openai && !this.useGemini) {
+      return '❌ AI service is not configured (missing API keys).';
+    }
+
     const system = systemPromptOverride || config.systemPrompt;
     const messages = [{ role: 'system', content: system }];
     const history = await this.getMemory(userId, guildId, config.memoryTimeoutMinutes);
     if (history) messages.push(...history);
     messages.push({ role: 'user', content: prompt });
 
-    try {
-      const response = await this.openai.chat.completions.create({
-        model: config.model,
-        messages,
-        max_tokens: config.maxTokens,
-        temperature: config.temperature,
-      });
-      const reply = response.choices[0].message.content;
-      await this.updateMemory(userId, guildId, prompt, reply);
-      return reply;
-    } catch (err) {
-      this.logger.error(`OpenAI error for user ${userId}: ${err.message}`);
-      return '❌ AI service error. Please try again later.';
+    let reply = null;
+
+    // 1. Try OpenAI
+    if (this.openai) {
+      try {
+        const response = await this.openai.chat.completions.create({
+          model: config.model,
+          messages,
+          max_tokens: config.maxTokens,
+          temperature: config.temperature,
+        });
+        reply = response.choices[0].message.content;
+        this.logger.debug('✅ OpenAI chat success');
+      } catch (err) {
+        this.logger.warn(`OpenAI failed: ${err.message} – trying Gemini`);
+      }
     }
+
+    // 2. Try Gemini (if OpenAI failed or not available)
+    if (!reply && this.useGemini) {
+      try {
+        const model = this.genAI.getGenerativeModel({ model: this.geminiModel });
+        // Convert messages to Gemini format
+        const chat = model.startChat({
+          history: history.map(h => ({
+            role: h.role === 'user' ? 'user' : 'model',
+            parts: [{ text: h.content }],
+          })),
+          generationConfig: {
+            maxOutputTokens: config.maxTokens,
+            temperature: config.temperature,
+          },
+        });
+        const result = await chat.sendMessage(prompt);
+        reply = result.response.text();
+        this.logger.debug('✅ Gemini chat success');
+      } catch (err) {
+        this.logger.warn(`Gemini failed: ${err.message}`);
+      }
+    }
+
+    // 3. Fallback (if both AI providers fail)
+    if (!reply) {
+      reply = this.fallbackResponses[Math.floor(Math.random() * this.fallbackResponses.length)];
+      this.logger.warn('⚠️ Using fallback response');
+    }
+
+    // Store in memory (only if not a fallback – we skip to avoid polluting context)
+    if (reply && !this.fallbackResponses.includes(reply)) {
+      await this.updateMemory(userId, guildId, prompt, reply);
+    }
+
+    return reply;
   }
 
   async analyzeSentiment(text) {
-    if (!this.openai) return 'unknown';
-    try {
-      const response = await this.openai.chat.completions.create({
-        model: 'gpt-3.5-turbo',
-        messages: [
-          { role: 'system', content: 'Analyze sentiment. Respond with exactly one word: positive, negative, or neutral.' },
-          { role: 'user', content: text },
-        ],
-        max_tokens: 10,
-        temperature: 0,
-      });
-      return response.choices[0].message.content.toLowerCase();
-    } catch {
-      return 'unknown';
+    let result = 'unknown';
+
+    // 1. Try OpenAI
+    if (this.openai) {
+      try {
+        const response = await this.openai.chat.completions.create({
+          model: 'gpt-3.5-turbo',
+          messages: [
+            { role: 'system', content: 'Analyze sentiment. Respond with exactly one word: positive, negative, or neutral.' },
+            { role: 'user', content: text },
+          ],
+          max_tokens: 10,
+          temperature: 0,
+        });
+        result = response.choices[0].message.content.toLowerCase();
+        this.logger.debug('✅ OpenAI sentiment success');
+        return result;
+      } catch (err) {
+        this.logger.warn(`OpenAI sentiment failed: ${err.message}`);
+      }
     }
+
+    // 2. Try Gemini
+    if (this.useGemini) {
+      try {
+        const model = this.genAI.getGenerativeModel({ model: this.geminiModel });
+        const geminiResult = await model.generateContent({
+          contents: [{ role: 'user', parts: [{ text: `Analyze sentiment. Respond with exactly one word: positive, negative, or neutral. Text: ${text}` }] }],
+          generationConfig: { maxOutputTokens: 10, temperature: 0 },
+        });
+        result = geminiResult.response.text().toLowerCase();
+        this.logger.debug('✅ Gemini sentiment success');
+        return result;
+      } catch (err) {
+        this.logger.warn(`Gemini sentiment failed: ${err.message}`);
+      }
+    }
+
+    return result;
   }
 
   async generateImage(prompt) {
-    if (!this.openai) return null;
+    if (!this.openai) {
+      this.logger.warn('Image generation requires OpenAI (DALL-E)');
+      return null;
+    }
     try {
       const response = await this.openai.images.generate({
         model: 'dall-e-3',
@@ -228,7 +312,6 @@ class AiChatAgent extends BaseAgent {
     const { commandName, user, guild, member, channel } = interaction;
     const config = await this.getGuildConfig(guild.id);
 
-    // Permission checks (skip for admin command)
     if (commandName !== 'setai') {
       if (!config.enabled && commandName !== 'aistats') {
         return interaction.reply({ content: '❌ AI features are disabled in this server.', ephemeral: true });
@@ -297,7 +380,7 @@ class AiChatAgent extends BaseAgent {
 
   async cmdImagine(interaction) {
     if (!this.openai) {
-      return interaction.reply({ content: '❌ Image generation unavailable (missing API key).', ephemeral: true });
+      return interaction.reply({ content: '❌ Image generation unavailable (requires OpenAI API key).', ephemeral: true });
     }
     await interaction.deferReply();
     const prompt = interaction.options.getString('prompt');
@@ -353,15 +436,21 @@ class AiChatAgent extends BaseAgent {
   async cmdStats(interaction) {
     const config = await this.getGuildConfig(interaction.guild.id);
     const convCount = (await this.deps.db.get(`SELECT COUNT(DISTINCT userId) as count FROM ai_conversations WHERE guildId = ?`, [interaction.guild.id]))?.count || 0;
+    const providers = [];
+    if (this.openai) providers.push('OpenAI');
+    if (this.useGemini) providers.push('Gemini');
+
     const embed = new EmbedBuilder()
       .setTitle('🤖 AI Agent Stats')
       .addFields(
         { name: 'Enabled', value: config.enabled ? 'Yes' : 'No', inline: true },
+        { name: 'Providers', value: providers.length ? providers.join(' + ') : 'None', inline: true },
         { name: 'Model', value: config.model, inline: true },
         { name: 'Active conversations', value: convCount.toString(), inline: true },
         { name: 'Rate limit (per min)', value: config.rateLimitPerUser.toString(), inline: true },
         { name: 'Whitelisted channels', value: config.channelWhitelist.length.toString(), inline: true },
         { name: 'OpenAI Key', value: this.openaiApiKey ? '✅ Set' : '❌ Missing', inline: true },
+        { name: 'Gemini Key', value: this.useGemini ? '✅ Set' : '❌ Missing', inline: true },
         { name: 'VIP/Premium only', value: config.requireSubscription ? 'Yes' : 'No', inline: true }
       )
       .setColor(0x3498db);
