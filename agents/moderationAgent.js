@@ -1,15 +1,15 @@
 /**
- * 🛡️ ModerationAgent v5.0 (Persistent + auto‑subscription)
+ * 🛡️ ModerationAgent v5.1 (Webhook Ready)
  * - Auto‑mod (scam, profanity, links, spam)
  * - Warning system with persistent storage (models.Warning)
  * - Guild configuration stored in DB (survives restarts)
  * - Mute, kick, ban, purge commands
  * - Raid detection (in‑memory only)
- * - Log channel support
+ * - Log channel support with webhook (Vigil)
  * - Auto‑sets mod log channel from DEFAULT_MOD_LOG_CHANNEL_ID on startup
  */
 const BaseAgent = require('./baseAgent');
-const { PermissionsBitField, EmbedBuilder } = require('discord.js');
+const { PermissionsBitField, EmbedBuilder, WebhookClient } = require('discord.js');
 
 class ModerationAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -33,6 +33,11 @@ class ModerationAgent extends BaseAgent {
       allowedDomains: [],
       profanityList: ['fuck', 'shit', 'asshole', 'bitch', 'cunt', 'nigga', 'retard'],
     };
+
+    // ---- Webhook for mod logs ----
+    this.webhookUrl = process.env.MODLOG_WEBHOOK_URL;
+    this.webhookUsername = 'Vigil';
+    this.webhookAvatarURL = process.env.MODLOG_WEBHOOK_AVATAR || null;
   }
 
   async init() {
@@ -46,8 +51,8 @@ class ModerationAgent extends BaseAgent {
         PRIMARY KEY (guildId, configKey)
       )
     `);
-    await this.ensureDefaultModLogChannel(); // 👈 auto‑subscribe mod log channel
-    this.logger.info('🛡️ ModerationAgent ready');
+    await this.ensureDefaultModLogChannel();
+    this.logger.info('🛡️ ModerationAgent v5.1 ready' + (this.webhookUrl ? ' (Vigil webhook)' : ''));
   }
 
   /**
@@ -73,6 +78,40 @@ class ModerationAgent extends BaseAgent {
     }
     await this.updateGuildConfig(guild.id, { modLogChannel: defaultChannelId });
     this.logger.info(`✅ Auto-set mod log channel to ${channel.name} (${defaultChannelId})`);
+  }
+
+  // ---------- Helper: Send via Webhook or Channel ----------
+  async _sendModLog(guildId, payload) {
+    // 1. Try webhook if available
+    if (this.webhookUrl) {
+      try {
+        const webhook = new WebhookClient({ url: this.webhookUrl });
+        await webhook.send({
+          username: this.webhookUsername,
+          avatarURL: this.webhookAvatarURL || undefined,
+          ...payload,
+        });
+        this.logger.debug('✅ Mod log sent via Vigil webhook');
+        return;
+      } catch (err) {
+        this.logger.warn(`Webhook failed: ${err.message} – falling back to channel.send`);
+      }
+    }
+
+    // 2. Fallback to regular channel.send
+    const config = await this.getGuildConfig(guildId);
+    const channelId = config.modLogChannel;
+    if (!channelId) {
+      this.logger.debug('No mod log channel configured – skipping log');
+      return;
+    }
+    const channel = this.client.channels.cache.get(channelId);
+    if (!channel?.isTextBased()) {
+      this.logger.warn(`Mod log channel ${channelId} not found or not text-based`);
+      return;
+    }
+    await channel.send(payload).catch(err => this.logger.error(`Failed to send mod log: ${err.message}`));
+    this.logger.debug('✅ Mod log sent via channel.send');
   }
 
   // ---------- EVENT BUS ----------
@@ -225,7 +264,7 @@ class ModerationAgent extends BaseAgent {
       await member.timeout(durationMs, reason);
       const embed = new EmbedBuilder().setTitle('🔇 Muted').setColor(0xffaa00)
         .addFields({ name: 'User', value: member.user.tag }, { name: 'Reason', value: reason }).setTimestamp();
-      await this.logToModChannel(guildId, { embeds: [embed] });
+      await this._sendModLog(guildId, { embeds: [embed] });
     }
   }
 
@@ -243,7 +282,7 @@ class ModerationAgent extends BaseAgent {
           { name: 'Channel', value: message.channel.name, inline: true }
         )
         .setTimestamp();
-      await this.logToModChannel(message.guild.id, { embeds: [logEmbed] });
+      await this._sendModLog(message.guild.id, { embeds: [logEmbed] });
       await this.addWarning(message.guild.id, message.author.id, `Auto-mod: ${reason}`, 'AutoMod');
     } catch (err) {
       this.logger.error(`Auto-mod action failed: ${err.message}`);
@@ -270,7 +309,7 @@ class ModerationAgent extends BaseAgent {
       .setTitle('🚨 RAID MODE ACTIVATED')
       .setDescription('High join activity detected. Automatic moderation measures enabled.')
       .setColor(0xff0000);
-    await this.logToModChannel(guildId, { embeds: [embed] });
+    await this._sendModLog(guildId, { embeds: [embed] });
   }
 
   // ---------- COMMAND HANDLERS ----------
@@ -337,13 +376,9 @@ class ModerationAgent extends BaseAgent {
     await interaction.reply({ content: `📝 Mod log set to ${channel}.`, ephemeral: true });
   }
 
-  // ---------- LOG HELPER ----------
+  // ---------- LEGACY LOG HELPER (kept for compatibility) ----------
   async logToModChannel(guildId, payload) {
-    const config = await this.getGuildConfig(guildId);
-    const channelId = config.modLogChannel;
-    if (!channelId) return;
-    const channel = this.client.channels.cache.get(channelId);
-    if (channel?.isTextBased()) await channel.send(payload).catch(err => this.logger.error(`Failed to log: ${err.message}`));
+    await this._sendModLog(guildId, payload);
   }
 
   denyPerm(interaction) {
