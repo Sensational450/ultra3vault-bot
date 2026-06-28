@@ -1,11 +1,12 @@
 /**
- * 🎁 AirdropAgent v6.2 (Global Dedup + Better Filtering)
+ * 🎁 AirdropAgent v6.3 (Webhook Ready)
  * - Uses global database table for deduplication across feeds and restarts
  * - Configurable keyword filter to skip non‑airdrop content
  * - Feeds, filters, colors, texts fully configurable via env
+ * - Sends airdrops via "Oracle" webhook (with fallback to regular channel.send)
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, WebhookClient } = require('discord.js');
 const Parser = require('rss-parser');
 
 class AirdropAgent extends BaseAgent {
@@ -42,6 +43,11 @@ class AirdropAgent extends BaseAgent {
     // ---- Limits ----
     this.maxPostsPerCycle = parseInt(process.env.MAX_AIRDROPS_PER_CYCLE) || 3;
 
+    // ---- Webhook ----
+    this.webhookUrl = process.env.PREMIUM_AIRDROP_WEBHOOK_URL;
+    this.webhookUsername = 'Oracle';
+    this.webhookAvatarURL = process.env.PREMIUM_AIRDROP_WEBHOOK_AVATAR || null;
+
     // ---- In‑memory caches ----
     this.lastPostCache = new Map();       // feedUrl → last link (per‑feed, to avoid re‑fetch)
     this.globalPosted = new Set();        // all posted links (loaded from DB at start)
@@ -54,7 +60,7 @@ class AirdropAgent extends BaseAgent {
       this.logger.debug('🎁 Checking for new airdrops...');
       await this._checkAirdrops();
     });
-    this.logger.info(`🎁 AirdropAgent v6.2 ready (feeds: ${this.feeds.length}, skip keywords: ${this.skipKeywords.join(', ')})`);
+    this.logger.info(`🎁 AirdropAgent v6.3 ready (feeds: ${this.feeds.length}, skip keywords: ${this.skipKeywords.join(', ')})`);
   }
 
   // ---------- Load caches from DB ----------
@@ -85,6 +91,40 @@ class AirdropAgent extends BaseAgent {
     }
   }
 
+  // ---------- Helper: Send via Webhook or Channel ----------
+  async _sendAirdropMessage(embed, components) {
+    // 1. Try webhook if available
+    if (this.webhookUrl) {
+      try {
+        const webhook = new WebhookClient({ url: this.webhookUrl });
+        await webhook.send({
+          username: this.webhookUsername,
+          avatarURL: this.webhookAvatarURL || undefined,
+          embeds: [embed],
+          components: components || [],
+        });
+        this.logger.debug('✅ Airdrop sent via webhook (Oracle)');
+        return;
+      } catch (err) {
+        this.logger.warn(`Webhook failed: ${err.message} – falling back to channel.send`);
+      }
+    }
+
+    // 2. Fallback: use the channel directly
+    const channelId = process.env.PREMIUM_AIRDROP_CHANNEL_ID;
+    if (!channelId) {
+      this.logger.warn('No PREMIUM_AIRDROP_CHANNEL_ID set – cannot send airdrop');
+      return;
+    }
+    const channel = this.client.channels.cache.get(channelId);
+    if (!channel?.isTextBased()) {
+      this.logger.warn(`Airdrop channel ${channelId} not found or not text-based`);
+      return;
+    }
+    await channel.send({ embeds: [embed], components: components || [] });
+    this.logger.debug('✅ Airdrop sent via channel.send');
+  }
+
   // ---------- Save global posted link ----------
   async _saveGlobalLink(link) {
     try {
@@ -112,11 +152,6 @@ class AirdropAgent extends BaseAgent {
     const channelId = process.env.PREMIUM_AIRDROP_CHANNEL_ID;
     if (!channelId) {
       this.logger.debug('No PREMIUM_AIRDROP_CHANNEL_ID set – skipping airdrop check');
-      return;
-    }
-    const channel = this.client.channels.cache.get(channelId);
-    if (!channel || !channel.isTextBased()) {
-      this.logger.warn(`Airdrop channel ${channelId} not found or not text-based`);
       return;
     }
 
@@ -164,7 +199,8 @@ class AirdropAgent extends BaseAgent {
 
     // Post up to maxPostsPerCycle
     for (const item of allNewItems.slice(0, this.maxPostsPerCycle)) {
-      await this._sendAirdrop(channel, item);
+      const { embed, components } = await this._buildAirdropEmbed(item);
+      await this._sendAirdropMessage(embed, components);
       await this._saveGlobalLink(item.link);
       postedCount++;
     }
@@ -174,8 +210,8 @@ class AirdropAgent extends BaseAgent {
     }
   }
 
-  // ---------- Send Airdrop Embed ----------
-  async _sendAirdrop(channel, item) {
+  // ---------- Build Airdrop Embed ----------
+  async _buildAirdropEmbed(item) {
     // Extract image
     let image = null;
     if (item.enclosure?.url && item.enclosure.type?.startsWith('image/')) {
@@ -224,8 +260,7 @@ class AirdropAgent extends BaseAgent {
         .setURL(item.link || 'https://example.com')
     );
 
-    await channel.send({ embeds: [embed], components: [row] })
-      .catch(err => this.logger.error(`Failed to send airdrop: ${err.message}`));
+    return { embed, components: [row] };
   }
 }
 
