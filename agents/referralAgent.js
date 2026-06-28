@@ -1,13 +1,15 @@
 /**
- * 🔗 ReferralAgent v5.0 (Persistent)
+ * 🔗 ReferralAgent v5.1 (Webhook Ready)
  * - Referral code generation and redemption
  * - Tracks referrals, rewards referrer and referee (coins, VIP days)
  * - Leaderboard and stats
  * - Uses models.Referral layer (if available) with fallback to direct DB queries
  * - Guild config stored in referral_configs table (survives restarts)
+ * - Sends referral leaderboard via "Architect" webhook (if configured)
+ * - Falls back to ephemeral reply
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder } = require('discord.js');
+const { EmbedBuilder, WebhookClient } = require('discord.js');
 
 class ReferralAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -22,11 +24,16 @@ class ReferralAgent extends BaseAgent {
       resetLeaderboardWeekly: false,
     };
     this.guildConfigs = new Map(); // cache (loaded from DB)
+
+    // ---- Webhook for leaderboard ----
+    this.leaderboardWebhookUrl = process.env.REFERRAL_LEADERBOARD_WEBHOOK_URL;
+    this.leaderboardWebhookUsername = 'Architect';
+    this.leaderboardWebhookAvatar = process.env.REFERRAL_LEADERBOARD_WEBHOOK_AVATAR || null;
   }
 
   async init() {
     await super.init();
-    // Ensure referral_configs table exists (should be from migration, but safe)
+    // Ensure referral_configs table exists
     await this.ensureTable(`
       CREATE TABLE IF NOT EXISTS referral_configs (
         guildId TEXT PRIMARY KEY,
@@ -41,7 +48,7 @@ class ReferralAgent extends BaseAgent {
         }
       }
     });
-    this.logger.info('🔗 ReferralAgent ready');
+    this.logger.info(`🔗 ReferralAgent v5.1 ready (leaderboard webhook: ${this.leaderboardWebhookUrl ? '✅' : '❌'})`);
   }
 
   // ---------- PERSISTENT CONFIG HELPERS ----------
@@ -208,7 +215,32 @@ class ReferralAgent extends BaseAgent {
     this.logger.info(`Referral leaderboard reset for guild ${guildId}`);
   }
 
-  // ---------- SLASH COMMANDS (unchanged) ----------
+  // ---------- Helper: Send Leaderboard via Webhook or Ephemeral ----------
+  async _sendLeaderboard(interaction, embed) {
+    // 1. Try webhook if available
+    if (this.leaderboardWebhookUrl) {
+      try {
+        const webhook = new WebhookClient({ url: this.leaderboardWebhookUrl });
+        await webhook.send({
+          username: this.leaderboardWebhookUsername,
+          avatarURL: this.leaderboardWebhookAvatar || undefined,
+          embeds: [embed],
+        });
+        // Acknowledge to the user that it was posted
+        await interaction.reply({ content: '📊 Referral leaderboard posted to the configured channel.', ephemeral: true });
+        this.logger.debug('✅ Referral leaderboard sent via Architect webhook');
+        return;
+      } catch (err) {
+        this.logger.warn(`Leaderboard webhook failed: ${err.message} – falling back to ephemeral reply`);
+      }
+    }
+
+    // 2. Fallback: ephemeral reply to the user
+    await interaction.reply({ embeds: [embed], ephemeral: true });
+    this.logger.debug('✅ Referral leaderboard sent as ephemeral reply');
+  }
+
+  // ---------- SLASH COMMANDS ----------
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
     const { commandName } = interaction;
@@ -281,14 +313,22 @@ class ReferralAgent extends BaseAgent {
   async cmdLeaderboard(interaction) {
     const guildId = interaction.guild.id;
     const leaderboard = await this.getLeaderboard(guildId, 10);
-    if (leaderboard.length === 0) return interaction.reply('No referrals yet.');
+    if (leaderboard.length === 0) {
+      await interaction.reply({ content: 'No referrals yet.', ephemeral: true });
+      return;
+    }
     let desc = '';
     for (let i = 0; i < leaderboard.length; i++) {
       const user = await this.client.users.fetch(leaderboard[i].userId).catch(() => null);
       desc += `${i+1}. **${user ? user.username : leaderboard[i].userId}** – ${leaderboard[i].totalReferrals} referrals\n`;
     }
-    const embed = new EmbedBuilder().setTitle('🏆 Referral Leaderboard').setDescription(desc).setColor(0xffd700);
-    await interaction.reply({ embeds: [embed] });
+    const embed = new EmbedBuilder()
+      .setTitle('🏆 Referral Leaderboard')
+      .setDescription(desc)
+      .setColor(0xffd700)
+      .setTimestamp();
+
+    await this._sendLeaderboard(interaction, embed);
   }
 
   async cmdSetReferral(interaction) {
