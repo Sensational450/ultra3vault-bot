@@ -1,14 +1,14 @@
 /**
- * 📈 GrowthRetentionAgent v6.0 (Configurable)
+ * 📈 GrowthRetentionAgent v6.1 (Webhook Ready)
  * - Tracks user activity (messages)
  * - Rewards milestones (configurable list)
- * - Posts weekly leaderboard of top chatters
+ * - Posts weekly leaderboard of top chatters via webhook
  * - Nudges inactive users with configurable message
- * - Generates weekly growth reports
+ * - Generates weekly growth reports via webhook (Herald)
  * - Fully automated – uses existing channels
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder } = require('discord.js');
+const { EmbedBuilder, WebhookClient } = require('discord.js');
 
 class GrowthRetentionAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -30,7 +30,12 @@ class GrowthRetentionAgent extends BaseAgent {
       "We miss you! Come back and claim **{reward} tokens** as a welcome-back gift! 🎁\n" +
       "Just send `/daily` to claim!";
 
-    // Cache to avoid duplicate processing per message
+    // ---- Webhook for growth reports ----
+    this.webhookUrl = process.env.ANNOUNCEMENTS_WEBHOOK_URL;
+    this.webhookUsername = 'Herald';
+    this.webhookAvatarURL = process.env.ANNOUNCEMENTS_WEBHOOK_AVATAR || null;
+
+    // ---- Cache ----
     this.processedMessages = new Set();
     this.cacheTTL = 60000; // 1 minute
   }
@@ -50,7 +55,40 @@ class GrowthRetentionAgent extends BaseAgent {
       await this._nudgeInactiveUsers();
     });
 
-    this.logger.info(`📈 GrowthRetentionAgent v6.0 ready (milestones: ${this.milestones.join(', ')})`);
+    this.logger.info(`📈 GrowthRetentionAgent v6.1 ready (milestones: ${this.milestones.join(', ')})`);
+  }
+
+  // ---------- Helper: Send via Webhook or Channel ----------
+  async _sendReport(embed) {
+    // 1. Try webhook if available
+    if (this.webhookUrl) {
+      try {
+        const webhook = new WebhookClient({ url: this.webhookUrl });
+        await webhook.send({
+          username: this.webhookUsername,
+          avatarURL: this.webhookAvatarURL || undefined,
+          embeds: [embed],
+        });
+        this.logger.debug('✅ Growth report sent via Herald webhook');
+        return;
+      } catch (err) {
+        this.logger.warn(`Webhook failed: ${err.message} – falling back to channel.send`);
+      }
+    }
+
+    // 2. Fallback to regular channel.send
+    const channelId = process.env.ANNOUNCEMENT_CHANNEL_ID || process.env.WELCOME_CHANNEL_ID;
+    if (!channelId) {
+      this.logger.warn('No announcement channel ID set – cannot send report');
+      return;
+    }
+    const channel = this.client.channels.cache.get(channelId);
+    if (!channel?.isTextBased()) {
+      this.logger.warn(`Announcement channel ${channelId} not found or not text-based`);
+      return;
+    }
+    await channel.send({ embeds: [embed] });
+    this.logger.debug('✅ Growth report sent via channel.send');
   }
 
   // ---------- MESSAGE TRACKING ----------
@@ -186,16 +224,11 @@ class GrowthRetentionAgent extends BaseAgent {
     }
   }
 
-  // ---------- WEEKLY GROWTH REPORT ----------
+  // ---------- WEEKLY GROWTH REPORT (Webhook) ----------
   async _generateWeeklyReport() {
     const guilds = this.client.guilds.cache;
     for (const [guildId, guild] of guilds) {
       try {
-        const channelId = process.env.ANNOUNCEMENT_CHANNEL_ID || process.env.WELCOME_CHANNEL_ID;
-        if (!channelId) continue;
-        const channel = this.client.channels.cache.get(channelId);
-        if (!channel || !channel.isTextBased()) continue;
-
         const weekAgo = new Date();
         weekAgo.setDate(weekAgo.getDate() - 7);
 
@@ -228,8 +261,9 @@ class GrowthRetentionAgent extends BaseAgent {
           .setTimestamp()
           .setFooter({ text: 'Ultra3Vault • Growth AI v6.0' });
 
-        await channel.send({ embeds: [embed] });
-        this.logger.info(`📊 Weekly growth report posted to #${channel.name}`);
+        // Send via webhook (fallback to channel.send)
+        await this._sendReport(embed);
+        this.logger.info(`📊 Weekly growth report posted for ${guild.name}`);
       } catch (err) {
         this.logger.debug(`Weekly report failed for guild ${guildId}: ${err.message}`);
       }
