@@ -1,12 +1,13 @@
 /**
- * 💰 EconomyAgent v6.0 – Engagement Pack
+ * 💰 EconomyAgent v6.1 – Engagement Pack + Webhook Helper
  * - Daily rewards, balance, shop, leaderboard, transfer, inventory, gamble
  * - Streak system, XP, levels, daily missions, achievements, reputation
  * - Tiered XP multipliers (VIP=2x, Premium=3x)
  * - Auto-creates required tables
+ * - Webhook helper for future automated leaderboard posts (Architect webhook)
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder } = require('discord.js');
+const { EmbedBuilder, WebhookClient } = require('discord.js');
 
 class EconomyAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -35,7 +36,6 @@ class EconomyAgent extends BaseAgent {
       { id: 'chat', name: 'Send 10 messages', requirement: 10, rewardXp: 50, rewardCoins: 100 },
       { id: 'daily', name: 'Claim /daily', requirement: 1, rewardXp: 30, rewardCoins: 50 },
       { id: 'gamble', name: 'Gamble 3 times', requirement: 3, rewardXp: 40, rewardCoins: 80 },
-      // you can add more missions here
     ];
 
     // ---- Achievements ----
@@ -46,6 +46,11 @@ class EconomyAgent extends BaseAgent {
       { id: 'first_referral', name: 'First Referral', description: 'Refer your first friend', check: (stats) => stats.referrals >= 1 },
       { id: 'vip_buyer', name: 'VIP Buyer', description: 'Purchase VIP role', check: (stats) => stats.boughtVip === true },
     ];
+
+    // ---- Webhook (for future automated leaderboard posts) ----
+    this.leaderboardWebhookUrl = process.env.LEADERBOARD_WEBHOOK_URL;
+    this.webhookUsername = 'Architect';
+    this.webhookAvatarURL = process.env.LEADERBOARD_WEBHOOK_AVATAR || null;
 
     // ---- Caches ----
     this.processedMessages = new Set();
@@ -64,7 +69,28 @@ class EconomyAgent extends BaseAgent {
     this.subscribe('vip.granted', async (data) => {
       if (data.tier === 'vip') await this._handleVipPurchase(data);
     });
-    this.logger.info('💰 EconomyAgent v6.0 ready (Engagement Pack)');
+    this.logger.info('💰 EconomyAgent v6.1 ready (Engagement Pack + Webhook)');
+  }
+
+  // ---------- Webhook Helper ----------
+  async _sendViaLeaderboardWebhook(embed) {
+    if (!this.leaderboardWebhookUrl) {
+      this.logger.debug('LEADERBOARD_WEBHOOK_URL not set – skipping webhook');
+      return false;
+    }
+    try {
+      const webhook = new WebhookClient({ url: this.leaderboardWebhookUrl });
+      await webhook.send({
+        username: this.webhookUsername,
+        avatarURL: this.webhookAvatarURL || undefined,
+        embeds: [embed],
+      });
+      this.logger.debug('✅ Leaderboard sent via Architect webhook');
+      return true;
+    } catch (err) {
+      this.logger.warn(`Leaderboard webhook failed: ${err.message}`);
+      return false;
+    }
   }
 
   // ---------- Table Creation ----------
@@ -608,9 +634,44 @@ class EconomyAgent extends BaseAgent {
   }
 
   // ---- Other existing commands (balance, shop, inventory) ----
-  // They are unchanged; I'll skip them for brevity – you can keep the ones from your current file.
-  // I'll include them in the final code – they are the same as before.
-  // (I'll paste the full file in the final answer)
+  async cmdBalance(interaction) {
+    const target = interaction.options.getUser('user') || interaction.user;
+    const balance = await this.getBalance(target.id, interaction.guild.id);
+    const config = await this.getGuildConfig(interaction.guild.id);
+    const embed = new EmbedBuilder()
+      .setTitle(`${target.displayName}'s Balance`)
+      .setDescription(`${config.currencySymbol} ${balance} ${config.currencyName}`)
+      .setColor(0x00ae86);
+    await interaction.reply({ embeds: [embed] });
+  }
+
+  async cmdShop(interaction) {
+    const config = await this.getGuildConfig(interaction.guild.id);
+    let description = '';
+    for (const item of this.shopItems) {
+      description += `**${item.name}** - ${config.currencySymbol} ${item.price}\n${item.description}\n\n`;
+    }
+    const embed = new EmbedBuilder()
+      .setTitle('🛒 Shop')
+      .setDescription(description || 'No items available.')
+      .setFooter({ text: 'Use `/buy` to purchase items (for economy items)' })
+      .setColor(0xffaa00);
+    await interaction.reply({ embeds: [embed] });
+  }
+
+  async cmdInventory(interaction) {
+    const userId = interaction.user.id;
+    const guildId = interaction.guild.id;
+    const inventory = await this.getInventory(userId, guildId);
+    if (inventory.length === 0) return interaction.reply({ content: 'Your inventory is empty.', ephemeral: true });
+    let desc = '';
+    for (const inv of inventory) {
+      const item = this.shopItems.find(i => i.id === inv.itemId);
+      desc += `${item?.name || inv.itemId} x${inv.quantity}\n`;
+    }
+    const embed = new EmbedBuilder().setTitle('📦 Inventory').setDescription(desc).setColor(0x88aaee);
+    await interaction.reply({ embeds: [embed], ephemeral: true });
+  }
 }
 
 module.exports = EconomyAgent;
