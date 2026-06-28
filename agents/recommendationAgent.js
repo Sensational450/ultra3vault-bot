@@ -1,16 +1,17 @@
 /**
- * 🧠 RecommendationAgent v6.0 (Configurable + AI‑Enhanced)
+ * 🧠 RecommendationAgent v6.1 (Webhook Ready)
  * - Generates crypto trading recommendations from:
  *   • SignalAgent (high‑confidence BUY/SELL)
  *   • WhaleAgent (large accumulation)
  *   • NewsAgent (sentiment)
  *   • Periodic market scan (top gainers, volume spikes)
- * - Routes to VIP (light) and PREMIUM (advanced) channels
+ * - Sends VIP recommendations via "Insider" webhook
+ * - Sends Premium recommendations via "Quant" webhook
+ * - Falls back to event-based system if webhook fails
  * - Configurable thresholds and coin list via env
- * - Uses OpenAI to enhance recommendation reasons (if available)
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder } = require('discord.js');
+const { EmbedBuilder, WebhookClient } = require('discord.js');
 const axios = require('axios');
 
 class RecommendationAgent extends BaseAgent {
@@ -27,7 +28,16 @@ class RecommendationAgent extends BaseAgent {
     this.volumeSpikeThreshold = parseFloat(process.env.RECOMMENDATION_VOLUME_SPIKE_THRESHOLD) || 1_000_000_000; // $1B
     this.minSignalConfidence = parseFloat(process.env.RECOMMENDATION_MIN_SIGNAL_CONFIDENCE) || 70;
 
-    // ---- OpenAI (for enhanced reasons) ----
+    // ---- Webhook configs ----
+    this.vipWebhookUrl = process.env.VIP_WEBHOOK_URL;
+    this.vipWebhookUsername = 'Insider';
+    this.vipWebhookAvatar = process.env.VIP_WEBHOOK_AVATAR || null;
+
+    this.premiumWebhookUrl = process.env.PREMIUM_SIGNAL_WEBHOOK_URL;
+    this.premiumWebhookUsername = 'Quant';
+    this.premiumWebhookAvatar = process.env.PREMIUM_SIGNAL_WEBHOOK_AVATAR || null;
+
+    // ---- OpenAI ----
     this.openai = null;
     try {
       if (process.env.OPENAI_API_KEY) {
@@ -62,7 +72,48 @@ class RecommendationAgent extends BaseAgent {
       await this._periodicScan();
     });
 
-    this.logger.info(`🧠 RecommendationAgent v6.0 ready (coins: ${this.coins.join(', ')})`);
+    this.logger.info(`🧠 RecommendationAgent v6.1 ready (coins: ${this.coins.join(', ')})`);
+  }
+
+  // ---------- Helper: Send via Webhook or Emit Event ----------
+  async _sendRecommendation(rec) {
+    // Determine which webhook to use based on tier
+    let webhookUrl, webhookUsername, webhookAvatar;
+    if (rec.tier === 'vip') {
+      webhookUrl = this.vipWebhookUrl;
+      webhookUsername = this.vipWebhookUsername;
+      webhookAvatar = this.vipWebhookAvatar;
+    } else if (rec.tier === 'premium') {
+      webhookUrl = this.premiumWebhookUrl;
+      webhookUsername = this.premiumWebhookUsername;
+      webhookAvatar = this.premiumWebhookAvatar;
+    } else {
+      // No webhook configured – emit event (fallback)
+      this.logger.debug(`No webhook for tier ${rec.tier} – emitting event`);
+      this.emit('recommendation.generated', rec);
+      return;
+    }
+
+    // 1. Try webhook if available
+    if (webhookUrl) {
+      try {
+        const embed = this.formatRecommendationEmbed(rec);
+        const webhook = new WebhookClient({ url: webhookUrl });
+        await webhook.send({
+          username: webhookUsername,
+          avatarURL: webhookAvatar || undefined,
+          embeds: [embed],
+        });
+        this.logger.debug(`✅ Recommendation sent via webhook (${webhookUsername})`);
+        return; // Success – skip event emission to avoid duplicates
+      } catch (err) {
+        this.logger.warn(`Webhook failed: ${err.message} – falling back to event emission`);
+      }
+    }
+
+    // 2. Fallback: emit event (handled by index.js)
+    this.emit('recommendation.generated', rec);
+    this.logger.debug('✅ Recommendation emitted as event (fallback)');
   }
 
   // ---------- SIGNAL PROCESSOR ----------
@@ -78,14 +129,14 @@ class RecommendationAgent extends BaseAgent {
       asset: signal.coin,
       action,
       confidence: signal.confidence,
-      reason: `📈 Signal AI: ${reason}`,
+      reason: `📈 ${reason}`,
       price: signal.priceUsd,
       source: 'SignalAI',
       urgency: signal.confidence >= 85 ? 'high' : 'medium',
       timestamp: new Date().toISOString(),
     };
 
-    await this._emitRecommendation(rec);
+    await this._sendRecommendation(rec);
   }
 
   // ---------- WHALE PROCESSOR ----------
@@ -112,7 +163,7 @@ class RecommendationAgent extends BaseAgent {
       timestamp: new Date().toISOString(),
     };
 
-    await this._emitRecommendation(rec);
+    await this._sendRecommendation(rec);
   }
 
   // ---------- NEWS PROCESSOR ----------
@@ -149,7 +200,7 @@ class RecommendationAgent extends BaseAgent {
       timestamp: new Date().toISOString(),
     };
 
-    await this._emitRecommendation(rec);
+    await this._sendRecommendation(rec);
   }
 
   // ---------- PERIODIC MARKET SCAN ----------
@@ -190,7 +241,7 @@ class RecommendationAgent extends BaseAgent {
             urgency: 'low',
             timestamp: new Date().toISOString(),
           };
-          await this._emitRecommendation(rec);
+          await this._sendRecommendation(rec);
         }
 
         if (volume > this.volumeSpikeThreshold && change24h > 3) {
@@ -211,7 +262,7 @@ class RecommendationAgent extends BaseAgent {
             urgency: 'medium',
             timestamp: new Date().toISOString(),
           };
-          await this._emitRecommendation(rec);
+          await this._sendRecommendation(rec);
         }
       }
     } catch (err) {
@@ -235,17 +286,6 @@ class RecommendationAgent extends BaseAgent {
       this.logger.debug(`AI enhancement failed: ${err.message}`);
       return baseReason;
     }
-  }
-
-  // ---------- EMIT RECOMMENDATION ----------
-  async _emitRecommendation(rec) {
-    const key = `${rec.asset}_${rec.action}_${rec.source}`;
-    if (this.recommendationCache.has(key) && Date.now() - this.recommendationCache.get(key) < this.cacheTTL) {
-      return;
-    }
-    this.recommendationCache.set(key, Date.now());
-    this.emit('recommendation.generated', rec);
-    this.logger.info(`🧠 Recommendation: ${rec.asset} ${rec.action} (${rec.tier})`);
   }
 
   // ---------- HELPER ----------
@@ -278,7 +318,7 @@ class RecommendationAgent extends BaseAgent {
         { name: '⏰ Time', value: `<t:${Math.floor(new Date(rec.timestamp).getTime() / 1000)}:R>`, inline: false }
       )
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Recommendation AI v6.0' });
+      .setFooter({ text: 'Ultra3Vault • Recommendation AI v6.1' });
 
     return embed;
   }
