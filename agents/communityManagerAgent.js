@@ -1,8 +1,8 @@
 /**
- * 👥 CommunityManagerAgent v7.0 (Web3 Focused – Webhook Support)
+ * 👥 CommunityManagerAgent v7.1 (Web3 Focused – Webhook Ready)
  * - Sends scheduled welcome messages to new members
  * - Auto‑assigns a default role on join
- * - Posts automated announcements (token launches, NFT drops, AMAs) via webhook
+ * - Posts automated announcements (token launches, NFT drops, AMAs) via "Herald" webhook
  * - Tracks active members and rewards engagement (optional)
  * - Fully automated – no manual commands needed
  * - Configurable messages via environment variables
@@ -61,12 +61,15 @@ class CommunityManagerAgent extends BaseAgent {
       await this.rewardActiveMembers();
     });
 
-    this.logger.info('👥 CommunityManagerAgent v7.0 ready');
+    this.logger.info('👥 CommunityManagerAgent v7.1 ready (Herald webhook)');
   }
 
   // ---------- Helper: Send via Webhook or Channel ----------
   async _sendAnnouncement(embed) {
-    if (!this.announcementChannelId) return;
+    if (!this.announcementChannelId) {
+      this.logger.warn('⚠️ Announcement channel ID not set – skipping');
+      return;
+    }
 
     // 1. Try webhook if available
     if (this.announcementWebhookUrl) {
@@ -77,7 +80,7 @@ class CommunityManagerAgent extends BaseAgent {
           avatarURL: this.webhookAvatarURL || undefined,
           embeds: [embed],
         });
-        this.logger.debug('✅ Announcement sent via webhook (Herald)');
+        this.logger.debug('✅ Announcement sent via Herald webhook');
         return;
       } catch (err) {
         this.logger.warn(`Webhook failed: ${err.message} – falling back to channel.send`);
@@ -87,7 +90,7 @@ class CommunityManagerAgent extends BaseAgent {
     // 2. Fallback to regular channel.send
     const channel = this.client.channels.cache.get(this.announcementChannelId);
     if (!channel?.isTextBased()) {
-      this.logger.warn(`Announcement channel ${this.announcementChannelId} not found`);
+      this.logger.warn(`Announcement channel ${this.announcementChannelId} not found or not text-based`);
       return;
     }
     await channel.send({ embeds: [embed] });
@@ -96,7 +99,7 @@ class CommunityManagerAgent extends BaseAgent {
 
   // ---------- Event Handlers ----------
   async onGuildMemberAdd(member) {
-    // 1. Welcome message in channel
+    // 1. Welcome message in channel (regular send – interactive)
     if (this.welcomeChannelId) {
       const channel = member.guild.channels.cache.get(this.welcomeChannelId);
       if (channel?.isTextBased()) {
@@ -115,7 +118,7 @@ class CommunityManagerAgent extends BaseAgent {
       }
     }
 
-    // 3. DM welcome (configurable)
+    // 3. DM welcome (regular DM)
     try {
       const dmEmbed = new EmbedBuilder()
         .setTitle('🌐 Welcome!')
@@ -223,7 +226,7 @@ class CommunityManagerAgent extends BaseAgent {
       .setTimestamp()
       .setFooter({ text: `Posted by ${interaction.user.tag}` });
 
-    // Use webhook if the target channel is the announcement channel, else use regular send
+    // If the target channel is the announcement channel and we have a webhook, use it
     if (channel.id === this.announcementChannelId && this.announcementWebhookUrl) {
       try {
         const webhook = new WebhookClient({ url: this.announcementWebhookUrl });
@@ -232,14 +235,14 @@ class CommunityManagerAgent extends BaseAgent {
           avatarURL: this.webhookAvatarURL || undefined,
           embeds: [embed],
         });
-        await interaction.reply({ content: '✅ Announcement posted via webhook.', ephemeral: true });
+        await interaction.reply({ content: '✅ Announcement posted via Herald webhook.', ephemeral: true });
         return;
       } catch (err) {
         this.logger.warn(`Webhook failed for manual announce: ${err.message} – falling back`);
       }
     }
 
-    // Fallback: regular send
+    // Fallback: regular channel.send
     await channel.send({ embeds: [embed] });
     await interaction.reply({ content: '✅ Announcement posted.', ephemeral: true });
   }
