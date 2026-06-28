@@ -1,7 +1,7 @@
 /**
- * 🌍 LocalizationAgent v6.0
+ * 🌍 LocalizationAgent v6.1
  * - Detects language of messages/text
- * - Translates between 100+ languages (configurable provider order)
+ * - Translates between 100+ languages (configurable provider order: libre, mymemory, openai, gemini)
  * - Stores user language preferences in the database
  * - Integrates with AiChatAgent for multilingual conversations
  * - Slash commands: /translate, /setlanguage, /detect
@@ -15,9 +15,8 @@ class LocalizationAgent extends BaseAgent {
   constructor(eventBus, deps) {
     super(eventBus, deps);
     this.models = deps.models;
-    this.openai = null;
 
-    // Hardcoded language list (static data, not repetitive content)
+    // ---- Language list (static) ----
     this.defaultLanguage = 'en';
     this.supportedLanguages = [
       { code: 'en', name: 'English' },
@@ -46,20 +45,13 @@ class LocalizationAgent extends BaseAgent {
       { code: 'he', name: 'Hebrew' },
     ];
 
-    // Translation cache
+    // ---- Translation cache ----
     this.cache = new Map();
     this.cacheTTL = 60 * 60 * 1000; // 1 hour
 
-    // Provider order (configurable via env, default: libre → mymemory → openai)
-    const defaultOrder = ['libre', 'mymemory', 'openai'];
-    const envOrder = process.env.LOCALIZATION_PROVIDER_ORDER;
-    this.providerOrder = envOrder ? envOrder.split(',').map(p => p.trim()) : defaultOrder;
-  }
-
-  async init() {
-    await super.init();
-
-    // Initialize OpenAI if available
+    // ---- Providers ----
+    // OpenAI
+    this.openai = null;
     if (this.deps.secrets?.openaiApiKey) {
       try {
         const { OpenAI } = require('openai');
@@ -70,7 +62,32 @@ class LocalizationAgent extends BaseAgent {
       }
     }
 
-    this.logger.info(`🌍 LocalizationAgent v6.0 ready (provider order: ${this.providerOrder.join(' → ')})`);
+    // Gemini
+    this.useGemini = !!process.env.GEMINI_API_KEY;
+    if (this.useGemini) {
+      const { GoogleGenerativeAI } = require('@google/generative-ai');
+      this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+      this.geminiModel = process.env.GEMINI_MODEL || 'gemini-1.5-pro';
+      this.logger.info(`🧠 Gemini available (model: ${this.geminiModel})`);
+    } else {
+      this.logger.warn('⚠️ GEMINI_API_KEY missing – Gemini disabled.');
+    }
+
+    // ---- Provider order ----
+    const defaultOrder = ['libre', 'mymemory', 'openai', 'gemini'];
+    const envOrder = process.env.LOCALIZATION_PROVIDER_ORDER;
+    this.providerOrder = envOrder ? envOrder.split(',').map(p => p.trim()) : defaultOrder;
+    // Filter out providers that are not available (e.g., openai if no key, gemini if no key)
+    this.providerOrder = this.providerOrder.filter(p => {
+      if (p === 'openai' && !this.openai) return false;
+      if (p === 'gemini' && !this.useGemini) return false;
+      return true;
+    });
+  }
+
+  async init() {
+    await super.init();
+    this.logger.info(`🌍 LocalizationAgent v6.1 ready (provider order: ${this.providerOrder.join(' → ')})`);
   }
 
   // ---------- CORE TRANSLATION ----------
@@ -101,6 +118,9 @@ class LocalizationAgent extends BaseAgent {
           break;
         case 'openai':
           translation = await this._translateOpenAI(text, targetLang, sourceLang);
+          break;
+        case 'gemini':
+          translation = await this._translateGemini(text, targetLang, sourceLang);
           break;
         default:
           this.logger.warn(`Unknown provider: ${provider}`);
@@ -181,6 +201,26 @@ class LocalizationAgent extends BaseAgent {
     return null;
   }
 
+  // ---------- PROVIDER: Gemini ----------
+  async _translateGemini(text, targetLang, sourceLang = null) {
+    if (!this.useGemini) return null;
+    try {
+      const model = this.genAI.getGenerativeModel({ model: this.geminiModel });
+      const prompt = `Translate the following text from ${sourceLang || 'auto'} to ${targetLang}. Return ONLY the translation, nothing else.\n\nText: ${text}`;
+      const result = await model.generateContent({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: {
+          maxOutputTokens: 300,
+          temperature: 0.3,
+        },
+      });
+      return result.response.text().trim();
+    } catch (err) {
+      this.logger.debug(`Gemini translation failed: ${err.message}`);
+    }
+    return null;
+  }
+
   // ---------- LANGUAGE DETECTION ----------
   async detectLanguage(text) {
     if (!text || text.trim().length < 5) return 'en';
@@ -202,7 +242,7 @@ class LocalizationAgent extends BaseAgent {
       this.logger.debug(`Language detection failed: ${err.message}`);
     }
 
-    // Fallback: heuristic detection (non‑repetitive, just pattern matching)
+    // Fallback: heuristic detection
     const patterns = [
       { regex: /[áéíóúñç]/, code: 'es' },
       { regex: /[àâêîôûç]/, code: 'fr' },
@@ -300,7 +340,6 @@ class LocalizationAgent extends BaseAgent {
     }
   }
 
-  // ---------- /translate ----------
   async cmdTranslate(interaction) {
     const text = interaction.options.getString('text');
     const targetLang = interaction.options.getString('language');
@@ -336,7 +375,6 @@ class LocalizationAgent extends BaseAgent {
     }
   }
 
-  // ---------- /setlanguage ----------
   async cmdSetLanguage(interaction) {
     const language = interaction.options.getString('language');
 
@@ -347,11 +385,7 @@ class LocalizationAgent extends BaseAgent {
       });
     }
 
-    const success = await this.setUserLanguage(
-      interaction.user.id,
-      interaction.guild.id,
-      language
-    );
+    const success = await this.setUserLanguage(interaction.user.id, interaction.guild.id, language);
 
     if (success) {
       await interaction.reply({
@@ -366,7 +400,6 @@ class LocalizationAgent extends BaseAgent {
     }
   }
 
-  // ---------- /detect ----------
   async cmdDetect(interaction) {
     const text = interaction.options.getString('text');
     await interaction.deferReply({ ephemeral: true });
@@ -390,7 +423,6 @@ class LocalizationAgent extends BaseAgent {
     }
   }
 
-  // ---------- /languages ----------
   async cmdLanguages(interaction) {
     const list = this.supportedLanguages.map(l => `\`${l.code}\` → ${l.name}`).join('\n');
     const embed = new EmbedBuilder()
