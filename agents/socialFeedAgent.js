@@ -1,21 +1,20 @@
 /**
- * 📡 SocialFeedAgent v1.3 – Webhook Ready
- * - Fetches content from RSS feeds (Reddit, YouTube, Twitter via Nitter, crypto news)
- * - Posts new items to a dedicated Discord channel via "Netizen" webhook
- * - Falls back to regular channel.send
- * - Deduplicates via database
- * - Optional AI summarization
- * - Default feeds are recommended Web3 sources
+ * 📡 SocialFeedAgent v1.5 – Final Webhook Integration
+ * - Fetches content from RSS feeds (Reddit, YouTube, Twitter, crypto news)
+ * - Posts new items via "Netizen" webhook (SOCIAL_FEED_WEBHOOK_URL)
+ * - Falls back to channel.send if webhook unavailable
+ * - Deduplicates via database, optional AI summarization
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder, WebhookClient } = require('discord.js');
+const { EmbedBuilder } = require('discord.js');
 const Parser = require('rss-parser');
+const WebhookSender = require('../tools/discord/webhookSender');
 
 class SocialFeedAgent extends BaseAgent {
   constructor(eventBus, deps) {
     super(eventBus, deps);
 
-    // ---- Recommended Web3 + Social Feeds (default) ----
+    // ---- Recommended Web3 + Social Feeds ----
     const defaultFeeds = [
       'https://decrypt.co/feed',
       'https://cointelegraph.com/rss',
@@ -27,11 +26,11 @@ class SocialFeedAgent extends BaseAgent {
     this.feeds = (process.env.SOCIAL_FEEDS || defaultFeeds.join(','))
       .split(',').map(u => u.trim()).filter(Boolean);
 
-    this.channelId = process.env.SOCIAL_FEED_CHANNEL_ID;
+    this.channelId = process.env.SOCIAL_FEED_CHANNEL_ID; // fallback only
 
-    // ---- Webhook ----
+    // ---- Webhook (Netizen) ----
     this.webhookUrl = process.env.SOCIAL_FEED_WEBHOOK_URL;
-    this.webhookUsername = 'Netizen';
+    this.webhookUsername = process.env.SOCIAL_FEED_WEBHOOK_USERNAME || 'Netizen';
     this.webhookAvatar = process.env.SOCIAL_FEED_WEBHOOK_AVATAR || null;
 
     this.parser = new Parser({
@@ -52,22 +51,31 @@ class SocialFeedAgent extends BaseAgent {
     await super.init();
     await this._loadCacheFromDb();
     this.subscribe('job.socialFeed', async () => {
-      await this._fetchAndPost();
+      try {
+        await this._fetchAndPost();
+      } catch (err) {
+        this.logger.error(`SocialFeed job error: ${err.message}`);
+      }
     });
-    this.logger.info(`📡 SocialFeedAgent v1.3 ready (feeds: ${this.feeds.length}, webhook: ${this.webhookUrl ? '✅' : '❌'})`);
+
+    if (!this.webhookUrl) {
+      this.logger.warn('⚠️ SOCIAL_FEED_WEBHOOK_URL not set – will fallback to channel.send if configured');
+    }
+    this.logger.info(`📡 SocialFeedAgent v1.5 ready (feeds: ${this.feeds.length}, webhook: ${this.webhookUrl ? '✅' : '❌'})`);
   }
 
-  // ---------- Helper: Send via Webhook or Channel ----------
+  // ---------- Send via Webhook (with fallback) ----------
   async _sendPost(embed) {
-    // 1. Try webhook if available
+    const payload = {
+      embeds: [embed],
+      username: this.webhookUsername,
+      avatar_url: this.webhookAvatar || undefined,
+    };
+
+    // 1. Try webhook
     if (this.webhookUrl) {
       try {
-        const webhook = new WebhookClient({ url: this.webhookUrl });
-        await webhook.send({
-          username: this.webhookUsername,
-          avatarURL: this.webhookAvatar || undefined,
-          embeds: [embed],
-        });
+        await WebhookSender.send(this.webhookUrl, payload);
         this.logger.debug('✅ Social feed item sent via Netizen webhook');
         return;
       } catch (err) {
@@ -75,7 +83,7 @@ class SocialFeedAgent extends BaseAgent {
       }
     }
 
-    // 2. Fallback to channel.send
+    // 2. Fallback to channel
     if (!this.channelId) {
       this.logger.warn('SOCIAL_FEED_CHANNEL_ID not set – cannot send');
       return;
@@ -89,36 +97,25 @@ class SocialFeedAgent extends BaseAgent {
     this.logger.debug('✅ Social feed item sent via channel.send');
   }
 
-  // ---------- Cache ----------
+  // ---------- Cache (unchanged) ----------
   async _loadCacheFromDb() {
     try {
       const rows = await this.db.all(`SELECT link, postedAt FROM social_feed_cache`);
-      for (const row of rows) {
-        this.postedLinks.set(row.link, row.postedAt);
-      }
+      for (const row of rows) this.postedLinks.set(row.link, row.postedAt);
     } catch (err) {
-      await this.db.exec(`
-        CREATE TABLE IF NOT EXISTS social_feed_cache (
-          link TEXT PRIMARY KEY,
-          postedAt INTEGER
-        )
-      `);
+      await this.db.exec(`CREATE TABLE IF NOT EXISTS social_feed_cache (link TEXT PRIMARY KEY, postedAt INTEGER)`);
     }
   }
 
   async _saveCache(link) {
-    await this.db.run(
-      `INSERT OR REPLACE INTO social_feed_cache (link, postedAt) VALUES (?, ?)`,
-      [link, Date.now()]
-    ).catch(err => this.logger.error(`Cache save failed: ${err.message}`));
+    await this.db.run(`INSERT OR REPLACE INTO social_feed_cache (link, postedAt) VALUES (?, ?)`, [link, Date.now()])
+      .catch(err => this.logger.error(`Cache save failed: ${err.message}`));
   }
 
   _cleanCache() {
     const now = Date.now();
     for (const [link, ts] of this.postedLinks) {
-      if (now - ts > this.cacheTTL) {
-        this.postedLinks.delete(link);
-      }
+      if (now - ts > this.cacheTTL) this.postedLinks.delete(link);
     }
   }
 
@@ -135,11 +132,9 @@ class SocialFeedAgent extends BaseAgent {
     for (const feedUrl of this.feeds) {
       try {
         const feed = await this.parser.parseURL(feedUrl);
-        const items = feed.items || [];
-        for (const item of items.slice(0, 5)) {
+        for (const item of (feed.items || []).slice(0, 5)) {
           const link = item.link || item.url || item.guid;
-          if (!link) continue;
-          if (this.postedLinks.has(link)) continue;
+          if (!link || this.postedLinks.has(link)) continue;
           allItems.push({ ...item, feedUrl, link });
         }
       } catch (err) {
@@ -156,9 +151,7 @@ class SocialFeedAgent extends BaseAgent {
       postedCount++;
     }
 
-    if (postedCount > 0) {
-      this.logger.info(`📡 Posted ${postedCount} new social items`);
-    }
+    if (postedCount > 0) this.logger.info(`📡 Posted ${postedCount} new social items`);
     this._cleanCache();
   }
 
@@ -172,10 +165,9 @@ class SocialFeedAgent extends BaseAgent {
     let summary = null;
     if (this.useSummary && this.deps.orchestrator) {
       const summaryAgent = this.deps.orchestrator.getAgent('SummaryAgent');
-      if (summaryAgent && typeof summaryAgent.summarize === 'function') {
+      if (summaryAgent?.summarize) {
         try {
-          const fullText = `${title}. ${description}`;
-          summary = await summaryAgent.summarize(fullText, 30, 'news');
+          summary = await summaryAgent.summarize(`${title}. ${description}`, 30, 'news');
         } catch (err) {
           this.logger.debug(`Summary failed: ${err.message}`);
         }
