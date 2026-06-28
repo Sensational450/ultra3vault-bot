@@ -1,11 +1,10 @@
 /**
- * 🧠 AlertPrioritizationAgent v6.0
+ * 🧠 AlertPrioritizationAgent v6.1
  * - Listens to 'news.published' events from NewsAgent
  * - Scores importance using AI (OpenAI primary, Gemini fallback) + keyword analysis
  * - Emits 'news.important' only for high-value news
- * - Configurable threshold via ALERT_PRIORITY_THRESHOLD (default 0.5)
- * - Keyword list configurable via IMPORTANT_KEYWORDS env (comma-separated)
- * - Reduces noise and keeps your community focused
+ * - Configurable threshold, weights, and keyword list via env
+ * - Reduced noise and keeps your community focused
  */
 const BaseAgent = require('./baseAgent');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
@@ -14,10 +13,15 @@ class AlertPrioritizationAgent extends BaseAgent {
   constructor(eventBus, deps) {
     super(eventBus, deps);
 
+    // ---- Thresholds ----
     this.threshold = parseFloat(process.env.ALERT_PRIORITY_THRESHOLD) || 0.5;
     this.minLength = parseInt(process.env.ALERT_MIN_LENGTH) || 20;
 
-    // Configurable keywords (default fallback list)
+    // ---- Weights ----
+    this.aiWeight = parseFloat(process.env.ALERT_AI_WEIGHT) || 0.6;
+    this.keywordWeight = parseFloat(process.env.ALERT_KEYWORD_WEIGHT) || 0.4;
+
+    // ---- Keywords ----
     const defaultKeywords = [
       'breaking', 'urgent', 'critical', 'major', 'new', 'update',
       'launch', 'hack', 'exploit', 'regulatory', 'sec', 'etf',
@@ -26,6 +30,10 @@ class AlertPrioritizationAgent extends BaseAgent {
     ];
     const envKeywords = process.env.IMPORTANT_KEYWORDS;
     this.importantKeywords = envKeywords ? envKeywords.split(',').map(k => k.trim().toLowerCase()) : defaultKeywords;
+
+    // ---- Keyword score increment ----
+    this.keywordIncrement = parseFloat(process.env.ALERT_KEYWORD_INCREMENT) || 0.12;
+    this.keywordCap = parseFloat(process.env.ALERT_KEYWORD_CAP) || 0.6;
 
     // ---- OpenAI ----
     this.openai = this.deps.openai || null;
@@ -62,7 +70,7 @@ class AlertPrioritizationAgent extends BaseAgent {
         this.logger.debug(`⏭️ Ignored low-priority: ${item.title} (score: ${importance.score.toFixed(2)})`);
       }
     });
-    this.logger.info(`🧠 AlertPrioritizationAgent v6.0 ready (threshold: ${this.threshold}, keywords: ${this.importantKeywords.length})`);
+    this.logger.info(`🧠 AlertPrioritizationAgent v6.1 ready (threshold: ${this.threshold}, AI weight: ${this.aiWeight}, keywords: ${this.importantKeywords.length})`);
   }
 
   /**
@@ -75,15 +83,15 @@ class AlertPrioritizationAgent extends BaseAgent {
 
     // 1. Length filter
     if (text.length < this.minLength) {
-      return { score: 0, reason: 'too short' };
+      return { score: 0, reason: 'too short', source: 'length' };
     }
 
     // 2. Keyword scoring (fast)
     let keywordScore = 0;
     for (const kw of this.importantKeywords) {
-      if (text.includes(kw)) keywordScore += 0.12;
+      if (text.includes(kw)) keywordScore += this.keywordIncrement;
     }
-    keywordScore = Math.min(keywordScore, 0.6);
+    keywordScore = Math.min(keywordScore, this.keywordCap);
 
     // 3. AI scoring (try OpenAI first, then Gemini)
     let aiScore = null;
@@ -108,8 +116,7 @@ class AlertPrioritizationAgent extends BaseAgent {
     // 4. Combine scores
     let finalScore;
     if (aiScore !== null) {
-      // Weighted average: 60% AI, 40% keyword (AI more reliable)
-      finalScore = aiScore * 0.6 + keywordScore * 0.4;
+      finalScore = aiScore * this.aiWeight + keywordScore * this.keywordWeight;
     } else {
       finalScore = keywordScore;
     }
