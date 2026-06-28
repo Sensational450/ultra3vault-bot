@@ -1,15 +1,15 @@
 /**
- * 📰 NewsAgent v6.0 (Configurable)
+ * 📰 NewsAgent v6.1 (Webhook Ready)
  * - Fetches crypto news from: GNews → NewsData.io → Currents API → RSS (fallback)
  * - All API keys and endpoints are configurable via env
  * - Auto‑subscribes to a default channel
  * - Emits 'news.published' for every new article
  * - Listens to 'news.important' and sends only high‑value news (if AlertPrioritizationAgent is active)
- * - Uses configurable embed colors, footer, button label
- * - Fixed cmdSubscribe category list
+ * - Sends news via "Chronicle" webhook (if `NEWS_WEBHOOK_URL` is set)
+ * - Falls back to regular channel.send
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, WebhookClient } = require('discord.js');
 const axios = require('axios');
 const Parser = require('rss-parser');
 
@@ -35,7 +35,12 @@ class NewsAgent extends BaseAgent {
       default: 0x1e88e5,
     };
 
-    // Categories (for /subscribe command) – configurable via env
+    // ---- Webhook ----
+    this.webhookUrl = process.env.NEWS_WEBHOOK_URL;
+    this.webhookUsername = 'Chronicle';
+    this.webhookAvatarURL = process.env.NEWS_WEBHOOK_AVATAR || null;
+
+    // Categories (for /subscribe command)
     this.validCategories = (process.env.NEWS_CATEGORIES || 'cryptoNews,reddit,defi,nft')
       .split(',').map(c => c.trim());
 
@@ -67,7 +72,8 @@ class NewsAgent extends BaseAgent {
       }
     });
 
-    this.logger.info(`📰 NewsAgent v6.0 ready (fallback: ${this.fallbackRssUrl})`);
+    this.logger.info(`📰 NewsAgent v6.1 ready (fallback: ${this.fallbackRssUrl})` +
+      (this.webhookUrl ? ' (Chronicle webhook)' : ''));
   }
 
   // ---------- Helper: Parse embed colors from env ----------
@@ -75,7 +81,6 @@ class NewsAgent extends BaseAgent {
     if (!envString) return null;
     try {
       const parsed = JSON.parse(envString);
-      // Convert hex strings to numbers
       const result = {};
       for (const [key, value] of Object.entries(parsed)) {
         result[key] = typeof value === 'string' ? parseInt(value.replace('#', ''), 16) : value;
@@ -84,6 +89,32 @@ class NewsAgent extends BaseAgent {
     } catch {
       return null;
     }
+  }
+
+  // ---------- Helper: Send via Webhook or Channel ----------
+  async _sendNewsMessage(embed, components) {
+    // 1. Try webhook if available
+    if (this.webhookUrl) {
+      try {
+        const webhook = new WebhookClient({ url: this.webhookUrl });
+        await webhook.send({
+          username: this.webhookUsername,
+          avatarURL: this.webhookAvatarURL || undefined,
+          embeds: [embed],
+          components: components || [],
+        });
+        this.logger.debug('✅ News sent via Chronicle webhook');
+        return;
+      } catch (err) {
+        this.logger.warn(`Webhook failed: ${err.message} – falling back to channel.send`);
+      }
+    }
+
+    // 2. Fallback: we need a channel to send to – this method should be called with channel context.
+    // We'll use the channel from the subscription (passed in sendNews).
+    // So this helper is only used inside sendNews when we have channelId.
+    // We'll just log that fallback is needed and rely on sendNews to handle the rest.
+    this.logger.warn('No webhook URL and no channel context – cannot send news.');
   }
 
   // ---------- Subscriptions ----------
@@ -287,16 +318,9 @@ class NewsAgent extends BaseAgent {
     }
   }
 
-  // ---------- Send News ----------
+  // ---------- Send News (with webhook support) ----------
   async sendNews(article, guildId, channelId, category) {
-    const channel = this.client.channels.cache.get(channelId);
-    if (!channel || !channel.isTextBased()) {
-      this.logger.warn(`Channel ${channelId} not found or not text-based`);
-      return;
-    }
-
     const color = this.embedColors[article.source] || this.embedColors.default || 0x1e88e5;
-
     const footer = this.footerText.replace(/{category}/g, category || 'General');
 
     const embed = new EmbedBuilder()
@@ -317,7 +341,33 @@ class NewsAgent extends BaseAgent {
         .setURL(article.link)
     );
 
-    await channel.send({ embeds: [embed], components: [row] }).catch(err => this.logger.error(`Failed to send: ${err.message}`));
+    const components = [row];
+
+    // 1. Try webhook if available
+    if (this.webhookUrl) {
+      try {
+        const webhook = new WebhookClient({ url: this.webhookUrl });
+        await webhook.send({
+          username: this.webhookUsername,
+          avatarURL: this.webhookAvatarURL || undefined,
+          embeds: [embed],
+          components: components,
+        });
+        this.logger.debug(`✅ News sent via Chronicle webhook (${article.title.substring(0, 30)}...)`);
+        return;
+      } catch (err) {
+        this.logger.warn(`Webhook failed: ${err.message} – falling back to channel.send`);
+      }
+    }
+
+    // 2. Fallback to regular channel.send
+    const channel = this.client.channels.cache.get(channelId);
+    if (!channel || !channel.isTextBased()) {
+      this.logger.warn(`Channel ${channelId} not found or not text-based`);
+      return;
+    }
+    await channel.send({ embeds: [embed], components });
+    this.logger.debug(`✅ News sent via channel.send to #${channel.name}`);
   }
 
   // ---------- Cache ----------
