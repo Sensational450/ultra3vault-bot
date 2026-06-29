@@ -7,7 +7,7 @@
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
 const WebhookSender = require('../tools/discord/webhookSender'); // for buildUltraEmbed only
-const { sendWebhook } = require('../index'); // ✅ centralized webhook sender
+const { sendWebhook } = require('../core/webhook'); // ✅ centralized webhook sender
 
 class VipAgent extends BaseAgent {
   constructor(eventBus, deps) {
