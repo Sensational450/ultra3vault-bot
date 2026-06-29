@@ -1,16 +1,15 @@
 /**
- * 📈 SignalAgent v6.1 (Webhook Ready)
+ * 📈 SignalAgent v6.2 – Event‑Only (Centralized Webhook)
  * - Generates trading signals using:
  *   • Price + RSI (CoinGecko)
  *   • MACD, SMA crossovers
  *   • Whale correlation (from WhaleAgent)
  *   • News sentiment (from SummaryAgent)
- * - Sends signals via "Quant" webhook (if PREMIUM_SIGNAL_WEBHOOK_URL is set)
- * - Falls back to emitting 'signal.generated' event
+ * - Emits 'signal.generated' events – index.js sends via "Quant" webhook
  * - All thresholds and coin list are configurable via env
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder, WebhookClient } = require('discord.js');
+const { EmbedBuilder } = require('discord.js'); // removed WebhookClient
 const axios = require('axios');
 
 class SignalAgent extends BaseAgent {
@@ -30,11 +29,6 @@ class SignalAgent extends BaseAgent {
     this.smaBreakoutPct = parseFloat(process.env.SIGNAL_SMA_BREAKOUT_PCT) || 0.03; // 3%
     this.min24hChange = parseFloat(process.env.SIGNAL_MIN_24H_CHANGE) || 5; // 5%
     this.historyLimit = parseInt(process.env.SIGNAL_HISTORY_LIMIT) || 50;
-
-    // ---- Webhook ----
-    this.webhookUrl = process.env.PREMIUM_SIGNAL_WEBHOOK_URL;
-    this.webhookUsername = 'Quant';
-    this.webhookAvatar = process.env.PREMIUM_SIGNAL_WEBHOOK_AVATAR || null;
 
     // ---- OpenAI ----
     this.openai = null;
@@ -69,32 +63,14 @@ class SignalAgent extends BaseAgent {
       await this.handleNewsEvent(data);
     });
 
-    this.logger.info(`📈 SignalAgent v6.1 ready (coins: ${this.coins.join(', ')})` +
-      (this.webhookUrl ? ' (Quant webhook)' : ''));
+    this.logger.info(`📈 SignalAgent v6.2 ready (coins: ${this.coins.join(', ')}) – events only`);
   }
 
-  // ---------- Helper: Send via Webhook or Emit Event ----------
+  // ---------- Send via Event (centralized webhook) ----------
   async _sendSignal(signal) {
-    // 1. Try webhook if available
-    if (this.webhookUrl) {
-      try {
-        const embed = this.formatSignalEmbed(signal);
-        const webhook = new WebhookClient({ url: this.webhookUrl });
-        await webhook.send({
-          username: this.webhookUsername,
-          avatarURL: this.webhookAvatar || undefined,
-          embeds: [embed],
-        });
-        this.logger.debug(`✅ Signal sent via Quant webhook (${signal.coin} ${signal.action})`);
-        return; // Success – skip event emission
-      } catch (err) {
-        this.logger.warn(`Webhook failed: ${err.message} – falling back to event emission`);
-      }
-    }
-
-    // 2. Fallback: emit event (handled by index.js)
+    // Emit event – index.js will send via webhook
     this.emit('signal.generated', signal);
-    this.logger.debug(`✅ Signal emitted as event (fallback)`);
+    this.logger.debug(`✅ Signal emitted (${signal.coin} ${signal.action})`);
   }
 
   // ---------- GENERATE SIGNALS ----------
@@ -222,7 +198,7 @@ class SignalAgent extends BaseAgent {
       rsi: rsi !== null ? Math.round(rsi) : null,
       reasons: reasonText,
       timestamp: new Date().toISOString(),
-      source: 'SignalAI v6.1',
+      source: 'SignalAI v6.2',
       icon: action === 'BUY' ? '🟢' : action === 'SELL' ? '🔴' : '🟡',
     };
   }
@@ -373,7 +349,7 @@ class SignalAgent extends BaseAgent {
     return prices.reduce((a,b) => a+b, 0) / period;
   }
 
-  // ---------- DISCORD EMBED ----------
+  // ---------- DISCORD EMBED (used by index.js listener) ----------
   formatSignalEmbed(signal) {
     const color = signal.action === 'BUY' ? 0x00ff88 : signal.action === 'SELL' ? 0xff4444 : 0xffaa00;
     const emoji = signal.icon || '📈';
@@ -391,7 +367,7 @@ class SignalAgent extends BaseAgent {
         { name: '⏰ Time', value: `<t:${Math.floor(new Date(signal.timestamp).getTime() / 1000)}:R>`, inline: true }
       )
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Signal AI v6.1' });
+      .setFooter({ text: 'Ultra3Vault • Signal AI v6.2' });
   }
 }
 
