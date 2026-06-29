@@ -1,14 +1,16 @@
 /**
- * 👥 CommunityManagerAgent v7.1 (Web3 Focused – Webhook Ready)
+ * 👥 CommunityManagerAgent v7.2 (Centralized Webhooks)
  * - Sends scheduled welcome messages to new members
  * - Auto‑assigns a default role on join
  * - Posts automated announcements (token launches, NFT drops, AMAs) via "Herald" webhook
- * - Tracks active members and rewards engagement (optional)
+ * - Uses sendWebhook('announcements', payload) for webhook delivery
+ * - Falls back to channel.send if webhook URL is not configured
  * - Fully automated – no manual commands needed
  * - Configurable messages via environment variables
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder, WebhookClient } = require('discord.js');
+const { EmbedBuilder } = require('discord.js');
+const { sendWebhook } = require('../index'); // ✅ centralized webhook sender
 
 class CommunityManagerAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -22,11 +24,6 @@ class CommunityManagerAgent extends BaseAgent {
     this.autoRoleId = process.env.AUTO_ROLE_ID;
     this.announcementChannelId = process.env.ANNOUNCEMENT_CHANNEL_ID;
     this.giveawayRoleId = process.env.GIVEAWAY_ROLE_ID;
-
-    // ---- Webhook for announcements ----
-    this.announcementWebhookUrl = process.env.ANNOUNCEMENTS_WEBHOOK_URL;
-    this.webhookUsername = 'Herald';
-    this.webhookAvatarURL = process.env.ANNOUNCEMENTS_WEBHOOK_AVATAR || null;
 
     // ---- Web3 specific configs (optional) ----
     this.tokenLaunches = JSON.parse(process.env.TOKEN_LAUNCHES || '[]');
@@ -61,25 +58,20 @@ class CommunityManagerAgent extends BaseAgent {
       await this.rewardActiveMembers();
     });
 
-    this.logger.info('👥 CommunityManagerAgent v7.1 ready (Herald webhook)');
+    this.logger.info('👥 CommunityManagerAgent v7.2 ready (Herald webhook)');
   }
 
-  // ---------- Helper: Send via Webhook or Channel ----------
+  // ---------- Helper: Send via Webhook (centralized) or Channel ----------
   async _sendAnnouncement(embed) {
     if (!this.announcementChannelId) {
       this.logger.warn('⚠️ Announcement channel ID not set – skipping');
       return;
     }
 
-    // 1. Try webhook if available
-    if (this.announcementWebhookUrl) {
+    // 1. Try webhook if configured
+    if (process.env.ANNOUNCEMENTS_WEBHOOK_URL) {
       try {
-        const webhook = new WebhookClient({ url: this.announcementWebhookUrl });
-        await webhook.send({
-          username: this.webhookUsername,
-          avatarURL: this.webhookAvatarURL || undefined,
-          embeds: [embed],
-        });
+        await sendWebhook('announcements', { embeds: [embed] }, { username: 'Herald' });
         this.logger.debug('✅ Announcement sent via Herald webhook');
         return;
       } catch (err) {
@@ -226,15 +218,10 @@ class CommunityManagerAgent extends BaseAgent {
       .setTimestamp()
       .setFooter({ text: `Posted by ${interaction.user.tag}` });
 
-    // If the target channel is the announcement channel and we have a webhook, use it
-    if (channel.id === this.announcementChannelId && this.announcementWebhookUrl) {
+    // If the target channel is the announcement channel and webhook is configured, use it
+    if (channel.id === this.announcementChannelId && process.env.ANNOUNCEMENTS_WEBHOOK_URL) {
       try {
-        const webhook = new WebhookClient({ url: this.announcementWebhookUrl });
-        await webhook.send({
-          username: this.webhookUsername,
-          avatarURL: this.webhookAvatarURL || undefined,
-          embeds: [embed],
-        });
+        await sendWebhook('announcements', { embeds: [embed] }, { username: 'Herald' });
         await interaction.reply({ content: '✅ Announcement posted via Herald webhook.', ephemeral: true });
         return;
       } catch (err) {
