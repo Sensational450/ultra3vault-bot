@@ -1,18 +1,15 @@
 /**
- * ⚡ OptimizationAgent v10.1 (Webhook Ready)
- * - Advanced self‑healing, monitoring, and performance optimization
- * - Slash commands: /bothealth, /apistats
- * - Predictive memory analysis, API quota alerts, log rotation
- * - Agent dependency graph, restart cooldown, deep cache cleanup
- * - Critical alerts via Discord webhook (Sentinel)
- * - Performance reports via Discord webhook (Analyst)
- * - Falls back to channel.send if webhook URL missing
+ * ⚡ OptimizationAgent v10.2 (Centralized Webhooks)
+ * - Uses sendWebhook('modLog') for all alerts and reports.
+ * - No more direct channel.send fallback.
+ * - Cleaner, DRYer, fully integrated with your webhook system.
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder, SlashCommandBuilder, WebhookClient } = require('discord.js');
+const { EmbedBuilder, SlashCommandBuilder } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { sendWebhook } = require('../index'); // ✅ central helper
 
 class OptimizationAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -42,19 +39,6 @@ class OptimizationAgent extends BaseAgent {
     this.queryHistory = [];
     this.alertCooldown = new Map();
 
-    // ---- Webhook configs ----
-    this.reportWebhookUrl = process.env.PERFORMANCE_REPORT_WEBHOOK_URL || process.env.BOT_LOGS_WEBHOOK_URL;
-    this.reportWebhookUsername = 'Analyst';
-    this.reportWebhookAvatar = process.env.PERFORMANCE_REPORT_WEBHOOK_AVATAR || null;
-
-    this.alertWebhookUrl = process.env.ALERT_WEBHOOK_URL || process.env.BOT_LOGS_WEBHOOK_URL;
-    this.alertWebhookUsername = 'Sentinel';
-    this.alertWebhookAvatar = process.env.ALERT_WEBHOOK_AVATAR || null;
-
-    // ---- Report Channels (fallback) ----
-    this.reportChannelId = process.env.BOT_LOGS_CHANNEL_ID || process.env.MODLOG_CHANNEL_ID;
-    this.alertChannelId = process.env.ALERT_CHANNEL_ID || process.env.BOT_LOGS_CHANNEL_ID;
-
     // ---- Agent Dependency Map ----
     this.dependencies = {
       NewsAgent: ['AlertPrioritizationAgent', 'SummaryAgent'],
@@ -82,39 +66,7 @@ class OptimizationAgent extends BaseAgent {
     // ---- Create temp dir if missing ----
     if (!fs.existsSync(this.tempDir)) fs.mkdirSync(this.tempDir, { recursive: true });
 
-    this.logger.info(`⚡ OptimizationAgent v10.1 ready (reports via ${this.reportWebhookUrl ? 'Analyst webhook' : 'channel.send'})`);
-  }
-
-  // ---------- Helper: Send via Webhook or Channel ----------
-  async _sendWebhookMessage(embed, webhookUrl, username, avatarURL, channelId) {
-    // 1. Try webhook if available
-    if (webhookUrl) {
-      try {
-        const webhook = new WebhookClient({ url: webhookUrl });
-        await webhook.send({
-          username: username,
-          avatarURL: avatarURL || undefined,
-          embeds: [embed],
-        });
-        this.logger.debug(`✅ Message sent via webhook (${username})`);
-        return;
-      } catch (err) {
-        this.logger.warn(`Webhook failed: ${err.message} – falling back to channel.send`);
-      }
-    }
-
-    // 2. Fallback to channel.send
-    if (!channelId) {
-      this.logger.warn('No channel ID provided for fallback');
-      return;
-    }
-    const channel = this.client.channels.cache.get(channelId);
-    if (!channel?.isTextBased()) {
-      this.logger.warn(`Channel ${channelId} not found or not text-based`);
-      return;
-    }
-    await channel.send({ embeds: [embed] });
-    this.logger.debug(`✅ Message sent via channel.send to #${channel.name}`);
+    this.logger.info(`⚡ OptimizationAgent v10.2 ready – alerts via modLog webhook`);
   }
 
   // ===================== SLASH COMMANDS =====================
@@ -157,7 +109,7 @@ class OptimizationAgent extends BaseAgent {
         { name: '🤖 Agents', value: `${agents.length} loaded`, inline: true }
       )
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.1' });
+      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.2' });
 
     await interaction.editReply({ embeds: [embed] });
   }
@@ -177,7 +129,7 @@ class OptimizationAgent extends BaseAgent {
       .setColor(0x3498db)
       .setDescription(desc)
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.1' });
+      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.2' });
 
     await interaction.editReply({ embeds: [embed] });
   }
@@ -400,25 +352,19 @@ class OptimizationAgent extends BaseAgent {
     }
   }
 
-  // ===================== ALERT SYSTEM (Webhook) =====================
+  // ===================== ALERT SYSTEM (centralized webhook) =====================
   async _sendAlert(message) {
     const embed = new EmbedBuilder()
       .setTitle('🚨 Bot Alert')
       .setDescription(message)
       .setColor(0xff4444)
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.1' });
+      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.2' });
 
-    await this._sendWebhookMessage(
-      embed,
-      this.alertWebhookUrl,
-      this.alertWebhookUsername,
-      this.alertWebhookAvatar,
-      this.alertChannelId
-    );
+    await sendWebhook('modLog', { embeds: [embed] });
   }
 
-  // ===================== PERFORMANCE REPORT (Webhook) =====================
+  // ===================== PERFORMANCE REPORT (centralized webhook) =====================
   async _generatePerformanceReport() {
     const agents = this.deps.orchestrator?.getAllAgents?.() || [];
     let agentStatus = '';
@@ -452,15 +398,9 @@ class OptimizationAgent extends BaseAgent {
         { name: '⏱️ Uptime', value: `${(process.uptime() / 3600).toFixed(1)} hours`, inline: true }
       )
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.1' });
+      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.2' });
 
-    await this._sendWebhookMessage(
-      embed,
-      this.reportWebhookUrl,
-      this.reportWebhookUsername,
-      this.reportWebhookAvatar,
-      this.reportChannelId
-    );
+    await sendWebhook('modLog', { embeds: [embed] });
     this.logger.info('📊 Performance report sent');
   }
 
