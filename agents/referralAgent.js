@@ -1,15 +1,16 @@
 /**
- * 🔗 ReferralAgent v5.1 (Webhook Ready)
+ * 🔗 ReferralAgent v5.2 – Centralized Webhooks
  * - Referral code generation and redemption
  * - Tracks referrals, rewards referrer and referee (coins, VIP days)
  * - Leaderboard and stats
  * - Uses models.Referral layer (if available) with fallback to direct DB queries
  * - Guild config stored in referral_configs table (survives restarts)
- * - Sends referral leaderboard via "Architect" webhook (if configured)
- * - Falls back to ephemeral reply
+ * - Sends referral leaderboard via "Architect" webhook (centralized)
+ * - Falls back to ephemeral reply if webhook not configured or fails
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder, WebhookClient } = require('discord.js');
+const { EmbedBuilder } = require('discord.js'); // removed WebhookClient
+const { sendWebhook } = require('../index'); // ✅ centralized helper
 
 class ReferralAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -24,11 +25,6 @@ class ReferralAgent extends BaseAgent {
       resetLeaderboardWeekly: false,
     };
     this.guildConfigs = new Map(); // cache (loaded from DB)
-
-    // ---- Webhook for leaderboard ----
-    this.leaderboardWebhookUrl = process.env.REFERRAL_LEADERBOARD_WEBHOOK_URL;
-    this.leaderboardWebhookUsername = 'Architect';
-    this.leaderboardWebhookAvatar = process.env.REFERRAL_LEADERBOARD_WEBHOOK_AVATAR || null;
   }
 
   async init() {
@@ -48,7 +44,8 @@ class ReferralAgent extends BaseAgent {
         }
       }
     });
-    this.logger.info(`🔗 ReferralAgent v5.1 ready (leaderboard webhook: ${this.leaderboardWebhookUrl ? '✅' : '❌'})`);
+    const hasWebhook = !!process.env.LEADERBOARD_WEBHOOK_URL;
+    this.logger.info(`🔗 ReferralAgent v5.2 ready (leaderboard webhook: ${hasWebhook ? '✅' : '❌'})`);
   }
 
   // ---------- PERSISTENT CONFIG HELPERS ----------
@@ -215,18 +212,12 @@ class ReferralAgent extends BaseAgent {
     this.logger.info(`Referral leaderboard reset for guild ${guildId}`);
   }
 
-  // ---------- Helper: Send Leaderboard via Webhook or Ephemeral ----------
+  // ---------- Helper: Send Leaderboard via Centralized Webhook or Fallback ----------
   async _sendLeaderboard(interaction, embed) {
-    // 1. Try webhook if available
-    if (this.leaderboardWebhookUrl) {
+    const hasWebhook = !!process.env.LEADERBOARD_WEBHOOK_URL;
+    if (hasWebhook) {
       try {
-        const webhook = new WebhookClient({ url: this.leaderboardWebhookUrl });
-        await webhook.send({
-          username: this.leaderboardWebhookUsername,
-          avatarURL: this.leaderboardWebhookAvatar || undefined,
-          embeds: [embed],
-        });
-        // Acknowledge to the user that it was posted
+        await sendWebhook('leaderboard', { embeds: [embed] }, { username: 'Architect' });
         await interaction.reply({ content: '📊 Referral leaderboard posted to the configured channel.', ephemeral: true });
         this.logger.debug('✅ Referral leaderboard sent via Architect webhook');
         return;
@@ -235,7 +226,7 @@ class ReferralAgent extends BaseAgent {
       }
     }
 
-    // 2. Fallback: ephemeral reply to the user
+    // Fallback: ephemeral reply to the user
     await interaction.reply({ embeds: [embed], ephemeral: true });
     this.logger.debug('✅ Referral leaderboard sent as ephemeral reply');
   }
