@@ -1,13 +1,14 @@
 /**
- * 📅 ContentPlanningAgent v13.1 (Webhook Ready)
+ * 📅 ContentPlanningAgent v13.2 – Centralized Webhooks (Fixed Import)
  * - Routes content to the best AI provider per task type (OpenAI/Gemini)
  * - Sends posts via webhook for announcements, VIP, and Premium channels
  * - Falls back to regular channel.send if webhook URL is missing
  * - Caches AI responses for 24h to reduce cost
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, WebhookClient } = require('discord.js');
+const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { sendWebhook } = require('../core/webhook'); // ✅ centralized helper
 
 class ContentPlanningAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -21,24 +22,11 @@ class ContentPlanningAgent extends BaseAgent {
       premium: process.env.PREMIUM_CONTENT_CHANNEL_ID || process.env.PREMIUM_SIGNAL_CHANNEL_ID,
     };
 
-    // ---- Webhook configs ----
-    this.webhooks = {
-      announcements: {
-        url: process.env.ANNOUNCEMENTS_WEBHOOK_URL,
-        username: 'Dose',      // Daily content
-        avatar: process.env.ANNOUNCEMENTS_WEBHOOK_AVATAR || null,
-      },
-      vip: {
-        url: process.env.VIP_WEBHOOK_URL,
-        username: 'Insider',
-        avatar: process.env.VIP_WEBHOOK_AVATAR || null,
-      },
-      premium: {
-        url: process.env.PREMIUM_SIGNAL_WEBHOOK_URL,
-        username: 'Quant',
-        avatar: process.env.PREMIUM_SIGNAL_WEBHOOK_AVATAR || null,
-      },
-      // general: no webhook – uses regular channel.send
+    // ---- Webhook display overrides ----
+    this.webhookOverrides = {
+      announcements: { username: 'Dose', avatar: process.env.ANNOUNCEMENTS_WEBHOOK_AVATAR || null },
+      vip: { username: 'Insider', avatar: process.env.VIP_WEBHOOK_AVATAR || null },
+      premium: { username: 'Quant', avatar: process.env.PREMIUM_SIGNAL_WEBHOOK_AVATAR || null },
     };
 
     // ---- OpenAI ----
@@ -95,10 +83,13 @@ class ContentPlanningAgent extends BaseAgent {
       await this._postPremiumContent();
     });
 
-    this.logger.info('📅 ContentPlanningAgent v13.1 ready (webhook + AI routing)');
+    const hasAnnounceWebhook = !!process.env.ANNOUNCEMENTS_WEBHOOK_URL;
+    const hasVipWebhook = !!process.env.VIP_WEBHOOK_URL;
+    const hasPremiumWebhook = !!process.env.PREMIUM_SIGNAL_WEBHOOK_URL;
+    this.logger.info(`📅 ContentPlanningAgent v13.2 ready (webhooks: announcements=${hasAnnounceWebhook}, vip=${hasVipWebhook}, premium=${hasPremiumWebhook})`);
   }
 
-  // ---------- Helper: Send via webhook or channel ----------
+  // ---------- Helper: Send via centralized webhook or channel ----------
   async _sendToChannel(channelKey, content, components = []) {
     const channelId = this.channels[channelKey];
     if (!channelId) {
@@ -106,30 +97,35 @@ class ContentPlanningAgent extends BaseAgent {
       return;
     }
 
-    // Check if we have a webhook config for this channel
-    const webhookConfig = this.webhooks[channelKey];
-    if (webhookConfig && webhookConfig.url) {
+    // Determine which webhook key to use (if any)
+    let webhookKey = null;
+    if (channelKey === 'announcements') webhookKey = 'announcements';
+    else if (channelKey === 'vip') webhookKey = 'vipNews';
+    else if (channelKey === 'premium') webhookKey = 'premiumSignals';
+    // 'general' has no webhook
+
+    // 1. Try webhook if we have a key and the URL is set
+    if (webhookKey && process.env[`${webhookKey.toUpperCase()}_WEBHOOK_URL`]) {
       try {
-        const webhook = new WebhookClient({ url: webhookConfig.url });
-        const payload = {
-          username: webhookConfig.username,
-          avatarURL: webhookConfig.avatar || undefined,
-        };
+        const payload = { components: components.length > 0 ? components : undefined };
         if (typeof content === 'string') {
           payload.content = content;
         } else {
           payload.embeds = [content];
         }
-        if (components && components.length > 0) payload.components = components;
-        await webhook.send(payload);
-        this.logger.debug(`✅ Content sent via webhook (${webhookConfig.username}) to #${channelKey}`);
+        const overrides = this.webhookOverrides[channelKey] || {};
+        await sendWebhook(webhookKey, payload, {
+          username: overrides.username,
+          avatarURL: overrides.avatar || undefined,
+        });
+        this.logger.debug(`✅ Content sent via webhook (${webhookKey}) to #${channelKey}`);
         return;
       } catch (err) {
-        this.logger.warn(`Webhook failed for ${channelKey}: ${err.message} – falling back to channel.send`);
+        this.logger.warn(`Webhook failed for ${webhookKey}: ${err.message} – falling back to channel.send`);
       }
     }
 
-    // Fallback to regular channel.send
+    // 2. Fallback to regular channel.send
     try {
       const channel = this.client.channels.cache.get(channelId);
       if (!channel || !channel.isTextBased()) {
@@ -147,7 +143,7 @@ class ContentPlanningAgent extends BaseAgent {
     }
   }
 
-  // ---------- AI Provider Router ----------
+  // ---------- AI Provider Router (unchanged) ----------
   _getPrimaryProvider(type) {
     const highQualityTypes = ['vip', 'premium', 'dailyTheme', 'marketRecap'];
     if (highQualityTypes.includes(type) && this.useOpenAI) {
@@ -162,7 +158,7 @@ class ContentPlanningAgent extends BaseAgent {
     return null;
   }
 
-  // ---------- AI Content Generation ----------
+  // ---------- AI Content Generation (unchanged) ----------
   async _generateContent({ type, prompt, fallback }) {
     const cacheKey = `${type}_${prompt.substring(0, 40)}`;
     if (this._contentCache.has(cacheKey)) {
@@ -257,7 +253,7 @@ class ContentPlanningAgent extends BaseAgent {
     throw lastError;
   }
 
-  // ---------- Daily Content ----------
+  // ---------- Content jobs (unchanged) ----------
   async _postDailyContent() {
     const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
     const dayName = days[new Date().getDay()];
@@ -293,7 +289,6 @@ class ContentPlanningAgent extends BaseAgent {
     this.logger.info(`📅 Daily content posted (${dayName})`);
   }
 
-  // ---------- Educational ----------
   async _postEducationalContent() {
     const content = await this._generateContent({
       type: 'education',
@@ -304,7 +299,6 @@ class ContentPlanningAgent extends BaseAgent {
     this.logger.info('📚 Educational content posted');
   }
 
-  // ---------- Market Recap ----------
   async _postMarketRecap() {
     const priceAgent = this.deps.orchestrator?.getAgent('PriceFeedAgent');
     let marketData = '';
@@ -330,7 +324,6 @@ class ContentPlanningAgent extends BaseAgent {
     this.logger.info('📊 Market recap posted');
   }
 
-  // ---------- Engagement ----------
   async _postEngagementContent() {
     const types = ['trivia', 'question', 'quote'];
     const type = types[Math.floor(Math.random() * types.length)];
@@ -369,7 +362,6 @@ class ContentPlanningAgent extends BaseAgent {
     this.logger.info(`📝 Engagement content posted (${type})`);
   }
 
-  // ---------- Reminder ----------
   async _postAnnouncementReminder() {
     const content = await this._generateContent({
       type: 'reminder',
@@ -380,7 +372,6 @@ class ContentPlanningAgent extends BaseAgent {
     this.logger.info('📢 Announcement reminder posted');
   }
 
-  // ---------- VIP Content ----------
   async _postVIPContent() {
     const content = await this._generateContent({
       type: 'vip',
@@ -391,7 +382,6 @@ class ContentPlanningAgent extends BaseAgent {
     this.logger.info('💎 VIP content posted');
   }
 
-  // ---------- Premium Content ----------
   async _postPremiumContent() {
     const content = await this._generateContent({
       type: 'premium',
@@ -527,9 +517,7 @@ class ContentPlanningAgent extends BaseAgent {
       fallback: fallbacks[type] || '📢 Community update!',
     });
 
-    // For manual post, we don't use webhook unless the target channel is one of the configured ones.
-    // We'll use the same _sendToChannel logic, but we need to map channel ID to channelKey.
-    // We'll just use channel.send directly for manual posts to avoid complexity.
+    // For manual posts, we use channel.send directly (no webhook) to avoid complexity.
     try {
       await channel.send({ content });
       await interaction.editReply({ content: `✅ Content posted to ${channel}` });
@@ -554,7 +542,7 @@ class ContentPlanningAgent extends BaseAgent {
       .setColor(0x00ff88)
       .setDescription(calendar)
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Content Planning AI v13.1' });
+      .setFooter({ text: 'Ultra3Vault • Content Planning AI v13.2' });
 
     await interaction.reply({ embeds: [embed], ephemeral: true });
   }
