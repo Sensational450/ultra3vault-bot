@@ -15,7 +15,7 @@ const { WebServer } = require('./web/server');
 const secrets = require('./config/secrets');
 const axios = require('axios');
 const ButtonHandler = require('./tools/discord/buttonHandler');
-const WebhookSender = require('./tools/discord/webhookSender'); // ✅ NEW
+const WebhookSender = require('./tools/discord/webhookSender');
 
 // ================= WEBHOOK MAPPING =================
 const WEBHOOKS = {
@@ -34,15 +34,21 @@ const WEBHOOKS = {
   giveaways: process.env.GIVEAWAY_WEBHOOK_URL,
 };
 
-// Helper: safely send via webhook
-async function sendWebhook(key, payload) {
+/**
+ * Safely send a message via a webhook by logical key.
+ * @param {string} key - Logical key (e.g., 'whaleAlerts', 'vipNews')
+ * @param {string|object} payload - Content string or Discord payload object
+ * @param {object} [options] - Extra options (threadId, wait, username, avatarURL)
+ * @returns {Promise<void>}
+ */
+async function sendWebhook(key, payload, options = {}) {
   const url = WEBHOOKS[key];
   if (!url) {
     logger.warn(`⚠️ Webhook URL missing for key: ${key}`);
     return;
   }
   try {
-    await WebhookSender.send(url, payload);
+    await WebhookSender.send(url, payload, options);
   } catch (err) {
     logger.error(`Webhook send failed (${key}): ${err.message}`);
   }
