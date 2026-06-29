@@ -1,13 +1,14 @@
 /**
- * 💰 EconomyAgent v6.1 – Engagement Pack + Webhook Helper
+ * 💰 EconomyAgent v6.2 – Centralized Webhooks
  * - Daily rewards, balance, shop, leaderboard, transfer, inventory, gamble
  * - Streak system, XP, levels, daily missions, achievements, reputation
  * - Tiered XP multipliers (VIP=2x, Premium=3x)
  * - Auto-creates required tables
- * - Webhook helper for future automated leaderboard posts (Architect webhook)
+ * - Leaderboard posts via `sendWebhook('leaderboard', ...)` (Architect webhook)
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder, WebhookClient } = require('discord.js');
+const { EmbedBuilder } = require('discord.js');
+const { sendWebhook } = require('../index'); // ✅ centralized helper
 
 class EconomyAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -47,11 +48,6 @@ class EconomyAgent extends BaseAgent {
       { id: 'vip_buyer', name: 'VIP Buyer', description: 'Purchase VIP role', check: (stats) => stats.boughtVip === true },
     ];
 
-    // ---- Webhook (for future automated leaderboard posts) ----
-    this.leaderboardWebhookUrl = process.env.LEADERBOARD_WEBHOOK_URL;
-    this.webhookUsername = 'Architect';
-    this.webhookAvatarURL = process.env.LEADERBOARD_WEBHOOK_AVATAR || null;
-
     // ---- Caches ----
     this.processedMessages = new Set();
     this.cacheTTL = 60000;
@@ -69,22 +65,13 @@ class EconomyAgent extends BaseAgent {
     this.subscribe('vip.granted', async (data) => {
       if (data.tier === 'vip') await this._handleVipPurchase(data);
     });
-    this.logger.info('💰 EconomyAgent v6.1 ready (Engagement Pack + Webhook)');
+    this.logger.info('💰 EconomyAgent v6.2 ready (Engagement Pack + centralized webhooks)');
   }
 
-  // ---------- Webhook Helper ----------
+  // ---------- Leaderboard Webhook (centralized) ----------
   async _sendViaLeaderboardWebhook(embed) {
-    if (!this.leaderboardWebhookUrl) {
-      this.logger.debug('LEADERBOARD_WEBHOOK_URL not set – skipping webhook');
-      return false;
-    }
     try {
-      const webhook = new WebhookClient({ url: this.leaderboardWebhookUrl });
-      await webhook.send({
-        username: this.webhookUsername,
-        avatarURL: this.webhookAvatarURL || undefined,
-        embeds: [embed],
-      });
+      await sendWebhook('leaderboard', { embeds: [embed] }, { username: 'Architect' });
       this.logger.debug('✅ Leaderboard sent via Architect webhook');
       return true;
     } catch (err) {
