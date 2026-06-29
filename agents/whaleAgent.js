@@ -1,16 +1,15 @@
 /**
- * 🐋 WhaleAgent v5.2 (Webhook Ready)
+ * 🐋 WhaleAgent v5.3 – Event‑Only (Centralized Webhook)
  * - Fetches large transactions from:
  *   • Whale Alert (if API key is set – paid/trial)
  *   • Etherscan (ETH + ERC‑20 tokens) – free with API key
  *   • Blockchair (Bitcoin) – free, no key needed
  * - Converts amounts to USD via CoinGecko
- * - Sends whale alerts via "Cetus" webhook (if configured)
- * - Falls back to emitting 'whale.detected' events
+ * - Emits 'whale.detected' events – index.js sends via "Cetus" webhook
  * - Caches tx hashes to prevent duplicates
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder, WebhookClient } = require('discord.js');
+const { EmbedBuilder } = require('discord.js'); // removed WebhookClient
 const axios = require('axios');
 
 class WhaleAgent extends BaseAgent {
@@ -26,11 +25,6 @@ class WhaleAgent extends BaseAgent {
     // ---- Free API keys ----
     this.etherscanKey = process.env.ETHERSCAN_API_KEY; // Required for EVM chains
     this.blockchairKey = process.env.BLOCKCHAIR_API_KEY || ''; // Optional
-
-    // ---- Webhook ----
-    this.webhookUrl = process.env.WHALE_WEBHOOK_URL;
-    this.webhookUsername = 'Cetus';
-    this.webhookAvatar = process.env.WHALE_WEBHOOK_AVATAR || null;
 
     // ---- Cache ----
     this.seenTxs = new Map();
@@ -81,31 +75,7 @@ class WhaleAgent extends BaseAgent {
     if (!this.whaleKey && !this.etherscanKey) {
       this.logger.warn('⚠️ No API keys set. WhaleAgent will only check Bitcoin via Blockchair (no ETH).');
     }
-    this.logger.info(`🐋 WhaleAgent v5.2 ready (mode: ${mode}, threshold: $${(this.minValueUsd / 1e6).toFixed(0)}M)` +
-      (this.webhookUrl ? ' (Cetus webhook)' : ''));
-  }
-
-  // ---------- Helper: Send via Webhook or Emit Event ----------
-  async _sendWhaleAlert(embed, tx) {
-    // 1. Try webhook if available
-    if (this.webhookUrl) {
-      try {
-        const webhook = new WebhookClient({ url: this.webhookUrl });
-        await webhook.send({
-          username: this.webhookUsername,
-          avatarURL: this.webhookAvatar || undefined,
-          embeds: [embed],
-        });
-        this.logger.debug(`✅ Whale alert sent via Cetus webhook (${tx.symbol} ${tx.amount})`);
-        return; // Success – skip event emission
-      } catch (err) {
-        this.logger.warn(`Webhook failed: ${err.message} – falling back to event emission`);
-      }
-    }
-
-    // 2. Fallback: emit event (handled by index.js)
-    this.emit('whale.detected', tx);
-    this.logger.debug('🐋 Whale alert emitted as event (fallback)');
+    this.logger.info(`🐋 WhaleAgent v5.3 ready (mode: ${mode}, threshold: $${(this.minValueUsd / 1e6).toFixed(0)}M) – events only`);
   }
 
   // ---------- Main method ----------
@@ -120,8 +90,8 @@ class WhaleAgent extends BaseAgent {
         if (!this.assets.includes(tx.symbol.toUpperCase())) continue;
 
         this.logger.info(`🐋 Whale: ${tx.amount} ${tx.symbol} ($${tx.usdValue.toLocaleString()}) on ${tx.blockchain}`);
-        const embed = this.formatWhaleEmbed(tx);
-        await this._sendWhaleAlert(embed, tx);
+        // Emit event – index.js will send via webhook
+        this.emit('whale.detected', tx);
 
         this.seenTxs.set(cacheKey, Date.now());
         this._cleanCache();
