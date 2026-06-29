@@ -10,7 +10,7 @@
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js'); // removed WebhookClient
-const { sendWebhook } = require('../index'); // ✅ centralized helper
+const { sendWebhook } = require('../core/webhook'); // ✅ centralized helper
 
 class ReferralAgent extends BaseAgent {
   constructor(eventBus, deps) {
