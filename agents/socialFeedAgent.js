@@ -8,7 +8,7 @@
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
 const Parser = require('rss-parser');
-const { sendWebhook } = require('../index'); // ✅ centralized helper
+const { sendWebhook } = require('../core/webhook'); // ✅ centralized helper
 
 class SocialFeedAgent extends BaseAgent {
   constructor(eventBus, deps) {
