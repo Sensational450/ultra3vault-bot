@@ -1,5 +1,5 @@
 /**
- * ⚡ OptimizationAgent v10.2 (Centralized Webhooks)
+ * ⚡ OptimizationAgent v10.3 (Centralized Webhooks – Fixed Import)
  * - Uses sendWebhook('modLog') for all alerts and reports.
  * - No more direct channel.send fallback.
  * - Cleaner, DRYer, fully integrated with your webhook system.
@@ -9,7 +9,7 @@ const { EmbedBuilder, SlashCommandBuilder } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { sendWebhook } = require('../index'); // ✅ central helper
+const { sendWebhook } = require('../core/webhook'); // ✅ fixed import
 
 class OptimizationAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -66,7 +66,7 @@ class OptimizationAgent extends BaseAgent {
     // ---- Create temp dir if missing ----
     if (!fs.existsSync(this.tempDir)) fs.mkdirSync(this.tempDir, { recursive: true });
 
-    this.logger.info(`⚡ OptimizationAgent v10.2 ready – alerts via modLog webhook`);
+    this.logger.info(`⚡ OptimizationAgent v10.3 ready – alerts via modLog webhook`);
   }
 
   // ===================== SLASH COMMANDS =====================
@@ -109,7 +109,7 @@ class OptimizationAgent extends BaseAgent {
         { name: '🤖 Agents', value: `${agents.length} loaded`, inline: true }
       )
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.2' });
+      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.3' });
 
     await interaction.editReply({ embeds: [embed] });
   }
@@ -129,7 +129,7 @@ class OptimizationAgent extends BaseAgent {
       .setColor(0x3498db)
       .setDescription(desc)
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.2' });
+      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.3' });
 
     await interaction.editReply({ embeds: [embed] });
   }
@@ -359,7 +359,7 @@ class OptimizationAgent extends BaseAgent {
       .setDescription(message)
       .setColor(0xff4444)
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.2' });
+      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.3' });
 
     await sendWebhook('modLog', { embeds: [embed] });
   }
@@ -398,7 +398,7 @@ class OptimizationAgent extends BaseAgent {
         { name: '⏱️ Uptime', value: `${(process.uptime() / 3600).toFixed(1)} hours`, inline: true }
       )
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.2' });
+      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.3' });
 
     await sendWebhook('modLog', { embeds: [embed] });
     this.logger.info('📊 Performance report sent');
