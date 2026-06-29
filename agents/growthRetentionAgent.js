@@ -1,5 +1,5 @@
 /**
- * 📈 GrowthRetentionAgent v6.1 (Webhook Ready)
+ * 📈 GrowthRetentionAgent v6.2 (Centralized Webhooks)
  * - Tracks user activity (messages)
  * - Rewards milestones (configurable list)
  * - Posts weekly leaderboard of top chatters via webhook
@@ -8,7 +8,8 @@
  * - Fully automated – uses existing channels
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder, WebhookClient } = require('discord.js');
+const { EmbedBuilder } = require('discord.js');
+const { sendWebhook } = require('../core/webhook'); // ✅ centralized helper
 
 class GrowthRetentionAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -30,8 +31,7 @@ class GrowthRetentionAgent extends BaseAgent {
       "We miss you! Come back and claim **{reward} tokens** as a welcome-back gift! 🎁\n" +
       "Just send `/daily` to claim!";
 
-    // ---- Webhook for growth reports ----
-    this.webhookUrl = process.env.ANNOUNCEMENTS_WEBHOOK_URL;
+    // ---- Webhook display settings (used by centralized helper) ----
     this.webhookUsername = 'Herald';
     this.webhookAvatarURL = process.env.ANNOUNCEMENTS_WEBHOOK_AVATAR || null;
 
@@ -55,19 +55,18 @@ class GrowthRetentionAgent extends BaseAgent {
       await this._nudgeInactiveUsers();
     });
 
-    this.logger.info(`📈 GrowthRetentionAgent v6.1 ready (milestones: ${this.milestones.join(', ')})`);
+    const hasWebhook = !!process.env.ANNOUNCEMENTS_WEBHOOK_URL;
+    this.logger.info(`📈 GrowthRetentionAgent v6.2 ready (milestones: ${this.milestones.join(', ')}, webhook: ${hasWebhook ? '✅' : '❌'})`);
   }
 
-  // ---------- Helper: Send via Webhook or Channel ----------
+  // ---------- Helper: Send via Webhook (centralized) or Channel ----------
   async _sendReport(embed) {
-    // 1. Try webhook if available
-    if (this.webhookUrl) {
+    // 1. Try webhook if configured
+    if (process.env.ANNOUNCEMENTS_WEBHOOK_URL) {
       try {
-        const webhook = new WebhookClient({ url: this.webhookUrl });
-        await webhook.send({
+        await sendWebhook('announcements', { embeds: [embed] }, {
           username: this.webhookUsername,
           avatarURL: this.webhookAvatarURL || undefined,
-          embeds: [embed],
         });
         this.logger.debug('✅ Growth report sent via Herald webhook');
         return;
