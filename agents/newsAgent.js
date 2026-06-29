@@ -1,17 +1,18 @@
 /**
- * 📰 NewsAgent v6.1 (Webhook Ready)
+ * 📰 NewsAgent v6.2 (Centralized Webhooks)
  * - Fetches crypto news from: GNews → NewsData.io → Currents API → RSS (fallback)
  * - All API keys and endpoints are configurable via env
  * - Auto‑subscribes to a default channel
  * - Emits 'news.published' for every new article
  * - Listens to 'news.important' and sends only high‑value news (if AlertPrioritizationAgent is active)
- * - Sends news via "Chronicle" webhook (if `NEWS_WEBHOOK_URL` is set)
+ * - Sends news via "Chronicle" webhook (key: 'cryptoNews') via sendWebhook
  * - Falls back to regular channel.send
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, WebhookClient } = require('discord.js');
+const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const axios = require('axios');
 const Parser = require('rss-parser');
+const { sendWebhook } = require('../core/webhook'); // ✅ centralized helper
 
 class NewsAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -35,8 +36,7 @@ class NewsAgent extends BaseAgent {
       default: 0x1e88e5,
     };
 
-    // ---- Webhook ----
-    this.webhookUrl = process.env.NEWS_WEBHOOK_URL;
+    // ---- Webhook display settings (used by centralized helper) ----
     this.webhookUsername = 'Chronicle';
     this.webhookAvatarURL = process.env.NEWS_WEBHOOK_AVATAR || null;
 
@@ -72,8 +72,8 @@ class NewsAgent extends BaseAgent {
       }
     });
 
-    this.logger.info(`📰 NewsAgent v6.1 ready (fallback: ${this.fallbackRssUrl})` +
-      (this.webhookUrl ? ' (Chronicle webhook)' : ''));
+    const hasWebhook = !!process.env.NEWS_WEBHOOK_URL;
+    this.logger.info(`📰 NewsAgent v6.2 ready (fallback: ${this.fallbackRssUrl}, webhook: ${hasWebhook ? '✅' : '❌'})`);
   }
 
   // ---------- Helper: Parse embed colors from env ----------
@@ -89,32 +89,6 @@ class NewsAgent extends BaseAgent {
     } catch {
       return null;
     }
-  }
-
-  // ---------- Helper: Send via Webhook or Channel ----------
-  async _sendNewsMessage(embed, components) {
-    // 1. Try webhook if available
-    if (this.webhookUrl) {
-      try {
-        const webhook = new WebhookClient({ url: this.webhookUrl });
-        await webhook.send({
-          username: this.webhookUsername,
-          avatarURL: this.webhookAvatarURL || undefined,
-          embeds: [embed],
-          components: components || [],
-        });
-        this.logger.debug('✅ News sent via Chronicle webhook');
-        return;
-      } catch (err) {
-        this.logger.warn(`Webhook failed: ${err.message} – falling back to channel.send`);
-      }
-    }
-
-    // 2. Fallback: we need a channel to send to – this method should be called with channel context.
-    // We'll use the channel from the subscription (passed in sendNews).
-    // So this helper is only used inside sendNews when we have channelId.
-    // We'll just log that fallback is needed and rely on sendNews to handle the rest.
-    this.logger.warn('No webhook URL and no channel context – cannot send news.');
   }
 
   // ---------- Subscriptions ----------
@@ -343,15 +317,12 @@ class NewsAgent extends BaseAgent {
 
     const components = [row];
 
-    // 1. Try webhook if available
-    if (this.webhookUrl) {
+    // 1. Try webhook if configured
+    if (process.env.NEWS_WEBHOOK_URL) {
       try {
-        const webhook = new WebhookClient({ url: this.webhookUrl });
-        await webhook.send({
+        await sendWebhook('cryptoNews', { embeds: [embed], components }, {
           username: this.webhookUsername,
           avatarURL: this.webhookAvatarURL || undefined,
-          embeds: [embed],
-          components: components,
         });
         this.logger.debug(`✅ News sent via Chronicle webhook (${article.title.substring(0, 30)}...)`);
         return;
