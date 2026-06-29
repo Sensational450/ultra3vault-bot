@@ -1,5 +1,5 @@
 /**
- * 🐋 WhaleAgent v5.3 – Event‑Only (Centralized Webhook)
+ * 🐋 WhaleAgent v5.4 – Event‑Only (Centralized Webhook)
  * - Fetches large transactions from:
  *   • Whale Alert (if API key is set – paid/trial)
  *   • Etherscan (ETH + ERC‑20 tokens) – free with API key
@@ -7,9 +7,10 @@
  * - Converts amounts to USD via CoinGecko
  * - Emits 'whale.detected' events – index.js sends via "Cetus" webhook
  * - Caches tx hashes to prevent duplicates
+ * - No direct webhook import – fully event-driven
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder } = require('discord.js'); // removed WebhookClient
+const { EmbedBuilder } = require('discord.js');
 const axios = require('axios');
 
 class WhaleAgent extends BaseAgent {
@@ -75,7 +76,7 @@ class WhaleAgent extends BaseAgent {
     if (!this.whaleKey && !this.etherscanKey) {
       this.logger.warn('⚠️ No API keys set. WhaleAgent will only check Bitcoin via Blockchair (no ETH).');
     }
-    this.logger.info(`🐋 WhaleAgent v5.3 ready (mode: ${mode}, threshold: $${(this.minValueUsd / 1e6).toFixed(0)}M) – events only`);
+    this.logger.info(`🐋 WhaleAgent v5.4 ready (mode: ${mode}, threshold: $${(this.minValueUsd / 1e6).toFixed(0)}M) – events only`);
   }
 
   // ---------- Main method ----------
