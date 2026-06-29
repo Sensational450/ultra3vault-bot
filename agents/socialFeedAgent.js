@@ -1,14 +1,14 @@
 /**
- * 📡 SocialFeedAgent v1.5 – Final Webhook Integration
+ * 📡 SocialFeedAgent v1.6 – Centralized Webhook Integration
  * - Fetches content from RSS feeds (Reddit, YouTube, Twitter, crypto news)
- * - Posts new items via "Netizen" webhook (SOCIAL_FEED_WEBHOOK_URL)
- * - Falls back to channel.send if webhook unavailable
+ * - Posts new items via "Netizen" webhook (key: 'socialFeed')
+ * - Falls back to channel.send if webhook unavailable or fails
  * - Deduplicates via database, optional AI summarization
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
 const Parser = require('rss-parser');
-const WebhookSender = require('../tools/discord/webhookSender');
+const { sendWebhook } = require('../index'); // ✅ centralized helper
 
 class SocialFeedAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -28,8 +28,7 @@ class SocialFeedAgent extends BaseAgent {
 
     this.channelId = process.env.SOCIAL_FEED_CHANNEL_ID; // fallback only
 
-    // ---- Webhook (Netizen) ----
-    this.webhookUrl = process.env.SOCIAL_FEED_WEBHOOK_URL;
+    // ---- Webhook display settings (optional) ----
     this.webhookUsername = process.env.SOCIAL_FEED_WEBHOOK_USERNAME || 'Netizen';
     this.webhookAvatar = process.env.SOCIAL_FEED_WEBHOOK_AVATAR || null;
 
@@ -58,32 +57,25 @@ class SocialFeedAgent extends BaseAgent {
       }
     });
 
-    if (!this.webhookUrl) {
-      this.logger.warn('⚠️ SOCIAL_FEED_WEBHOOK_URL not set – will fallback to channel.send if configured');
-    }
-    this.logger.info(`📡 SocialFeedAgent v1.5 ready (feeds: ${this.feeds.length}, webhook: ${this.webhookUrl ? '✅' : '❌'})`);
+    const hasWebhook = !!process.env.SOCIAL_FEED_WEBHOOK_URL;
+    this.logger.info(`📡 SocialFeedAgent v1.6 ready (feeds: ${this.feeds.length}, webhook: ${hasWebhook ? '✅' : '❌'})`);
   }
 
-  // ---------- Send via Webhook (with fallback) ----------
+  // ---------- Send via Webhook (centralized) with fallback ----------
   async _sendPost(embed) {
-    const payload = {
-      embeds: [embed],
-      username: this.webhookUsername,
-      avatar_url: this.webhookAvatar || undefined,
-    };
-
-    // 1. Try webhook
-    if (this.webhookUrl) {
-      try {
-        await WebhookSender.send(this.webhookUrl, payload);
-        this.logger.debug('✅ Social feed item sent via Netizen webhook');
-        return;
-      } catch (err) {
-        this.logger.warn(`Webhook failed: ${err.message} – falling back to channel.send`);
-      }
+    // 1. Try centralized webhook
+    try {
+      await sendWebhook('socialFeed', { embeds: [embed] }, {
+        username: this.webhookUsername,
+        avatarURL: this.webhookAvatar || undefined,
+      });
+      this.logger.debug('✅ Social feed item sent via Netizen webhook');
+      return;
+    } catch (err) {
+      this.logger.warn(`Webhook send failed: ${err.message}`);
     }
 
-    // 2. Fallback to channel
+    // 2. Fallback to channel.send if webhook failed or was missing
     if (!this.channelId) {
       this.logger.warn('SOCIAL_FEED_CHANNEL_ID not set – cannot send');
       return;
@@ -94,7 +86,7 @@ class SocialFeedAgent extends BaseAgent {
       return;
     }
     await channel.send({ embeds: [embed] });
-    this.logger.debug('✅ Social feed item sent via channel.send');
+    this.logger.debug('✅ Social feed item sent via channel.send fallback');
   }
 
   // ---------- Cache (unchanged) ----------
@@ -121,7 +113,7 @@ class SocialFeedAgent extends BaseAgent {
 
   // ---------- Main job ----------
   async _fetchAndPost() {
-    if (!this.channelId && !this.webhookUrl) {
+    if (!this.channelId && !process.env.SOCIAL_FEED_WEBHOOK_URL) {
       this.logger.debug('No channel or webhook configured – skipping');
       return;
     }
