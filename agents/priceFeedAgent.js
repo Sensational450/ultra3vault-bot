@@ -12,7 +12,7 @@
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js'); // removed WebhookClient
 const axios = require('axios');
-const { sendWebhook } = require('../index'); // ✅ centralized helper
+const { sendWebhook } = require('../core/webhook'); // ✅ centralized helper
 
 class PriceFeedAgent extends BaseAgent {
   constructor(eventBus, deps) {
