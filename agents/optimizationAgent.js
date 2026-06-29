@@ -1,15 +1,17 @@
 /**
- * ⚡ OptimizationAgent v10.3 (Centralized Webhooks – Fixed Import)
+ * ⚡ OptimizationAgent v10.4 (Centralized Webhooks – Robust Error Handling)
  * - Uses sendWebhook('modLog') for all alerts and reports.
  * - No more direct channel.send fallback.
  * - Cleaner, DRYer, fully integrated with your webhook system.
+ * - Improved error handling around memory alerts.
+ * - Uses MessageFlags.Ephemeral for ephemeral replies.
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder, SlashCommandBuilder } = require('discord.js');
+const { EmbedBuilder, SlashCommandBuilder, MessageFlags } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { sendWebhook } = require('../core/webhook'); // ✅ fixed import
+const { sendWebhook } = require('../core/webhook');
 
 class OptimizationAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -66,7 +68,7 @@ class OptimizationAgent extends BaseAgent {
     // ---- Create temp dir if missing ----
     if (!fs.existsSync(this.tempDir)) fs.mkdirSync(this.tempDir, { recursive: true });
 
-    this.logger.info(`⚡ OptimizationAgent v10.3 ready – alerts via modLog webhook`);
+    this.logger.info(`⚡ OptimizationAgent v10.4 ready – alerts via modLog webhook`);
   }
 
   // ===================== SLASH COMMANDS =====================
@@ -85,7 +87,7 @@ class OptimizationAgent extends BaseAgent {
   }
 
   async cmdHealth(interaction) {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const agents = this.deps.orchestrator?.getAllAgents?.() || [];
     let desc = '';
@@ -109,13 +111,13 @@ class OptimizationAgent extends BaseAgent {
         { name: '🤖 Agents', value: `${agents.length} loaded`, inline: true }
       )
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.3' });
+      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.4' });
 
     await interaction.editReply({ embeds: [embed] });
   }
 
   async cmdApiStats(interaction) {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     let desc = '';
     for (const [key, data] of Object.entries(this.apiUsage)) {
@@ -129,7 +131,7 @@ class OptimizationAgent extends BaseAgent {
       .setColor(0x3498db)
       .setDescription(desc)
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.3' });
+      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.4' });
 
     await interaction.editReply({ embeds: [embed] });
   }
@@ -308,7 +310,11 @@ class OptimizationAgent extends BaseAgent {
       this.logger.warn(`⚠️ Memory at ${usagePercent.toFixed(1)}% – triggering cleanup`);
       await this._cacheCleanup();
       if (global.gc) global.gc();
-      await this._sendAlert(`⚠️ Memory usage at ${usagePercent.toFixed(1)}%. Cleanup triggered.`);
+      try {
+        await this._sendAlert(`⚠️ Memory usage at ${usagePercent.toFixed(1)}%. Cleanup triggered.`);
+      } catch (err) {
+        this.logger.error(`Failed to send memory alert: ${err.message}`);
+      }
     }
   }
 
@@ -359,9 +365,14 @@ class OptimizationAgent extends BaseAgent {
       .setDescription(message)
       .setColor(0xff4444)
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.3' });
+      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.4' });
 
-    await sendWebhook('modLog', { embeds: [embed] });
+    try {
+      await sendWebhook('modLog', { embeds: [embed] });
+    } catch (err) {
+      this.logger.error(`Failed to send alert via webhook: ${err.message}`);
+      throw err; // re-throw to let caller handle if needed
+    }
   }
 
   // ===================== PERFORMANCE REPORT (centralized webhook) =====================
@@ -398,10 +409,14 @@ class OptimizationAgent extends BaseAgent {
         { name: '⏱️ Uptime', value: `${(process.uptime() / 3600).toFixed(1)} hours`, inline: true }
       )
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.3' });
+      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.4' });
 
-    await sendWebhook('modLog', { embeds: [embed] });
-    this.logger.info('📊 Performance report sent');
+    try {
+      await sendWebhook('modLog', { embeds: [embed] });
+      this.logger.info('📊 Performance report sent');
+    } catch (err) {
+      this.logger.error(`Failed to send performance report: ${err.message}`);
+    }
   }
 
   // ===================== API TRACKING =====================
