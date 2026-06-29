@@ -1,5 +1,5 @@
 /**
- * 🎁 AirdropAgent v6.4 – Centralized Webhooks
+ * 🎁 AirdropAgent v6.5 – Centralized Webhooks (Fixed Import)
  * - Uses global database table for deduplication across feeds and restarts
  * - Configurable keyword filter to skip non‑airdrop content
  * - Feeds, filters, colors, texts fully configurable via env
@@ -8,7 +8,7 @@
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const Parser = require('rss-parser');
-const { sendWebhook } = require('../index'); // ✅ centralized helper
+const { sendWebhook } = require('../core/webhook'); // ✅ fixed import
 
 class AirdropAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -61,7 +61,7 @@ class AirdropAgent extends BaseAgent {
       await this._checkAirdrops();
     });
     const hasWebhook = !!process.env.PREMIUM_AIRDROP_WEBHOOK_URL;
-    this.logger.info(`🎁 AirdropAgent v6.4 ready (feeds: ${this.feeds.length}, webhook: ${hasWebhook ? '✅' : '❌'})`);
+    this.logger.info(`🎁 AirdropAgent v6.5 ready (feeds: ${this.feeds.length}, webhook: ${hasWebhook ? '✅' : '❌'})`);
   }
 
   // ---------- Load caches from DB ----------
