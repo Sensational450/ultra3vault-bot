@@ -1,15 +1,16 @@
 /**
- * 🛡️ ModerationAgent v5.1 (Webhook Ready)
+ * 🛡️ ModerationAgent v5.2 (Centralized Webhooks)
  * - Auto‑mod (scam, profanity, links, spam)
  * - Warning system with persistent storage (models.Warning)
  * - Guild configuration stored in DB (survives restarts)
  * - Mute, kick, ban, purge commands
  * - Raid detection (in‑memory only)
- * - Log channel support with webhook (Vigil)
+ * - Log channel support with webhook (Vigil) via sendWebhook('modLog')
  * - Auto‑sets mod log channel from DEFAULT_MOD_LOG_CHANNEL_ID on startup
  */
 const BaseAgent = require('./baseAgent');
-const { PermissionsBitField, EmbedBuilder, WebhookClient } = require('discord.js');
+const { PermissionsBitField, EmbedBuilder } = require('discord.js');
+const { sendWebhook } = require('../core/webhook'); // ✅ centralized helper
 
 class ModerationAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -34,8 +35,7 @@ class ModerationAgent extends BaseAgent {
       profanityList: ['fuck', 'shit', 'asshole', 'bitch', 'cunt', 'nigga', 'retard'],
     };
 
-    // ---- Webhook for mod logs ----
-    this.webhookUrl = process.env.MODLOG_WEBHOOK_URL;
+    // ---- Webhook display settings (used by centralized helper) ----
     this.webhookUsername = 'Vigil';
     this.webhookAvatarURL = process.env.MODLOG_WEBHOOK_AVATAR || null;
   }
@@ -52,7 +52,8 @@ class ModerationAgent extends BaseAgent {
       )
     `);
     await this.ensureDefaultModLogChannel();
-    this.logger.info('🛡️ ModerationAgent v5.1 ready' + (this.webhookUrl ? ' (Vigil webhook)' : ''));
+    const hasWebhook = !!process.env.MODLOG_WEBHOOK_URL;
+    this.logger.info(`🛡️ ModerationAgent v5.2 ready (webhook: ${hasWebhook ? '✅' : '❌'})`);
   }
 
   /**
@@ -80,16 +81,14 @@ class ModerationAgent extends BaseAgent {
     this.logger.info(`✅ Auto-set mod log channel to ${channel.name} (${defaultChannelId})`);
   }
 
-  // ---------- Helper: Send via Webhook or Channel ----------
+  // ---------- Helper: Send via Webhook (centralized) or Channel ----------
   async _sendModLog(guildId, payload) {
-    // 1. Try webhook if available
-    if (this.webhookUrl) {
+    // 1. Try webhook if configured
+    if (process.env.MODLOG_WEBHOOK_URL) {
       try {
-        const webhook = new WebhookClient({ url: this.webhookUrl });
-        await webhook.send({
+        await sendWebhook('modLog', payload, {
           username: this.webhookUsername,
           avatarURL: this.webhookAvatarURL || undefined,
-          ...payload,
         });
         this.logger.debug('✅ Mod log sent via Vigil webhook');
         return;
