@@ -1,13 +1,14 @@
 /**
- * 🎁 AirdropAgent v6.3 (Webhook Ready)
+ * 🎁 AirdropAgent v6.4 – Centralized Webhooks
  * - Uses global database table for deduplication across feeds and restarts
  * - Configurable keyword filter to skip non‑airdrop content
  * - Feeds, filters, colors, texts fully configurable via env
- * - Sends airdrops via "Oracle" webhook (with fallback to regular channel.send)
+ * - Sends airdrops via "Oracle" webhook (key: 'premiumAirdrops') with fallback to channel.send
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, WebhookClient } = require('discord.js');
+const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const Parser = require('rss-parser');
+const { sendWebhook } = require('../index'); // ✅ centralized helper
 
 class AirdropAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -43,8 +44,7 @@ class AirdropAgent extends BaseAgent {
     // ---- Limits ----
     this.maxPostsPerCycle = parseInt(process.env.MAX_AIRDROPS_PER_CYCLE) || 3;
 
-    // ---- Webhook ----
-    this.webhookUrl = process.env.PREMIUM_AIRDROP_WEBHOOK_URL;
+    // ---- Webhook display settings (used by centralized helper) ----
     this.webhookUsername = 'Oracle';
     this.webhookAvatarURL = process.env.PREMIUM_AIRDROP_WEBHOOK_AVATAR || null;
 
@@ -60,7 +60,8 @@ class AirdropAgent extends BaseAgent {
       this.logger.debug('🎁 Checking for new airdrops...');
       await this._checkAirdrops();
     });
-    this.logger.info(`🎁 AirdropAgent v6.3 ready (feeds: ${this.feeds.length}, skip keywords: ${this.skipKeywords.join(', ')})`);
+    const hasWebhook = !!process.env.PREMIUM_AIRDROP_WEBHOOK_URL;
+    this.logger.info(`🎁 AirdropAgent v6.4 ready (feeds: ${this.feeds.length}, webhook: ${hasWebhook ? '✅' : '❌'})`);
   }
 
   // ---------- Load caches from DB ----------
@@ -91,19 +92,16 @@ class AirdropAgent extends BaseAgent {
     }
   }
 
-  // ---------- Helper: Send via Webhook or Channel ----------
+  // ---------- Helper: Send via Webhook (centralized) or Channel ----------
   async _sendAirdropMessage(embed, components) {
-    // 1. Try webhook if available
-    if (this.webhookUrl) {
+    // 1. Try webhook if configured
+    if (process.env.PREMIUM_AIRDROP_WEBHOOK_URL) {
       try {
-        const webhook = new WebhookClient({ url: this.webhookUrl });
-        await webhook.send({
+        await sendWebhook('premiumAirdrops', { embeds: [embed], components: components || [] }, {
           username: this.webhookUsername,
           avatarURL: this.webhookAvatarURL || undefined,
-          embeds: [embed],
-          components: components || [],
         });
-        this.logger.debug('✅ Airdrop sent via webhook (Oracle)');
+        this.logger.debug('✅ Airdrop sent via Oracle webhook');
         return;
       } catch (err) {
         this.logger.warn(`Webhook failed: ${err.message} – falling back to channel.send`);
@@ -150,8 +148,8 @@ class AirdropAgent extends BaseAgent {
   // ---------- Main Job ----------
   async _checkAirdrops() {
     const channelId = process.env.PREMIUM_AIRDROP_CHANNEL_ID;
-    if (!channelId) {
-      this.logger.debug('No PREMIUM_AIRDROP_CHANNEL_ID set – skipping airdrop check');
+    if (!channelId && !process.env.PREMIUM_AIRDROP_WEBHOOK_URL) {
+      this.logger.debug('No channel or webhook configured – skipping airdrop check');
       return;
     }
 
