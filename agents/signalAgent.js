@@ -1,5 +1,5 @@
 /**
- * 📈 SignalAgent v6.2 – Event‑Only (Centralized Webhook)
+ * 📈 SignalAgent v6.3 – Event‑Only (Centralized Webhook)
  * - Generates trading signals using:
  *   • Price + RSI (CoinGecko)
  *   • MACD, SMA crossovers
@@ -7,9 +7,10 @@
  *   • News sentiment (from SummaryAgent)
  * - Emits 'signal.generated' events – index.js sends via "Quant" webhook
  * - All thresholds and coin list are configurable via env
+ * - No direct webhook import – fully event-driven
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder } = require('discord.js'); // removed WebhookClient
+const { EmbedBuilder } = require('discord.js');
 const axios = require('axios');
 
 class SignalAgent extends BaseAgent {
@@ -63,7 +64,7 @@ class SignalAgent extends BaseAgent {
       await this.handleNewsEvent(data);
     });
 
-    this.logger.info(`📈 SignalAgent v6.2 ready (coins: ${this.coins.join(', ')}) – events only`);
+    this.logger.info(`📈 SignalAgent v6.3 ready (coins: ${this.coins.join(', ')}) – events only`);
   }
 
   // ---------- Send via Event (centralized webhook) ----------
@@ -198,7 +199,7 @@ class SignalAgent extends BaseAgent {
       rsi: rsi !== null ? Math.round(rsi) : null,
       reasons: reasonText,
       timestamp: new Date().toISOString(),
-      source: 'SignalAI v6.2',
+      source: 'SignalAI v6.3',
       icon: action === 'BUY' ? '🟢' : action === 'SELL' ? '🔴' : '🟡',
     };
   }
@@ -367,7 +368,7 @@ class SignalAgent extends BaseAgent {
         { name: '⏰ Time', value: `<t:${Math.floor(new Date(signal.timestamp).getTime() / 1000)}:R>`, inline: true }
       )
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Signal AI v6.2' });
+      .setFooter({ text: 'Ultra3Vault • Signal AI v6.3' });
   }
 }
 
