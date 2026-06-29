@@ -1,5 +1,5 @@
 /**
- * 🎙️ AMAAgent v7.3 — Centralized Webhooks
+ * 🎙️ AMAAgent v7.4 — Centralized Webhooks (Fixed Import)
  * - Uses OpenAI (primary), falls back to Gemini if OpenAI fails
  * - Configurable model, temperature, max tokens via env
  * - Logs Q&A pairs to database
@@ -11,7 +11,7 @@ const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
 const { OpenAI } = require('openai');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const { sendWebhook } = require('../index'); // ✅ centralized helper
+const { sendWebhook } = require('../core/webhook'); // ✅ fixed import
 
 class AMAAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -77,7 +77,7 @@ class AMAAgent extends BaseAgent {
       await this._postAMASummary();
     });
     const hasWebhook = !!process.env.AMA_WEBHOOK_URL;
-    this.logger.info(`🎙️ AMAAgent v7.3 ready (channel: ${this.amaChannelId}, webhook: ${hasWebhook ? '✅' : '❌'})`);
+    this.logger.info(`🎙️ AMAAgent v7.4 ready (channel: ${this.amaChannelId}, webhook: ${hasWebhook ? '✅' : '❌'})`);
   }
 
   // ---------- Helper: Send via Webhook (centralized) or Channel ----------
