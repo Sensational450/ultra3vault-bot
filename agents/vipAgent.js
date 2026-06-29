@@ -1,12 +1,13 @@
 /**
- * 👑 VipAgent v6.3 (Webhook Integration)
- * - All subscription events now post to designated webhooks
- * - Uses WebhookSender for consistent Ultra3Vault branding
- * - Maintains existing commands and trial system
+ * 👑 VipAgent v6.4 (Centralized Webhooks)
+ * - All subscription events now post to designated webhooks via sendWebhook(key, payload)
+ * - Uses WebhookSender.buildUltraEmbed for consistent branding
+ * - No more direct env var access for webhook URLs
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
-const WebhookSender = require('../tools/discord/webhookSender'); // ✅ added
+const WebhookSender = require('../tools/discord/webhookSender'); // for buildUltraEmbed only
+const { sendWebhook } = require('../index'); // ✅ centralized webhook sender
 
 class VipAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -61,13 +62,13 @@ class VipAgent extends BaseAgent {
       await this.expireTrials();
     });
     await this._ensureTrialTable();
-    this.logger.info('👑 VipAgent v6.3 ready (with webhook announcements)');
+    this.logger.info('👑 VipAgent v6.4 ready (centralized webhooks)');
   }
 
-  // ---------- WEBHOOK HELPER ----------
-  async sendWebhook(key, embed) {
+  // ---------- WEBHOOK HELPER (centralized) ----------
+  async sendWebhookMessage(key, embed) {
     try {
-      await WebhookSender.send(process.env[`${key.toUpperCase()}_WEBHOOK_URL`], { embeds: [embed] });
+      await sendWebhook(key, { embeds: [embed] });
     } catch (err) {
       this.logger.warn(`Webhook send failed for ${key}: ${err.message}`);
     }
@@ -167,7 +168,7 @@ class VipAgent extends BaseAgent {
         color: 0xE74C3C,
         footer: 'Ultra3Vault • Auto-expired',
       });
-      await this.sendWebhook(tierData.webhookKey, embed);
+      await this.sendWebhookMessage(tierData.webhookKey, embed);
     }
 
     this.logger.info(`⌛ Expired ${tier} for user ${userId} in guild ${guildId}`);
@@ -328,7 +329,7 @@ class VipAgent extends BaseAgent {
         color: 0x9B59B6,
         footer: `Ultra3Vault • ${paymentMethod} purchase`,
       });
-      await this.sendWebhook(tierData.webhookKey, embed);
+      await this.sendWebhookMessage(tierData.webhookKey, embed);
     }
 
     return expiresAt;
@@ -362,7 +363,7 @@ class VipAgent extends BaseAgent {
         color: 0xE74C3C,
         footer: 'Ultra3Vault • Cancellation',
       });
-      await this.sendWebhook(tierData.webhookKey, embed);
+      await this.sendWebhookMessage(tierData.webhookKey, embed);
     }
 
     return true;
