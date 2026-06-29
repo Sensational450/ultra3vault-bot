@@ -1,18 +1,18 @@
 /**
- * 📈 PriceFeedAgent v5.1 (Webhook Ready)
+ * 📈 PriceFeedAgent v5.2 – Centralized Webhooks
  * - Fetches prices with API key and delay to avoid rate limits
  * - Uses `this.emit` for all events (baseAgent method)
- * - Guild configuration stored in DB (price/whale channels)
+ * - Guild configuration stored in DB (price channel)
  * - Price cache restored from DB on startup
  * - User alerts stored in DB (already persistent)
  * - Auto‑sets price alert channel from DEFAULT_PRICE_ALERT_CHANNEL_ID on startup
- * - Auto‑sets whale alert channel from DEFAULT_WHALE_ALERT_CHANNEL_ID on startup
- * - Sends price alerts via Maven webhook (or falls back to channel.send)
- * - Sends whale alerts via Cetus webhook (or falls back to channel.send)
+ * - Sends price alerts via "Maven" webhook (key: 'priceAlerts') with fallback to channel.send
+ * - Whale alerts removed – handled by WhaleAgent
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder, WebhookClient } = require('discord.js');
+const { EmbedBuilder } = require('discord.js'); // removed WebhookClient
 const axios = require('axios');
+const { sendWebhook } = require('../index'); // ✅ centralized helper
 
 class PriceFeedAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -20,21 +20,11 @@ class PriceFeedAgent extends BaseAgent {
     this.defaultConfig = {
       updateIntervalMinutes: 1,
       priceAlertChannelId: null,
-      whaleAlertChannelId: null,
       defaultCoins: ['bitcoin', 'ethereum', 'solana', 'binancecoin'],
       priceChangeThresholdPercent: 2,
     };
     this.priceCache = new Map();          // coinId -> { usd, lastUpdatedAt }
     this.userAlerts = new Map();          // loaded from DB on init
-
-    // ---- Webhook configs ----
-    this.priceWebhookUrl = process.env.PRICE_WEBHOOK_URL;
-    this.priceWebhookUsername = 'Maven';
-    this.priceWebhookAvatar = process.env.PRICE_WEBHOOK_AVATAR || null;
-
-    this.whaleWebhookUrl = process.env.WHALE_WEBHOOK_URL;
-    this.whaleWebhookUsername = 'Cetus';
-    this.whaleWebhookAvatar = process.env.WHALE_WEBHOOK_AVATAR || null;
   }
 
   async init() {
@@ -51,43 +41,11 @@ class PriceFeedAgent extends BaseAgent {
     await this.loadUserAlertsFromDb();
     await this.restorePriceCacheFromHistory();
     await this.ensureDefaultPriceChannel();  // 👈 auto‑subscribe price channel
-    await this.ensureDefaultWhaleChannel();  // 👈 auto‑subscribe whale channel
     this.subscribe('job.priceUpdate', async () => {
       await this.updateAllPrices();
     });
-    this.logger.info(`📈 PriceFeedAgent v5.1 ready (price webhook: ${this.priceWebhookUrl ? '✅' : '❌'}, whale webhook: ${this.whaleWebhookUrl ? '✅' : '❌'})`);
-  }
-
-  // ---------- Helper: Send via Webhook or Channel ----------
-  async _sendMessage(embed, channelId, webhookUrl, webhookUsername, webhookAvatar) {
-    // 1. Try webhook if available
-    if (webhookUrl) {
-      try {
-        const webhook = new WebhookClient({ url: webhookUrl });
-        await webhook.send({
-          username: webhookUsername,
-          avatarURL: webhookAvatar || undefined,
-          embeds: [embed],
-        });
-        this.logger.debug(`✅ Message sent via webhook (${webhookUsername})`);
-        return;
-      } catch (err) {
-        this.logger.warn(`Webhook failed: ${err.message} – falling back to channel.send`);
-      }
-    }
-
-    // 2. Fallback to channel.send
-    if (!channelId) {
-      this.logger.warn('No channel ID provided for fallback');
-      return;
-    }
-    const channel = this.client.channels.cache.get(channelId);
-    if (!channel?.isTextBased()) {
-      this.logger.warn(`Channel ${channelId} not found or not text-based`);
-      return;
-    }
-    await channel.send({ embeds: [embed] });
-    this.logger.debug(`✅ Message sent via channel.send to #${channel.name}`);
+    const hasPriceWebhook = !!process.env.PRICE_WEBHOOK_URL;
+    this.logger.info(`📈 PriceFeedAgent v5.2 ready (price webhook: ${hasPriceWebhook ? '✅' : '❌'})`);
   }
 
   // ---------- PERSISTENT GUILD CONFIG ----------
@@ -167,7 +125,7 @@ class PriceFeedAgent extends BaseAgent {
     }
   }
 
-  // ---------- DEFAULT CHANNEL SETUP ----------
+  // ---------- DEFAULT PRICE CHANNEL SETUP ----------
   async ensureDefaultPriceChannel() {
     const defaultChannelId = process.env.DEFAULT_PRICE_ALERT_CHANNEL_ID;
     if (!defaultChannelId) return;
@@ -182,22 +140,6 @@ class PriceFeedAgent extends BaseAgent {
     }
     await this.updateGuildConfig(guild.id, { priceAlertChannelId: defaultChannelId });
     this.logger.info(`✅ Auto-set price alert channel to ${channel.name}`);
-  }
-
-  async ensureDefaultWhaleChannel() {
-    const defaultChannelId = process.env.DEFAULT_WHALE_ALERT_CHANNEL_ID;
-    if (!defaultChannelId) return;
-    const guild = this.client.guilds.cache.first();
-    if (!guild) return;
-    const config = await this.getGuildConfig(guild.id);
-    if (config.whaleAlertChannelId) return;
-    const channel = this.client.channels.cache.get(defaultChannelId);
-    if (!channel?.isTextBased()) {
-      this.logger.warn(`Default whale channel ${defaultChannelId} not found`);
-      return;
-    }
-    await this.updateGuildConfig(guild.id, { whaleAlertChannelId: defaultChannelId });
-    this.logger.info(`✅ Auto-set whale alert channel to ${channel.name}`);
   }
 
   // ---------- PRICE FETCHING ----------
@@ -241,7 +183,6 @@ class PriceFeedAgent extends BaseAgent {
       await this.sleep(1000);
     }
     await this.checkUserAlerts();
-    await this.checkWhaleTransactions();
   }
 
   async savePriceHistory(coinId, price) {
@@ -249,7 +190,7 @@ class PriceFeedAgent extends BaseAgent {
       [coinId, price, Date.now()]).catch(() => {});
   }
 
-  // ---------- PRICE ALERT (WEBHOOK) ----------
+  // ---------- PRICE ALERT (centralized webhook + fallback) ----------
   async sendPriceAlert(coinId, oldPrice, newPrice, percentChange) {
     const config = await this.getGuildConfig('global');
     const channelId = config.priceAlertChannelId;
@@ -265,13 +206,26 @@ class PriceFeedAgent extends BaseAgent {
       )
       .setColor(percentChange > 0 ? 0x00ff00 : 0xff0000);
 
-    await this._sendMessage(
-      embed,
-      channelId,
-      this.priceWebhookUrl,
-      this.priceWebhookUsername,
-      this.priceWebhookAvatar
-    );
+    // 1. Try webhook if configured
+    if (process.env.PRICE_WEBHOOK_URL) {
+      try {
+        await sendWebhook('priceAlerts', { embeds: [embed] }, { username: 'Maven' });
+        this.logger.debug(`✅ Price alert sent via Maven webhook (${coinId})`);
+        this.emit('price.alert', { coinId, oldPrice, newPrice, percentChange });
+        return;
+      } catch (err) {
+        this.logger.warn(`Webhook failed: ${err.message} – falling back to channel.send`);
+      }
+    }
+
+    // 2. Fallback to channel.send
+    const channel = this.client.channels.cache.get(channelId);
+    if (!channel?.isTextBased()) {
+      this.logger.warn(`Channel ${channelId} not found or not text-based`);
+      return;
+    }
+    await channel.send({ embeds: [embed] });
+    this.logger.debug(`✅ Price alert sent via channel.send to #${channel.name}`);
     this.emit('price.alert', { coinId, oldPrice, newPrice, percentChange });
   }
 
@@ -324,41 +278,6 @@ class PriceFeedAgent extends BaseAgent {
     }
   }
 
-  // ---------- WHALE ALERT (WEBHOOK) ----------
-  async checkWhaleTransactions() {
-    // Mock whale detection (replace with real logic later)
-    if (Math.random() < 0.05) {
-      const mockWhale = {
-        coin: 'bitcoin',
-        amount: Math.floor(Math.random() * 1000) + 100,
-        fromExchange: 'Binance',
-        toExchange: 'Unknown',
-        txHash: '0x' + Math.random().toString(36).substring(2, 10),
-      };
-      const config = await this.getGuildConfig('global');
-      const channelId = config.whaleAlertChannelId;
-      if (!channelId) return;
-
-      const embed = new EmbedBuilder()
-        .setTitle(`🐋 Whale Alert`)
-        .setDescription(`${mockWhale.amount.toLocaleString()} ${mockWhale.coin.toUpperCase()} moved`)
-        .addFields(
-          { name: 'From', value: mockWhale.fromExchange, inline: true },
-          { name: 'To', value: mockWhale.toExchange, inline: true },
-          { name: 'TX', value: `[View](${mockWhale.txHash})`, inline: true }
-        )
-        .setColor(0xff6600);
-
-      await this._sendMessage(
-        embed,
-        channelId,
-        this.whaleWebhookUrl,
-        this.whaleWebhookUsername,
-        this.whaleWebhookAvatar
-      );
-    }
-  }
-
   // ---------- SLASH COMMANDS ----------
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
@@ -379,10 +298,6 @@ class PriceFeedAgent extends BaseAgent {
       case 'setpricechannel':
         if (!interaction.member.permissions.has('Administrator')) return this.deny(interaction);
         await this.cmdSetPriceChannel(interaction);
-        break;
-      case 'setwhalechannel':
-        if (!interaction.member.permissions.has('Administrator')) return this.deny(interaction);
-        await this.cmdSetWhaleChannel(interaction);
         break;
     }
   }
@@ -431,13 +346,6 @@ class PriceFeedAgent extends BaseAgent {
     if (!channel.isTextBased()) return interaction.reply({ content: 'Text channel required.', ephemeral: true });
     await this.updateGuildConfig(interaction.guild.id, { priceAlertChannelId: channel.id });
     await interaction.reply({ content: `Price alert channel set to ${channel}.`, ephemeral: true });
-  }
-
-  async cmdSetWhaleChannel(interaction) {
-    const channel = interaction.options.getChannel('channel');
-    if (!channel.isTextBased()) return interaction.reply({ content: 'Text channel required.', ephemeral: true });
-    await this.updateGuildConfig(interaction.guild.id, { whaleAlertChannelId: channel.id });
-    await interaction.reply({ content: `Whale alert channel set to ${channel}.`, ephemeral: true });
   }
 
   deny(interaction) {
