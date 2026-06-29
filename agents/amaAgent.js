@@ -1,15 +1,17 @@
 /**
- * 🎙️ AMAAgent v7.2 — Webhook Ready (Judge)
+ * 🎙️ AMAAgent v7.3 — Centralized Webhooks
  * - Uses OpenAI (primary), falls back to Gemini if OpenAI fails
  * - Configurable model, temperature, max tokens via env
  * - Logs Q&A pairs to database
  * - Generates AMA summaries using AI (OpenAI → Gemini → fallback)
- * - Sends AMA summaries and questions via "Judge" webhook
+ * - Sends AMA summaries and questions via "Judge" webhook (key: 'ama')
+ * - Falls back to channel.send if webhook unavailable
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder, WebhookClient } = require('discord.js');
+const { EmbedBuilder } = require('discord.js');
 const { OpenAI } = require('openai');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { sendWebhook } = require('../index'); // ✅ centralized helper
 
 class AMAAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -25,8 +27,7 @@ class AMAAgent extends BaseAgent {
     this.temperature = parseFloat(process.env.AMA_TEMPERATURE) || 0.7;
     this.maxTokens = parseInt(process.env.AMA_MAX_TOKENS) || 200;
 
-    // ---- Webhook ----
-    this.webhookUrl = process.env.AMA_WEBHOOK_URL;
+    // ---- Webhook display settings (used by centralized helper) ----
     this.webhookUsername = 'Judge';
     this.webhookAvatarURL = process.env.AMA_WEBHOOK_AVATAR || null;
 
@@ -75,24 +76,22 @@ class AMAAgent extends BaseAgent {
     this.subscribe('job.amasummary', async () => {
       await this._postAMASummary();
     });
-    this.logger.info(`🎙️ AMAAgent v7.2 ready (channel: ${this.amaChannelId})`);
+    const hasWebhook = !!process.env.AMA_WEBHOOK_URL;
+    this.logger.info(`🎙️ AMAAgent v7.3 ready (channel: ${this.amaChannelId}, webhook: ${hasWebhook ? '✅' : '❌'})`);
   }
 
-  // ---------- Helper: Send via Webhook or Channel ----------
+  // ---------- Helper: Send via Webhook (centralized) or Channel ----------
   async _sendAMAMessage(content, embed = null, components = null) {
-    // 1. Try webhook if available
-    if (this.webhookUrl) {
+    // 1. Try webhook if configured
+    if (process.env.AMA_WEBHOOK_URL) {
       try {
-        const webhook = new WebhookClient({ url: this.webhookUrl });
-        const payload = {
+        const payload = { embeds: embed ? [embed] : undefined, components: components || undefined };
+        if (content && typeof content === 'string') payload.content = content;
+        await sendWebhook('ama', payload, {
           username: this.webhookUsername,
           avatarURL: this.webhookAvatarURL || undefined,
-        };
-        if (embed) payload.embeds = [embed];
-        if (components) payload.components = components;
-        if (content && typeof content === 'string') payload.content = content;
-        await webhook.send(payload);
-        this.logger.debug('✅ AMA message sent via webhook (Judge)');
+        });
+        this.logger.debug('✅ AMA message sent via Judge webhook');
         return;
       } catch (err) {
         this.logger.warn(`Webhook failed: ${err.message} – falling back to channel.send`);
