@@ -189,40 +189,29 @@ try {
       }
     });
 
-    // ================= AUTO‑SUMMARY POSTER (kept as‑is for dynamic subscriptions) =================
+    // ================= AUTO‑SUMMARY POSTER (NOW USING WEBHOOK) =================
     eventBus.on('news.summarized', async (data) => {
       const { summary, original, category } = data;
       logger.debug(`📝 Auto‑summary generated for: ${original.title}`);
 
-      const newsAgent = orchestrator.getAgent('NewsAgent');
-      if (!newsAgent) {
-        logger.warn('⚠️ NewsAgent not found – cannot post auto‑summary');
-        return;
-      }
+      // Build the embed
+      const embed = new EmbedBuilder()
+        .setTitle('📰 Auto‑Summary')
+        .setDescription(summary || 'No summary available.')
+        .addFields(
+          { name: 'Original', value: `[${original.title}](${original.link})`, inline: false },
+          { name: 'Category', value: category || 'General', inline: true }
+        )
+        .setColor(0x00ff88)
+        .setTimestamp()
+        .setFooter({ text: 'Ultra3Vault • Auto‑generated' });
 
-      for (const [guildId, subs] of newsAgent.subscriptions.entries()) {
-        for (const [cat, channelId] of subs.entries()) {
-          const channel = client.channels.cache.get(channelId);
-          if (!channel || !channel.isTextBased()) continue;
-
-          try {
-            const embed = new EmbedBuilder()
-              .setTitle('📰 Auto‑Summary')
-              .setDescription(summary || 'No summary available.')
-              .addFields(
-                { name: 'Original', value: `[${original.title}](${original.link})`, inline: false },
-                { name: 'Category', value: category || 'General', inline: true }
-              )
-              .setColor(0x00ff88)
-              .setTimestamp()
-              .setFooter({ text: 'Ultra3Vault • Auto‑generated' });
-
-            await channel.send({ embeds: [embed] });
-            logger.debug(`✅ Auto‑summary posted to #${channel.name}`);
-          } catch (err) {
-            logger.error(`Failed to post auto‑summary: ${err.message}`);
-          }
-        }
+      // Send via Chronicle webhook (cryptoNews)
+      try {
+        await sendWebhook('cryptoNews', { embeds: [embed] });
+        logger.debug(`✅ Auto‑summary posted via Chronicle webhook`);
+      } catch (err) {
+        logger.error(`Failed to post auto‑summary via webhook: ${err.message}`);
       }
     });
 
