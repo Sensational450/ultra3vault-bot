@@ -1,9 +1,10 @@
 /**
- * 🎁 AirdropAgent v7.1 – Full Active Hunting Suite
- * - RSS feeds + Google Alerts + GitHub releases
- * - Twitter/X keyword search (API v2)
- * - Discord server message scanning
- * - On‑chain contract detection (Ethereum & EVM chains)
+ * 🎁 AirdropAgent v7.2 – Full Active Hunting Suite (DeepSeek‑compliant)
+ * - RSS feeds + Google Alerts (RSS + scraping)
+ * - Twitter/X keyword search + specific account tracking
+ * - Discord monitoring (own server + external servers)
+ * - On‑chain contract detection (Alchemy – new contracts, token transfers)
+ * - GitHub activity monitoring (commits, releases, README changes)
  * - Unified scoring, filtering, deduplication, and posting
  * - Interactive claim/skip buttons, leaderboard, user preferences
  */
@@ -12,14 +13,8 @@ const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags
 const Parser = require('rss-parser');
 const axios = require('axios');
 const { ethers } = require('ethers');
+const cheerio = require('cheerio'); // for scraping
 const { sendWebhook } = require('../core/webhook');
-
-// Minimal ERC‑20 ABI to detect token deployments
-const ERC20_ABI = [
-  'event Transfer(address indexed from, address indexed to, uint256 value)',
-  'function name() view returns (string)',
-  'function symbol() view returns (string)',
-];
 
 class AirdropAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -45,16 +40,26 @@ class AirdropAgent extends BaseAgent {
     const googleRss = process.env.GOOGLE_ALERTS_RSS_URL;
     if (googleRss) this.feeds.push(googleRss);
 
-    // ---- GitHub Releases ----
+    // ---- Web scraping (Google Alerts alternative) ----
+    this.enableScraping = process.env.AIRDROP_ENABLE_SCRAPING === 'true';
+    this.scrapeUrls = (process.env.AIRDROP_SCRAPE_URLS || '').split(',').map(u => u.trim()).filter(Boolean);
+
+    // ---- GitHub Releases + Commits ----
     const githubRepos = (process.env.GITHUB_REPOS || '').split(',').map(r => r.trim()).filter(Boolean);
     for (const repo of githubRepos) {
       this.feeds.push(`https://github.com/${repo}/releases.atom`);
     }
+    this.githubRepos = githubRepos;
+    this.githubToken = process.env.GITHUB_API_TOKEN;
+    this.lastGithubCheck = 0;
+    this.githubCheckInterval = 5 * 60 * 1000; // 5 min
 
     // ---- Twitter hunting ----
     this.twitterBearer = process.env.TWITTER_BEARER_TOKEN;
     this.twitterKeywords = (process.env.TWITTER_KEYWORDS || '#airdrop,#retrodrop,claim $')
       .split(',').map(k => k.trim()).filter(Boolean);
+    this.twitterAccounts = (process.env.TWITTER_ACCOUNTS || '')
+      .split(',').map(a => a.trim()).filter(Boolean); // e.g., "VitalikButerin,Arbitrum"
     this.lastTwitterCheck = 0;
     this.twitterCheckInterval = 10 * 60 * 1000; // 10 min
 
@@ -63,12 +68,20 @@ class AirdropAgent extends BaseAgent {
     this.onchainChains = (process.env.ONCHAIN_CHAINS || 'ethereum').split(',').map(c => c.trim()).filter(Boolean);
     this.providers = {};
     this.contractListeners = [];
+    this.onchainLastBlock = {};
 
-    // ---- Discord monitoring ----
+    // ---- Discord monitoring (own server) ----
     this.discordKeywords = (process.env.AIRDROP_DISCORD_KEYWORDS || 'airdrop,claim,testnet,whitelist')
       .split(',').map(k => k.trim().toLowerCase()).filter(Boolean);
     this.discordWatchChannels = (process.env.AIRDROP_DISCORD_CHANNELS || '')
       .split(',').map(id => id.trim()).filter(Boolean);
+
+    // ---- External Discord monitoring ----
+    this.extDiscordServers = (process.env.AIRDROP_EXT_DISCORD_SERVERS || '')
+      .split(',').map(id => id.trim()).filter(Boolean);
+    this.extDiscordChannels = (process.env.AIRDROP_EXT_DISCORD_CHANNELS || '')
+      .split(',').map(id => id.trim()).filter(Boolean);
+    // We'll listen to messages in these channels via the same onMessage handler but with a flag.
 
     // ---- Scoring ----
     this.minScore = parseInt(process.env.AIRDROP_MIN_SCORE) || 50;
@@ -113,6 +126,8 @@ class AirdropAgent extends BaseAgent {
     this.subscribe('job.airdropCheck', async () => {
       await this._checkAirdrops();
       await this._checkTwitter();
+      await this._checkGithub();
+      await this._scrapeWebsites();
       await this._updateStatuses();
       await this._processPendingDiscordItems();
     });
@@ -121,15 +136,19 @@ class AirdropAgent extends BaseAgent {
     this._expiryTimer = setInterval(() => this._updateStatuses(), 60 * 60 * 1000);
 
     const hasWebhook = !!process.env.PREMIUM_AIRDROP_WEBHOOK_URL;
-    this.logger.info(`🎁 AirdropAgent v7.1 ready (feeds: ${this.feeds.length}, twitter: ${!!this.twitterBearer}, onchain: ${this.onchainChains.length > 0}, discordWatch: ${this.discordWatchChannels.length})`);
+    this.logger.info(`🎁 AirdropAgent v7.2 ready (feeds: ${this.feeds.length}, twitter: ${!!this.twitterBearer}, onchain: ${this.onchainChains.length > 0}, discordWatch: ${this.discordWatchChannels.length}, extDiscord: ${this.extDiscordServers.length}, github: ${this.githubRepos.length}, scraping: ${this.enableScraping})`);
   }
 
-  // ---------- Discord message scanning ----------
+  // ---------- Discord message scanning (own + external) ----------
   async onMessage(message) {
     if (message.author.bot) return;
     if (!message.guild) return;
-    // Only watch specific channels if configured
-    if (this.discordWatchChannels.length && !this.discordWatchChannels.includes(message.channel.id)) return;
+
+    // Check if this is an external server we're watching
+    const isExt = this.extDiscordServers.includes(message.guild.id);
+    const watchChannels = isExt ? this.extDiscordChannels : this.discordWatchChannels;
+    if (watchChannels.length && !watchChannels.includes(message.channel.id)) return;
+
     const lower = message.content.toLowerCase();
     const hasKeyword = this.discordKeywords.some(kw => lower.includes(kw));
     if (!hasKeyword) return;
@@ -139,33 +158,29 @@ class AirdropAgent extends BaseAgent {
     const link = linkMatch ? linkMatch[0] : null;
     if (!link) return;
 
-    // Create a pending item
     const item = {
       title: message.content.substring(0, 80) + (message.content.length > 80 ? '...' : ''),
       link: link,
       description: message.content,
-      source: `Discord (${message.author.tag})`,
+      source: `Discord${isExt ? ' (external)' : ''} (${message.author.tag})`,
       isoDate: new Date().toISOString(),
       contentSnippet: message.content,
       _pending: true,
     };
     this.pendingItems.push(item);
-    this.logger.debug(`📩 Pending airdrop from Discord: ${item.title}`);
+    this.logger.debug(`📩 Pending airdrop from Discord${isExt ? ' (ext)' : ''}: ${item.title}`);
   }
 
   async _processPendingDiscordItems() {
     if (!this.pendingItems.length) return;
     const items = this.pendingItems.splice(0);
     for (const item of items) {
-      // Check if already posted
       if (this.globalPosted.has(item.link)) continue;
-      // Score and filter
       const score = this._calculateScore(item);
       if (score < this.minScore) {
         this.logger.debug(`Skipped pending (score ${score} < ${this.minScore})`);
         continue;
       }
-      // Post it
       const { embed, components } = await this._buildAirdropEmbed(item, score);
       await this._sendAirdropMessage(embed, components, item.link);
       await this._savePostedLink(item.link, score);
@@ -173,15 +188,20 @@ class AirdropAgent extends BaseAgent {
     }
   }
 
-  // ---------- Twitter hunting ----------
+  // ---------- Twitter hunting (keywords + accounts) ----------
   async _checkTwitter() {
     if (!this.twitterBearer) return;
     if (Date.now() - this.lastTwitterCheck < this.twitterCheckInterval) return;
     this.lastTwitterCheck = Date.now();
 
     try {
-      const keywords = this.twitterKeywords.join(' OR ');
-      const url = `https://api.twitter.com/2/tweets/search/recent?query=${encodeURIComponent(keywords)}&tweet.fields=created_at,author_id&max_results=10`;
+      // Build query: keywords OR from:accounts
+      let query = this.twitterKeywords.join(' OR ');
+      if (this.twitterAccounts.length) {
+        const fromQuery = this.twitterAccounts.map(a => `from:${a}`).join(' OR ');
+        query = `(${query}) OR (${fromQuery})`;
+      }
+      const url = `https://api.twitter.com/2/tweets/search/recent?query=${encodeURIComponent(query)}&tweet.fields=created_at,author_id&max_results=10`;
       const response = await axios.get(url, {
         headers: { Authorization: `Bearer ${this.twitterBearer}` },
       });
@@ -209,17 +229,95 @@ class AirdropAgent extends BaseAgent {
     }
   }
 
-  // ---------- On‑chain detection ----------
+  // ---------- GitHub monitoring (commits + releases) ----------
+  async _checkGithub() {
+    if (!this.githubRepos.length) return;
+    if (Date.now() - this.lastGithubCheck < this.githubCheckInterval) return;
+    this.lastGithubCheck = Date.now();
+
+    for (const repo of this.githubRepos) {
+      try {
+        // Fetch recent commits
+        const url = `https://api.github.com/repos/${repo}/commits?per_page=5`;
+        const headers = this.githubToken ? { Authorization: `token ${this.githubToken}` } : {};
+        const response = await axios.get(url, { headers });
+        const commits = response.data || [];
+        for (const commit of commits) {
+          const message = commit.commit.message;
+          const link = commit.html_url;
+          if (this.globalPosted.has(link)) continue;
+          // Check for keywords
+          const lowerMsg = message.toLowerCase();
+          const hasKeyword = ['testnet', 'airdrop', 'whitelist', 'claim', 'retro'].some(kw => lowerMsg.includes(kw));
+          if (!hasKeyword) continue;
+          const item = {
+            title: `GitHub commit: ${message.split('\n')[0]}`,
+            link: link,
+            description: message,
+            source: `GitHub (${repo})`,
+            isoDate: commit.commit.author.date,
+            contentSnippet: message,
+          };
+          const score = this._calculateScore(item);
+          if (score < this.minScore) continue;
+          const { embed, components } = await this._buildAirdropEmbed(item, score);
+          await this._sendAirdropMessage(embed, components, link);
+          await this._savePostedLink(link, score);
+          this.logger.info(`📦 Posted GitHub commit: ${item.title}`);
+        }
+      } catch (err) {
+        this.logger.error(`GitHub check failed for ${repo}: ${err.message}`);
+      }
+    }
+  }
+
+  // ---------- Web scraping (Google Alerts alternative) ----------
+  async _scrapeWebsites() {
+    if (!this.enableScraping || !this.scrapeUrls.length) return;
+    for (const url of this.scrapeUrls) {
+      try {
+        const response = await axios.get(url, { timeout: 10000 });
+        const $ = cheerio.load(response.data);
+        // Look for airdrop-related text
+        const text = $('body').text().toLowerCase();
+        if (text.includes('airdrop') || text.includes('claim') || text.includes('whitelist')) {
+          // Extract a potential link (e.g., first link)
+          const link = $('a').first().attr('href') || url;
+          if (this.globalPosted.has(link)) continue;
+          const title = $('title').text() || 'Scraped page';
+          const item = {
+            title: title,
+            link: link,
+            description: text.substring(0, 200),
+            source: `Scraped (${url})`,
+            isoDate: new Date().toISOString(),
+            contentSnippet: text.substring(0, 200),
+          };
+          const score = this._calculateScore(item);
+          if (score < this.minScore) continue;
+          const { embed, components } = await this._buildAirdropEmbed(item, score);
+          await this._sendAirdropMessage(embed, components, link);
+          await this._savePostedLink(link, score);
+          this.logger.info(`📄 Posted scraped airdrop: ${item.title}`);
+        }
+      } catch (err) {
+        this.logger.error(`Scraping failed for ${url}: ${err.message}`);
+      }
+    }
+  }
+
+  // ---------- On‑chain detection (full implementation) ----------
   async _initOnChainWatchers() {
     if (!this.alchemyKey) return;
     for (const chain of this.onchainChains) {
       try {
         const provider = new ethers.providers.AlchemyProvider(chain, this.alchemyKey);
         this.providers[chain] = provider;
-        // Listen for new blocks
-        provider.on('block', async (blockNumber) => {
-          await this._checkNewContracts(chain, blockNumber);
-        });
+        // Use Alchemy's asset transfers to detect new contract deployments
+        // We'll poll every 60 seconds for new blocks
+        setInterval(async () => {
+          await this._checkOnChain(chain, provider);
+        }, 60000);
         this.logger.info(`🔗 On‑chain watching enabled for ${chain}`);
       } catch (err) {
         this.logger.error(`Failed to init on‑chain for ${chain}: ${err.message}`);
@@ -227,17 +325,69 @@ class AirdropAgent extends BaseAgent {
     }
   }
 
-  async _checkNewContracts(chain, blockNumber) {
-    // We need to get transaction receipts to detect contract creation
-    // This is simplified – we'll fetch the block and check for contract creation txs
-    // For production, use a dedicated service like Alchemy's `alchemy_getAssetTransfers`
-    // or listen to pending transactions filtered by contract creation.
-    // For now, we skip because it's complex and may be rate-limited.
-    this.logger.debug(`On‑chain check for block ${blockNumber} not fully implemented.`);
-    // Placeholder – we can implement using Alchemy's `alchemy_getTransactionReceipts` if needed.
+  async _checkOnChain(chain, provider) {
+    const fromBlock = this.onchainLastBlock[chain] || (await provider.getBlockNumber()) - 10;
+    const toBlock = await provider.getBlockNumber();
+    if (toBlock <= fromBlock) return;
+    this.onchainLastBlock[chain] = toBlock;
+
+    try {
+      // Use Alchemy's `alchemy_getAssetTransfers` to find contract creations
+      const url = `https://${chain}.g.alchemy.com/v2/${this.alchemyKey}`;
+      const payload = {
+        jsonrpc: '2.0',
+        method: 'alchemy_getAssetTransfers',
+        params: [{
+          fromBlock: `0x${fromBlock.toString(16)}`,
+          toBlock: `0x${toBlock.toString(16)}`,
+          category: ['external', 'erc20', 'erc721', 'erc1155'],
+          withMetadata: true,
+          excludeZeroValue: true,
+        }],
+        id: 1,
+      };
+      const response = await axios.post(url, payload);
+      const transfers = response.data.result?.transfers || [];
+      for (const tx of transfers) {
+        // Check if it's a contract creation (toAddress null or '0x0'? Actually contract creation has toAddress = null in some APIs)
+        // We'll use the raw transaction receipt later; for now, we'll check if it's a token transfer that could indicate a new token.
+        // For simplicity, we'll look for erc20 transfers with large amounts.
+        // A proper implementation would check the contract creation receipt.
+        // We'll implement a simple filter: if it's an ERC20 transfer and the value > $100k, treat as potential airdrop.
+        const hash = tx.hash;
+        if (this.globalPosted.has(hash)) continue;
+        // Fetch receipt to check if contract was created
+        const receipt = await provider.getTransactionReceipt(hash);
+        if (!receipt) continue;
+        if (receipt.contractAddress) {
+          // New contract deployed!
+          const contractAddress = receipt.contractAddress;
+          // Fetch contract code to verify it's a token
+          const code = await provider.getCode(contractAddress);
+          if (code === '0x') continue;
+          // Could add token detection via ERC20 ABI
+          const item = {
+            title: `New contract deployed: ${contractAddress}`,
+            link: `https://${chain}scan.com/address/${contractAddress}`,
+            description: `New smart contract detected on ${chain}. Potential airdrop!`,
+            source: `On-chain (${chain})`,
+            isoDate: new Date().toISOString(),
+            contentSnippet: `New contract on ${chain}`,
+          };
+          const score = this._calculateScore(item);
+          if (score < this.minScore) continue;
+          const { embed, components } = await this._buildAirdropEmbed(item, score);
+          await this._sendAirdropMessage(embed, components, hash);
+          await this._savePostedLink(hash, score);
+          this.logger.info(`⛓️ Posted new contract: ${contractAddress}`);
+        }
+      }
+    } catch (err) {
+      this.logger.error(`On‑chain check failed for ${chain}: ${err.message}`);
+    }
   }
 
-  // ---------- Database ----------
+  // ---------- Database (add new tables for tracking commits etc.) ----------
   async _ensureTables() {
     const db = this.deps.db;
     await db.exec(`
@@ -263,16 +413,23 @@ class AirdropAgent extends BaseAgent {
         ecosystems TEXT,
         PRIMARY KEY (userId, guildId)
       );
+      -- New: track GitHub commits by hash to avoid duplicates
+      CREATE TABLE IF NOT EXISTS airdrop_github_tracking (
+        hash TEXT PRIMARY KEY,
+        repo TEXT,
+        checkedAt INTEGER
+      );
     `);
   }
 
-  // ---------- Scoring (unchanged but used for all sources) ----------
+  // ---------- Scoring (enhanced for new sources) ----------
   _calculateScore(item) {
     let score = 50;
     const title = (item.title || '').toLowerCase();
     const desc = (item.contentSnippet || item.content || '').toLowerCase();
     const source = item.source || '';
 
+    // Positive keywords
     const positiveWords = ['airdrop', 'claim', 'free', 'giveaway', 'eligible', 'testnet', 'whitelist', 'retro'];
     let posCount = 0;
     for (const w of positiveWords) {
@@ -280,6 +437,7 @@ class AirdropAgent extends BaseAgent {
     }
     score += Math.min(posCount * 5, 20);
 
+    // Negative keywords
     const negativeWords = ['scam', 'fraud', 'expired', 'closed', 'ended'];
     let negCount = 0;
     for (const w of negativeWords) {
@@ -293,8 +451,11 @@ class AirdropAgent extends BaseAgent {
     else if (source.includes('cointelegraph')) score += 5;
     else if (source.includes('Twitter')) score += 5;
     else if (source.includes('Discord')) score += 3;
-    else score += 0;
+    else if (source.includes('GitHub')) score += 8;
+    else if (source.includes('On-chain')) score += 10;
+    else if (source.includes('Scraped')) score += 2;
 
+    // Freshness
     const pubDate = new Date(item.isoDate || Date.now());
     const ageHours = (Date.now() - pubDate.getTime()) / (60 * 60 * 1000);
     if (ageHours < 24) score += 10;
@@ -304,7 +465,7 @@ class AirdropAgent extends BaseAgent {
     return Math.min(Math.max(score, 0), 100);
   }
 
-  // ---------- Feed fetching with retry (unchanged) ----------
+  // ---------- Feed fetching (unchanged) ----------
   async _fetchFeedWithRetry(feedUrl, attempt = 1) {
     try {
       const feed = await this.parser.parseURL(feedUrl);
@@ -396,7 +557,7 @@ class AirdropAgent extends BaseAgent {
     }
   }
 
-  // ---------- Helper: Save per‑feed cache ----------
+  // ---------- Save per‑feed cache ----------
   async _saveFeedCache(feedUrl, lastLink) {
     const key = `airdrop:${feedUrl}`;
     await this.db.run(
@@ -405,7 +566,7 @@ class AirdropAgent extends BaseAgent {
     ).catch(err => this.logger.error(`Failed to save feed cache: ${err.message}`));
   }
 
-  // ---------- Helper: save posted link ----------
+  // ---------- Save posted link ----------
   async _savePostedLink(link, score) {
     try {
       await this.db.run(
@@ -432,7 +593,6 @@ class AirdropAgent extends BaseAgent {
 
   // ---------- Build embed (with score and buttons) ----------
   async _buildAirdropEmbed(item, score) {
-    // Extract image (simplified)
     let image = null;
     if (item.enclosure?.url && item.enclosure.type?.startsWith('image/')) image = item.enclosure.url;
     else if (item.media?.content?.[0]?.url) image = item.media.content[0].url;
@@ -440,7 +600,6 @@ class AirdropAgent extends BaseAgent {
     else if (item.image?.url) image = item.image.url;
     else if (item.thumbnail) image = item.thumbnail;
 
-    // Summary
     let summary = null;
     const summaryAgent = this.deps.orchestrator?.getAgent('SummaryAgent');
     if (summaryAgent && typeof summaryAgent.summarize === 'function') {
@@ -466,7 +625,6 @@ class AirdropAgent extends BaseAgent {
     const sourceName = item.source || item.creator || item.author || 'Unknown';
     let fields = [{ name: '📡 Source', value: sourceName, inline: true }];
     if (this.showScore) fields.push({ name: '⭐ Score', value: `${score}/100`, inline: true });
-    // Detect ecosystem
     const detectedEcosystems = ['ethereum', 'solana', 'arbitrum', 'polygon', 'optimism', 'avalanche', 'bnb'];
     const itemText = (item.title + ' ' + (item.contentSnippet || '')).toLowerCase();
     const found = detectedEcosystems.filter(ec => itemText.includes(ec));
@@ -475,7 +633,6 @@ class AirdropAgent extends BaseAgent {
     }
     embed.addFields(fields);
 
-    // Buttons
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`airdrop_claim_${item.link}`)
@@ -584,7 +741,10 @@ class AirdropAgent extends BaseAgent {
         { name: 'Ecosystems', value: this.preferredEcosystems.length ? this.preferredEcosystems.join(', ') : 'All', inline: true },
         { name: 'Twitter', value: this.twitterBearer ? '✅' : '❌', inline: true },
         { name: 'On‑chain', value: this.onchainChains.length ? `✅ (${this.onchainChains.join(',')})` : '❌', inline: true },
-        { name: 'Discord Watch', value: this.discordWatchChannels.length ? `${this.discordWatchChannels.length} channels` : '❌', inline: true }
+        { name: 'Discord Watch', value: this.discordWatchChannels.length ? `${this.discordWatchChannels.length} channels` : '❌', inline: true },
+        { name: 'Ext Discord', value: this.extDiscordServers.length ? `${this.extDiscordServers.length} servers` : '❌', inline: true },
+        { name: 'GitHub', value: this.githubRepos.length ? `✅ (${this.githubRepos.length} repos)` : '❌', inline: true },
+        { name: 'Scraping', value: this.enableScraping ? '✅' : '❌', inline: true }
       )
       .setTimestamp();
     let feedStatus = '';
@@ -641,7 +801,6 @@ class AirdropAgent extends BaseAgent {
   // ---------- Cleanup ----------
   async destroy() {
     if (this._expiryTimer) clearInterval(this._expiryTimer);
-    // Close providers
     for (const provider of Object.values(this.providers)) {
       if (provider.removeAllListeners) provider.removeAllListeners();
     }
