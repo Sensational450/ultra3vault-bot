@@ -342,19 +342,19 @@ try {
     scheduler.registerJob('cleanupTempData', '0 */2 * * *', cleanupTempData);
     scheduler.registerJob('newsUpdater', '*/10 * * * *', newsUpdater);
 
-    const leaderboardChannelId = process.env.LEADERBOARD_CHANNEL_ID;
-    if (leaderboardChannelId) {
+    // ✅ Weekly leaderboard via Architect webhook
+    if (process.env.LEADERBOARD_WEBHOOK_URL) {
       const weeklyLeaderboard = require('./jobs/weeklyLeaderboard')({
         eventBus,
         logger,
         models,
         client,
-        channelId: leaderboardChannelId,
+        // no channelId needed – uses webhook internally
       });
       scheduler.registerJob('weeklyLeaderboard', '0 9 * * 1', weeklyLeaderboard);
-      logger.info('📅 Weekly leaderboard posting job scheduled');
+      logger.info('📅 Weekly leaderboard job scheduled (posts via Architect webhook)');
     } else {
-      logger.warn('⚠️ LEADERBOARD_CHANNEL_ID not set – weekly leaderboard posting disabled');
+      logger.warn('⚠️ LEADERBOARD_WEBHOOK_URL not set – weekly leaderboard disabled');
     }
 
     scheduler.registerJob('airdropCheck', '*/30 * * * *', async () => {
