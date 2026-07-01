@@ -1,5 +1,6 @@
 /**
- * 🎁 AirdropAgent v7.2 – Full Active Hunting Suite (DeepSeek‑compliant)
+ * 🎁 AirdropAgent v7.3 – Full Active Hunting Suite
+ * - Fixed missing _loadCaches and keyword definitions
  * - RSS feeds + Google Alerts (RSS + scraping)
  * - Twitter/X keyword search + specific account tracking
  * - Discord monitoring (own server + external servers)
@@ -13,7 +14,7 @@ const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags
 const Parser = require('rss-parser');
 const axios = require('axios');
 const { ethers } = require('ethers');
-const cheerio = require('cheerio'); // for scraping
+const cheerio = require('cheerio');
 const { sendWebhook } = require('../core/webhook');
 
 class AirdropAgent extends BaseAgent {
@@ -40,11 +41,11 @@ class AirdropAgent extends BaseAgent {
     const googleRss = process.env.GOOGLE_ALERTS_RSS_URL;
     if (googleRss) this.feeds.push(googleRss);
 
-    // ---- Web scraping (Google Alerts alternative) ----
+    // ---- Web scraping ----
     this.enableScraping = process.env.AIRDROP_ENABLE_SCRAPING === 'true';
     this.scrapeUrls = (process.env.AIRDROP_SCRAPE_URLS || '').split(',').map(u => u.trim()).filter(Boolean);
 
-    // ---- GitHub Releases + Commits ----
+    // ---- GitHub ----
     const githubRepos = (process.env.GITHUB_REPOS || '').split(',').map(r => r.trim()).filter(Boolean);
     for (const repo of githubRepos) {
       this.feeds.push(`https://github.com/${repo}/releases.atom`);
@@ -52,16 +53,16 @@ class AirdropAgent extends BaseAgent {
     this.githubRepos = githubRepos;
     this.githubToken = process.env.GITHUB_API_TOKEN;
     this.lastGithubCheck = 0;
-    this.githubCheckInterval = 5 * 60 * 1000; // 5 min
+    this.githubCheckInterval = 5 * 60 * 1000;
 
-    // ---- Twitter hunting ----
+    // ---- Twitter ----
     this.twitterBearer = process.env.TWITTER_BEARER_TOKEN;
     this.twitterKeywords = (process.env.TWITTER_KEYWORDS || '#airdrop,#retrodrop,claim $')
       .split(',').map(k => k.trim()).filter(Boolean);
     this.twitterAccounts = (process.env.TWITTER_ACCOUNTS || '')
-      .split(',').map(a => a.trim()).filter(Boolean); // e.g., "VitalikButerin,Arbitrum"
+      .split(',').map(a => a.trim()).filter(Boolean);
     this.lastTwitterCheck = 0;
-    this.twitterCheckInterval = 10 * 60 * 1000; // 10 min
+    this.twitterCheckInterval = 10 * 60 * 1000;
 
     // ---- On‑chain ----
     this.alchemyKey = process.env.ALCHEMY_API_KEY;
@@ -76,12 +77,17 @@ class AirdropAgent extends BaseAgent {
     this.discordWatchChannels = (process.env.AIRDROP_DISCORD_CHANNELS || '')
       .split(',').map(id => id.trim()).filter(Boolean);
 
-    // ---- External Discord monitoring ----
+    // ---- External Discord ----
     this.extDiscordServers = (process.env.AIRDROP_EXT_DISCORD_SERVERS || '')
       .split(',').map(id => id.trim()).filter(Boolean);
     this.extDiscordChannels = (process.env.AIRDROP_EXT_DISCORD_CHANNELS || '')
       .split(',').map(id => id.trim()).filter(Boolean);
-    // We'll listen to messages in these channels via the same onMessage handler but with a flag.
+
+    // ---- Global keyword filters (for all sources) ----
+    this.includeKeywords = (process.env.AIRDROP_INCLUDE_KEYWORDS || 'airdrop,claim,free,tokens,giveaway')
+      .split(',').map(k => k.trim().toLowerCase()).filter(Boolean);
+    this.skipKeywords = (process.env.AIRDROP_SKIP_KEYWORDS || 'sponsor,partner,advertisement,gold,bitcoin,eth,trade,invest')
+      .split(',').map(k => k.trim().toLowerCase()).filter(Boolean);
 
     // ---- Scoring ----
     this.minScore = parseInt(process.env.AIRDROP_MIN_SCORE) || 50;
@@ -108,7 +114,7 @@ class AirdropAgent extends BaseAgent {
     this.maxRetries = 3;
     this.retryDelay = 1000;
 
-    // ---- Pending items from Discord ----
+    // ---- Pending items ----
     this.pendingItems = [];
   }
 
@@ -117,12 +123,10 @@ class AirdropAgent extends BaseAgent {
     await this._ensureTables();
     await this._loadCaches();
 
-    // ---- Start on‑chain watchers ----
     if (this.alchemyKey) {
       await this._initOnChainWatchers();
     }
 
-    // ---- Scheduled jobs ----
     this.subscribe('job.airdropCheck', async () => {
       await this._checkAirdrops();
       await this._checkTwitter();
@@ -132,19 +136,36 @@ class AirdropAgent extends BaseAgent {
       await this._processPendingDiscordItems();
     });
 
-    // ---- Periodic expiry ----
     this._expiryTimer = setInterval(() => this._updateStatuses(), 60 * 60 * 1000);
 
     const hasWebhook = !!process.env.PREMIUM_AIRDROP_WEBHOOK_URL;
-    this.logger.info(`🎁 AirdropAgent v7.2 ready (feeds: ${this.feeds.length}, twitter: ${!!this.twitterBearer}, onchain: ${this.onchainChains.length > 0}, discordWatch: ${this.discordWatchChannels.length}, extDiscord: ${this.extDiscordServers.length}, github: ${this.githubRepos.length}, scraping: ${this.enableScraping})`);
+    this.logger.info(`🎁 AirdropAgent v7.3 ready (feeds: ${this.feeds.length}, twitter: ${!!this.twitterBearer}, onchain: ${this.onchainChains.length > 0}, discordWatch: ${this.discordWatchChannels.length}, extDiscord: ${this.extDiscordServers.length}, github: ${this.githubRepos.length}, scraping: ${this.enableScraping})`);
   }
 
-  // ---------- Discord message scanning (own + external) ----------
+  // ---------- Load caches ----------
+  async _loadCaches() {
+    try {
+      // Load global posted links
+      const posted = await this.db.all(`SELECT link FROM airdrop_posted_links`);
+      for (const row of posted) {
+        this.globalPosted.add(row.link);
+      }
+      // Load per‑feed cache from news_cache
+      const rows = await this.db.all(`SELECT feedUrl, lastItemLink FROM news_cache WHERE feedUrl LIKE 'airdrop:%'`);
+      for (const row of rows) {
+        this.lastPostCache.set(row.feedUrl, row.lastItemLink);
+      }
+      this.logger.debug(`Loaded ${this.globalPosted.size} posted links and ${this.lastPostCache.size} feed caches`);
+    } catch (err) {
+      this.logger.error(`Failed to load caches: ${err.message}`);
+    }
+  }
+
+  // ---------- Discord message scanning ----------
   async onMessage(message) {
     if (message.author.bot) return;
     if (!message.guild) return;
 
-    // Check if this is an external server we're watching
     const isExt = this.extDiscordServers.includes(message.guild.id);
     const watchChannels = isExt ? this.extDiscordChannels : this.discordWatchChannels;
     if (watchChannels.length && !watchChannels.includes(message.channel.id)) return;
@@ -153,7 +174,6 @@ class AirdropAgent extends BaseAgent {
     const hasKeyword = this.discordKeywords.some(kw => lower.includes(kw));
     if (!hasKeyword) return;
 
-    // Extract potential link
     const linkMatch = message.content.match(/(https?:\/\/[^\s]+)/);
     const link = linkMatch ? linkMatch[0] : null;
     if (!link) return;
@@ -188,14 +208,13 @@ class AirdropAgent extends BaseAgent {
     }
   }
 
-  // ---------- Twitter hunting (keywords + accounts) ----------
+  // ---------- Twitter ----------
   async _checkTwitter() {
     if (!this.twitterBearer) return;
     if (Date.now() - this.lastTwitterCheck < this.twitterCheckInterval) return;
     this.lastTwitterCheck = Date.now();
 
     try {
-      // Build query: keywords OR from:accounts
       let query = this.twitterKeywords.join(' OR ');
       if (this.twitterAccounts.length) {
         const fromQuery = this.twitterAccounts.map(a => `from:${a}`).join(' OR ');
@@ -229,7 +248,7 @@ class AirdropAgent extends BaseAgent {
     }
   }
 
-  // ---------- GitHub monitoring (commits + releases) ----------
+  // ---------- GitHub ----------
   async _checkGithub() {
     if (!this.githubRepos.length) return;
     if (Date.now() - this.lastGithubCheck < this.githubCheckInterval) return;
@@ -237,7 +256,6 @@ class AirdropAgent extends BaseAgent {
 
     for (const repo of this.githubRepos) {
       try {
-        // Fetch recent commits
         const url = `https://api.github.com/repos/${repo}/commits?per_page=5`;
         const headers = this.githubToken ? { Authorization: `token ${this.githubToken}` } : {};
         const response = await axios.get(url, { headers });
@@ -246,7 +264,6 @@ class AirdropAgent extends BaseAgent {
           const message = commit.commit.message;
           const link = commit.html_url;
           if (this.globalPosted.has(link)) continue;
-          // Check for keywords
           const lowerMsg = message.toLowerCase();
           const hasKeyword = ['testnet', 'airdrop', 'whitelist', 'claim', 'retro'].some(kw => lowerMsg.includes(kw));
           if (!hasKeyword) continue;
@@ -271,17 +288,15 @@ class AirdropAgent extends BaseAgent {
     }
   }
 
-  // ---------- Web scraping (Google Alerts alternative) ----------
+  // ---------- Web scraping ----------
   async _scrapeWebsites() {
     if (!this.enableScraping || !this.scrapeUrls.length) return;
     for (const url of this.scrapeUrls) {
       try {
         const response = await axios.get(url, { timeout: 10000 });
         const $ = cheerio.load(response.data);
-        // Look for airdrop-related text
         const text = $('body').text().toLowerCase();
         if (text.includes('airdrop') || text.includes('claim') || text.includes('whitelist')) {
-          // Extract a potential link (e.g., first link)
           const link = $('a').first().attr('href') || url;
           if (this.globalPosted.has(link)) continue;
           const title = $('title').text() || 'Scraped page';
@@ -306,15 +321,13 @@ class AirdropAgent extends BaseAgent {
     }
   }
 
-  // ---------- On‑chain detection (full implementation) ----------
+  // ---------- On‑chain ----------
   async _initOnChainWatchers() {
     if (!this.alchemyKey) return;
     for (const chain of this.onchainChains) {
       try {
         const provider = new ethers.providers.AlchemyProvider(chain, this.alchemyKey);
         this.providers[chain] = provider;
-        // Use Alchemy's asset transfers to detect new contract deployments
-        // We'll poll every 60 seconds for new blocks
         setInterval(async () => {
           await this._checkOnChain(chain, provider);
         }, 60000);
@@ -332,7 +345,6 @@ class AirdropAgent extends BaseAgent {
     this.onchainLastBlock[chain] = toBlock;
 
     try {
-      // Use Alchemy's `alchemy_getAssetTransfers` to find contract creations
       const url = `https://${chain}.g.alchemy.com/v2/${this.alchemyKey}`;
       const payload = {
         jsonrpc: '2.0',
@@ -349,23 +361,14 @@ class AirdropAgent extends BaseAgent {
       const response = await axios.post(url, payload);
       const transfers = response.data.result?.transfers || [];
       for (const tx of transfers) {
-        // Check if it's a contract creation (toAddress null or '0x0'? Actually contract creation has toAddress = null in some APIs)
-        // We'll use the raw transaction receipt later; for now, we'll check if it's a token transfer that could indicate a new token.
-        // For simplicity, we'll look for erc20 transfers with large amounts.
-        // A proper implementation would check the contract creation receipt.
-        // We'll implement a simple filter: if it's an ERC20 transfer and the value > $100k, treat as potential airdrop.
         const hash = tx.hash;
         if (this.globalPosted.has(hash)) continue;
-        // Fetch receipt to check if contract was created
         const receipt = await provider.getTransactionReceipt(hash);
         if (!receipt) continue;
         if (receipt.contractAddress) {
-          // New contract deployed!
           const contractAddress = receipt.contractAddress;
-          // Fetch contract code to verify it's a token
           const code = await provider.getCode(contractAddress);
           if (code === '0x') continue;
-          // Could add token detection via ERC20 ABI
           const item = {
             title: `New contract deployed: ${contractAddress}`,
             link: `https://${chain}scan.com/address/${contractAddress}`,
@@ -387,7 +390,7 @@ class AirdropAgent extends BaseAgent {
     }
   }
 
-  // ---------- Database (add new tables for tracking commits etc.) ----------
+  // ---------- Database ----------
   async _ensureTables() {
     const db = this.deps.db;
     await db.exec(`
@@ -413,7 +416,6 @@ class AirdropAgent extends BaseAgent {
         ecosystems TEXT,
         PRIMARY KEY (userId, guildId)
       );
-      -- New: track GitHub commits by hash to avoid duplicates
       CREATE TABLE IF NOT EXISTS airdrop_github_tracking (
         hash TEXT PRIMARY KEY,
         repo TEXT,
@@ -422,14 +424,13 @@ class AirdropAgent extends BaseAgent {
     `);
   }
 
-  // ---------- Scoring (enhanced for new sources) ----------
+  // ---------- Scoring ----------
   _calculateScore(item) {
     let score = 50;
     const title = (item.title || '').toLowerCase();
     const desc = (item.contentSnippet || item.content || '').toLowerCase();
     const source = item.source || '';
 
-    // Positive keywords
     const positiveWords = ['airdrop', 'claim', 'free', 'giveaway', 'eligible', 'testnet', 'whitelist', 'retro'];
     let posCount = 0;
     for (const w of positiveWords) {
@@ -437,7 +438,6 @@ class AirdropAgent extends BaseAgent {
     }
     score += Math.min(posCount * 5, 20);
 
-    // Negative keywords
     const negativeWords = ['scam', 'fraud', 'expired', 'closed', 'ended'];
     let negCount = 0;
     for (const w of negativeWords) {
@@ -445,7 +445,6 @@ class AirdropAgent extends BaseAgent {
     }
     score -= negCount * 10;
 
-    // Source bonus
     if (source.includes('airdrops.io')) score += 15;
     else if (source.includes('cryptopotato')) score += 5;
     else if (source.includes('cointelegraph')) score += 5;
@@ -455,7 +454,6 @@ class AirdropAgent extends BaseAgent {
     else if (source.includes('On-chain')) score += 10;
     else if (source.includes('Scraped')) score += 2;
 
-    // Freshness
     const pubDate = new Date(item.isoDate || Date.now());
     const ageHours = (Date.now() - pubDate.getTime()) / (60 * 60 * 1000);
     if (ageHours < 24) score += 10;
@@ -465,7 +463,7 @@ class AirdropAgent extends BaseAgent {
     return Math.min(Math.max(score, 0), 100);
   }
 
-  // ---------- Feed fetching (unchanged) ----------
+  // ---------- Feed fetching ----------
   async _fetchFeedWithRetry(feedUrl, attempt = 1) {
     try {
       const feed = await this.parser.parseURL(feedUrl);
@@ -485,7 +483,7 @@ class AirdropAgent extends BaseAgent {
     }
   }
 
-  // ---------- Main feed check (includes all RSS sources) ----------
+  // ---------- Main feed check ----------
   async _checkAirdrops() {
     const channelId = process.env.PREMIUM_AIRDROP_CHANNEL_ID;
     if (!channelId && !process.env.PREMIUM_AIRDROP_WEBHOOK_URL) {
@@ -513,7 +511,6 @@ class AirdropAgent extends BaseAgent {
       let newItems = items.filter(item => item.link !== lastPosted);
       if (newItems.length === 0) continue;
 
-      // Filter
       newItems = newItems.filter(item => {
         if (this.globalPosted.has(item.link)) return false;
         const title = (item.title || '').toLowerCase();
@@ -523,7 +520,6 @@ class AirdropAgent extends BaseAgent {
         return true;
       });
 
-      // Score and collect
       for (const item of newItems) {
         const score = this._calculateScore(item);
         if (score < this.minScore) continue;
@@ -535,7 +531,6 @@ class AirdropAgent extends BaseAgent {
         allItems.push({ ...item, feedUrl, score });
       }
 
-      // Update per-feed cache
       const latestLink = items[0]?.link;
       if (latestLink) {
         this.lastPostCache.set(feedUrl, latestLink);
@@ -543,7 +538,6 @@ class AirdropAgent extends BaseAgent {
       }
     }
 
-    // Sort by score desc
     allItems.sort((a, b) => b.score - a.score);
     let postedCount = 0;
     for (const item of allItems.slice(0, this.maxPostsPerCycle)) {
@@ -579,7 +573,7 @@ class AirdropAgent extends BaseAgent {
     }
   }
 
-  // ---------- Status update (expiry) ----------
+  // ---------- Status update ----------
   async _updateStatuses() {
     const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
     const rows = await this.db.all(`SELECT link, postedAt FROM airdrop_posted_links WHERE status = 'active'`);
@@ -591,7 +585,7 @@ class AirdropAgent extends BaseAgent {
     }
   }
 
-  // ---------- Build embed (with score and buttons) ----------
+  // ---------- Build embed ----------
   async _buildAirdropEmbed(item, score) {
     let image = null;
     if (item.enclosure?.url && item.enclosure.type?.startsWith('image/')) image = item.enclosure.url;
