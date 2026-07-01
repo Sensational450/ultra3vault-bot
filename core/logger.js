@@ -1,12 +1,13 @@
 const winston = require('winston');
 const DailyRotateFile = require('winston-daily-rotate-file');
+const { Writable } = require('stream'); // 👈 import built‑in stream
 const axios = require('axios');
 
 /**
- * Logger v5.0
+ * Logger v5.2
  * - Console, rotating file, Discord webhook transports
- * - Child loggers with bound metadata
- * - EventBus integration
+ * - Discord log level configurable via DISCORD_LOG_LEVEL env var
+ * - Fixed Discord stream using proper Writable stream
  */
 class Logger {
   constructor(options = {}) {
@@ -18,6 +19,7 @@ class Logger {
       maxSize: options.maxSize || '20m',
       maxFiles: options.maxFiles || '14d',
       discordWebhook: options.discordWebhook || null,
+      discordLevel: options.discordLevel || process.env.DISCORD_LOG_LEVEL || 'warn',
       eventBus: options.eventBus || null,
       serviceName: options.serviceName || 'discord-bot',
       ...options,
@@ -60,8 +62,23 @@ class Logger {
   }
 
   _setupDiscordTransport() {
-    const discordStream = { write: (msg) => this._sendToDiscord(msg) };
-    this.transports.push(new winston.transports.Stream({ stream: discordStream, level: 'warn' }));
+    // Create a proper writable stream
+    const discordStream = new Writable({
+      write: (chunk, encoding, callback) => {
+        // chunk is a Buffer or string; convert to string
+        const msg = chunk.toString();
+        this._sendToDiscord(msg);
+        callback();
+      },
+      objectMode: false, // we handle strings
+    });
+
+    // Use winston's Stream transport with the writable stream
+    this.transports.push(new winston.transports.Stream({
+      stream: discordStream,
+      level: this.options.discordLevel,
+    }));
+
     this.discordWebhookUrl = this.options.discordWebhook;
   }
 
@@ -78,7 +95,9 @@ class Logger {
         footer: { text: this.options.serviceName },
       };
       await axios.post(this.discordWebhookUrl, { embeds: [embed] }, { timeout: 5000 });
-    } catch (err) { /* ignore */ }
+    } catch (err) {
+      // ignore errors – we don't want logging to break the bot
+    }
   }
 
   _getFormat() {
