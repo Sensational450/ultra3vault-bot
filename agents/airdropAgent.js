@@ -1,13 +1,8 @@
 /**
- * 🎁 AirdropAgent v7.3 – Full Active Hunting Suite
- * - Fixed missing _loadCaches and keyword definitions
- * - RSS feeds + Google Alerts (RSS + scraping)
- * - Twitter/X keyword search + specific account tracking
- * - Discord monitoring (own server + external servers)
- * - On‑chain contract detection (Alchemy – new contracts, token transfers)
- * - GitHub activity monitoring (commits, releases, README changes)
- * - Unified scoring, filtering, deduplication, and posting
- * - Interactive claim/skip buttons, leaderboard, user preferences
+ * 🎁 AirdropAgent v7.4 – Fixed On‑Chain Network Names
+ * - Fixed ethereum, polygon, base initialization with correct Alchemy URLs
+ * - Uses JsonRpcProvider with custom endpoints for all chains
+ * - Added explorer URL mapping for each chain
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags } = require('discord.js');
@@ -71,7 +66,25 @@ class AirdropAgent extends BaseAgent {
     this.contractListeners = [];
     this.onchainLastBlock = {};
 
-    // ---- Discord monitoring (own server) ----
+    // ---- Chain endpoint mapping ----
+    this.chainEndpoints = {
+      ethereum: `https://eth-mainnet.g.alchemy.com/v2/${this.alchemyKey}`,
+      polygon: `https://polygon-mainnet.g.alchemy.com/v2/${this.alchemyKey}`,
+      arbitrum: `https://arb-mainnet.g.alchemy.com/v2/${this.alchemyKey}`,
+      optimism: `https://opt-mainnet.g.alchemy.com/v2/${this.alchemyKey}`,
+      base: `https://base-mainnet.g.alchemy.com/v2/${this.alchemyKey}`,
+    };
+
+    // ---- Explorer URL mapping ----
+    this.explorerUrls = {
+      ethereum: 'https://etherscan.io/address/',
+      polygon: 'https://polygonscan.com/address/',
+      arbitrum: 'https://arbiscan.io/address/',
+      optimism: 'https://optimistic.etherscan.io/address/',
+      base: 'https://basescan.org/address/',
+    };
+
+    // ---- Discord monitoring ----
     this.discordKeywords = (process.env.AIRDROP_DISCORD_KEYWORDS || 'airdrop,claim,testnet,whitelist')
       .split(',').map(k => k.trim().toLowerCase()).filter(Boolean);
     this.discordWatchChannels = (process.env.AIRDROP_DISCORD_CHANNELS || '')
@@ -83,7 +96,7 @@ class AirdropAgent extends BaseAgent {
     this.extDiscordChannels = (process.env.AIRDROP_EXT_DISCORD_CHANNELS || '')
       .split(',').map(id => id.trim()).filter(Boolean);
 
-    // ---- Global keyword filters (for all sources) ----
+    // ---- Global keyword filters ----
     this.includeKeywords = (process.env.AIRDROP_INCLUDE_KEYWORDS || 'airdrop,claim,free,tokens,giveaway')
       .split(',').map(k => k.trim().toLowerCase()).filter(Boolean);
     this.skipKeywords = (process.env.AIRDROP_SKIP_KEYWORDS || 'sponsor,partner,advertisement,gold,bitcoin,eth,trade,invest')
@@ -139,18 +152,16 @@ class AirdropAgent extends BaseAgent {
     this._expiryTimer = setInterval(() => this._updateStatuses(), 60 * 60 * 1000);
 
     const hasWebhook = !!process.env.PREMIUM_AIRDROP_WEBHOOK_URL;
-    this.logger.info(`🎁 AirdropAgent v7.3 ready (feeds: ${this.feeds.length}, twitter: ${!!this.twitterBearer}, onchain: ${this.onchainChains.length > 0}, discordWatch: ${this.discordWatchChannels.length}, extDiscord: ${this.extDiscordServers.length}, github: ${this.githubRepos.length}, scraping: ${this.enableScraping})`);
+    this.logger.info(`🎁 AirdropAgent v7.4 ready (feeds: ${this.feeds.length}, twitter: ${!!this.twitterBearer}, onchain: ${this.onchainChains.length > 0}, discordWatch: ${this.discordWatchChannels.length}, extDiscord: ${this.extDiscordServers.length}, github: ${this.githubRepos.length}, scraping: ${this.enableScraping})`);
   }
 
   // ---------- Load caches ----------
   async _loadCaches() {
     try {
-      // Load global posted links
       const posted = await this.db.all(`SELECT link FROM airdrop_posted_links`);
       for (const row of posted) {
         this.globalPosted.add(row.link);
       }
-      // Load per‑feed cache from news_cache
       const rows = await this.db.all(`SELECT feedUrl, lastItemLink FROM news_cache WHERE feedUrl LIKE 'airdrop:%'`);
       for (const row of rows) {
         this.lastPostCache.set(row.feedUrl, row.lastItemLink);
@@ -321,15 +332,22 @@ class AirdropAgent extends BaseAgent {
     }
   }
 
-  // ---------- On‑chain ----------
+  // ---------- On‑chain (fixed) ----------
   async _initOnChainWatchers() {
     if (!this.alchemyKey) return;
+
     for (const chain of this.onchainChains) {
+      const endpoint = this.chainEndpoints[chain];
+      if (!endpoint) {
+        this.logger.warn(`Unknown chain: ${chain} – skipping`);
+        continue;
+      }
+
       try {
-        const provider = new ethers.providers.AlchemyProvider(chain, this.alchemyKey);
+        const provider = new ethers.providers.JsonRpcProvider(endpoint);
         this.providers[chain] = provider;
         setInterval(async () => {
-          await this._checkOnChain(chain, provider);
+          await this._checkOnChain(chain);
         }, 60000);
         this.logger.info(`🔗 On‑chain watching enabled for ${chain}`);
       } catch (err) {
@@ -338,14 +356,17 @@ class AirdropAgent extends BaseAgent {
     }
   }
 
-  async _checkOnChain(chain, provider) {
-    const fromBlock = this.onchainLastBlock[chain] || (await provider.getBlockNumber()) - 10;
-    const toBlock = await provider.getBlockNumber();
-    if (toBlock <= fromBlock) return;
-    this.onchainLastBlock[chain] = toBlock;
+  async _checkOnChain(chain) {
+    const provider = this.providers[chain];
+    if (!provider) return;
 
     try {
-      const url = `https://${chain}.g.alchemy.com/v2/${this.alchemyKey}`;
+      const fromBlock = this.onchainLastBlock[chain] || (await provider.getBlockNumber()) - 10;
+      const toBlock = await provider.getBlockNumber();
+      if (toBlock <= fromBlock) return;
+      this.onchainLastBlock[chain] = toBlock;
+
+      const endpoint = this.chainEndpoints[chain];
       const payload = {
         jsonrpc: '2.0',
         method: 'alchemy_getAssetTransfers',
@@ -358,7 +379,7 @@ class AirdropAgent extends BaseAgent {
         }],
         id: 1,
       };
-      const response = await axios.post(url, payload);
+      const response = await axios.post(endpoint, payload);
       const transfers = response.data.result?.transfers || [];
       for (const tx of transfers) {
         const hash = tx.hash;
@@ -369,9 +390,10 @@ class AirdropAgent extends BaseAgent {
           const contractAddress = receipt.contractAddress;
           const code = await provider.getCode(contractAddress);
           if (code === '0x') continue;
+          const explorerUrl = this.explorerUrls[chain] || 'https://etherscan.io/address/';
           const item = {
             title: `New contract deployed: ${contractAddress}`,
-            link: `https://${chain}scan.com/address/${contractAddress}`,
+            link: `${explorerUrl}${contractAddress}`,
             description: `New smart contract detected on ${chain}. Potential airdrop!`,
             source: `On-chain (${chain})`,
             isoDate: new Date().toISOString(),
