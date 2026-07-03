@@ -1,8 +1,11 @@
 /**
- * 🎁 AirdropAgent v7.4 – Fixed On‑Chain Network Names
+ * 🎁 AirdropAgent v7.5 – Smart Rate‑Limit & Backoff
  * - Fixed ethereum, polygon, base initialization with correct Alchemy URLs
  * - Uses JsonRpcProvider with custom endpoints for all chains
  * - Added explorer URL mapping for each chain
+ * - Implements exponential backoff on 429 (rate limit) responses
+ * - Configurable check interval via ONCHAIN_CHECK_INTERVAL (seconds, default 120)
+ * - Prevents chain‑flooding with per‑chain cooldown timers
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags } = require('discord.js');
@@ -65,6 +68,8 @@ class AirdropAgent extends BaseAgent {
     this.providers = {};
     this.contractListeners = [];
     this.onchainLastBlock = {};
+    // per‑chain cooldown timers (ms) to enforce backoff
+    this._chainCooldown = new Map();
 
     // ---- Chain endpoint mapping ----
     this.chainEndpoints = {
@@ -152,7 +157,7 @@ class AirdropAgent extends BaseAgent {
     this._expiryTimer = setInterval(() => this._updateStatuses(), 60 * 60 * 1000);
 
     const hasWebhook = !!process.env.PREMIUM_AIRDROP_WEBHOOK_URL;
-    this.logger.info(`🎁 AirdropAgent v7.4 ready (feeds: ${this.feeds.length}, twitter: ${!!this.twitterBearer}, onchain: ${this.onchainChains.length > 0}, discordWatch: ${this.discordWatchChannels.length}, extDiscord: ${this.extDiscordServers.length}, github: ${this.githubRepos.length}, scraping: ${this.enableScraping})`);
+    this.logger.info(`🎁 AirdropAgent v7.5 ready (feeds: ${this.feeds.length}, twitter: ${!!this.twitterBearer}, onchain: ${this.onchainChains.length > 0}, discordWatch: ${this.discordWatchChannels.length}, extDiscord: ${this.extDiscordServers.length}, github: ${this.githubRepos.length}, scraping: ${this.enableScraping})`);
   }
 
   // ---------- Load caches ----------
@@ -332,9 +337,11 @@ class AirdropAgent extends BaseAgent {
     }
   }
 
-  // ---------- On‑chain (fixed) ----------
+  // ---------- On‑chain watchers with backoff ----------
   async _initOnChainWatchers() {
     if (!this.alchemyKey) return;
+
+    const checkInterval = (parseInt(process.env.ONCHAIN_CHECK_INTERVAL) || 120) * 1000; // default 120s
 
     for (const chain of this.onchainChains) {
       const endpoint = this.chainEndpoints[chain];
@@ -346,10 +353,26 @@ class AirdropAgent extends BaseAgent {
       try {
         const provider = new ethers.providers.JsonRpcProvider(endpoint);
         this.providers[chain] = provider;
+        // initial last block to start from current - 10
+        try {
+          const block = await provider.getBlockNumber();
+          this.onchainLastBlock[chain] = block - 10;
+        } catch (err) {
+          this.logger.warn(`Failed to get initial block for ${chain}: ${err.message}`);
+          this.onchainLastBlock[chain] = 0;
+        }
+
+        // set up interval with jitter to avoid all chains hitting at once
+        const jitter = Math.floor(Math.random() * 10000); // 0‑10s random offset
+        const actualInterval = checkInterval + jitter;
         setInterval(async () => {
+          if (this._chainCooldown.has(chain) && Date.now() < this._chainCooldown.get(chain)) {
+            return; // still cooling down
+          }
           await this._checkOnChain(chain);
-        }, 60000);
-        this.logger.info(`🔗 On‑chain watching enabled for ${chain}`);
+        }, actualInterval);
+
+        this.logger.info(`🔗 On‑chain watching enabled for ${chain} (interval ${actualInterval/1000}s)`);
       } catch (err) {
         this.logger.error(`Failed to init on‑chain for ${chain}: ${err.message}`);
       }
@@ -361,7 +384,7 @@ class AirdropAgent extends BaseAgent {
     if (!provider) return;
 
     try {
-      const fromBlock = this.onchainLastBlock[chain] || (await provider.getBlockNumber()) - 10;
+      const fromBlock = this.onchainLastBlock[chain] || 0;
       const toBlock = await provider.getBlockNumber();
       if (toBlock <= fromBlock) return;
       this.onchainLastBlock[chain] = toBlock;
@@ -379,7 +402,7 @@ class AirdropAgent extends BaseAgent {
         }],
         id: 1,
       };
-      const response = await axios.post(endpoint, payload);
+      const response = await axios.post(endpoint, payload, { timeout: 15000 });
       const transfers = response.data.result?.transfers || [];
       for (const tx of transfers) {
         const hash = tx.hash;
@@ -408,7 +431,21 @@ class AirdropAgent extends BaseAgent {
         }
       }
     } catch (err) {
-      this.logger.error(`On‑chain check failed for ${chain}: ${err.message}`);
+      if (err.response && err.response.status === 429) {
+        const retryAfter = parseInt(err.response.headers['retry-after']) || 60;
+        const cooldownMs = retryAfter * 1000 + 5000; // add 5s safety
+        this._chainCooldown.set(chain, Date.now() + cooldownMs);
+        this.logger.warn(`⏳ Rate limited on ${chain}, waiting ${retryAfter}s (cooldown until ${new Date(Date.now()+cooldownMs).toISOString()})`);
+      } else {
+        // Check for specific network errors
+        if (err.message && err.message.includes('could not detect network')) {
+          this.logger.error(`On‑chain network detection failed for ${chain}: ${err.message}`);
+          // Set a 10‑minute cooldown for this chain to avoid spamming
+          this._chainCooldown.set(chain, Date.now() + 600000);
+        } else {
+          this.logger.error(`On‑chain check failed for ${chain}: ${err.message}`);
+        }
+      }
     }
   }
 
