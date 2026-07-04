@@ -1,10 +1,11 @@
 /**
- * ⚡ OptimizationAgent v10.4 (Centralized Webhooks – Robust Error Handling)
+ * ⚡ OptimizationAgent v10.5 (Safe Logger Fallback)
  * - Uses sendWebhook('modLog') for all alerts and reports.
  * - No more direct channel.send fallback.
  * - Cleaner, DRYer, fully integrated with your webhook system.
  * - Improved error handling around memory alerts.
  * - Uses MessageFlags.Ephemeral for ephemeral replies.
+ * - Safe logging fallback if logger is unavailable.
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder, SlashCommandBuilder, MessageFlags } = require('discord.js');
@@ -68,7 +69,7 @@ class OptimizationAgent extends BaseAgent {
     // ---- Create temp dir if missing ----
     if (!fs.existsSync(this.tempDir)) fs.mkdirSync(this.tempDir, { recursive: true });
 
-    this.logger.info(`⚡ OptimizationAgent v10.4 ready – alerts via modLog webhook`);
+    this.logger.info(`⚡ OptimizationAgent v10.5 ready – alerts via modLog webhook`);
   }
 
   // ===================== SLASH COMMANDS =====================
@@ -111,7 +112,7 @@ class OptimizationAgent extends BaseAgent {
         { name: '🤖 Agents', value: `${agents.length} loaded`, inline: true }
       )
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.4' });
+      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.5' });
 
     await interaction.editReply({ embeds: [embed] });
   }
@@ -131,7 +132,7 @@ class OptimizationAgent extends BaseAgent {
       .setColor(0x3498db)
       .setDescription(desc)
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.4' });
+      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.5' });
 
     await interaction.editReply({ embeds: [embed] });
   }
@@ -365,13 +366,18 @@ class OptimizationAgent extends BaseAgent {
       .setDescription(message)
       .setColor(0xff4444)
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.4' });
+      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.5' });
 
     try {
       await sendWebhook('modLog', { embeds: [embed] });
     } catch (err) {
-      this.logger.error(`Failed to send alert via webhook: ${err.message}`);
-      throw err; // re-throw to let caller handle if needed
+      // Safe logging – fallback to console if logger is not available
+      if (this.logger && typeof this.logger.error === 'function') {
+        this.logger.error(`Failed to send alert via webhook: ${err.message}`);
+      } else {
+        console.error(`[OptimizationAgent] Failed to send alert: ${err.message}`);
+      }
+      throw err;
     }
   }
 
@@ -409,13 +415,18 @@ class OptimizationAgent extends BaseAgent {
         { name: '⏱️ Uptime', value: `${(process.uptime() / 3600).toFixed(1)} hours`, inline: true }
       )
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.4' });
+      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.5' });
 
     try {
       await sendWebhook('modLog', { embeds: [embed] });
       this.logger.info('📊 Performance report sent');
     } catch (err) {
-      this.logger.error(`Failed to send performance report: ${err.message}`);
+      // Safe logging – fallback to console if logger is not available
+      if (this.logger && typeof this.logger.error === 'function') {
+        this.logger.error(`Failed to send performance report: ${err.message}`);
+      } else {
+        console.error(`[OptimizationAgent] Failed to send performance report: ${err.message}`);
+      }
     }
   }
 
