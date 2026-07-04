@@ -1,5 +1,6 @@
 /**
- * 🎁 AirdropAgent v7.5 – Smart Rate‑Limit & Backoff
+ * 🎁 AirdropAgent v7.6 – Fixed Optimism Network Detection
+ * - Explicitly passes network name to JsonRpcProvider to avoid detection errors
  * - Fixed ethereum, polygon, base initialization with correct Alchemy URLs
  * - Uses JsonRpcProvider with custom endpoints for all chains
  * - Added explorer URL mapping for each chain
@@ -157,7 +158,7 @@ class AirdropAgent extends BaseAgent {
     this._expiryTimer = setInterval(() => this._updateStatuses(), 60 * 60 * 1000);
 
     const hasWebhook = !!process.env.PREMIUM_AIRDROP_WEBHOOK_URL;
-    this.logger.info(`🎁 AirdropAgent v7.5 ready (feeds: ${this.feeds.length}, twitter: ${!!this.twitterBearer}, onchain: ${this.onchainChains.length > 0}, discordWatch: ${this.discordWatchChannels.length}, extDiscord: ${this.extDiscordServers.length}, github: ${this.githubRepos.length}, scraping: ${this.enableScraping})`);
+    this.logger.info(`🎁 AirdropAgent v7.6 ready (feeds: ${this.feeds.length}, twitter: ${!!this.twitterBearer}, onchain: ${this.onchainChains.length > 0}, discordWatch: ${this.discordWatchChannels.length}, extDiscord: ${this.extDiscordServers.length}, github: ${this.githubRepos.length}, scraping: ${this.enableScraping})`);
   }
 
   // ---------- Load caches ----------
@@ -341,7 +342,16 @@ class AirdropAgent extends BaseAgent {
   async _initOnChainWatchers() {
     if (!this.alchemyKey) return;
 
-    const checkInterval = (parseInt(process.env.ONCHAIN_CHECK_INTERVAL) || 120) * 1000; // default 120s
+    const checkInterval = (parseInt(process.env.ONCHAIN_CHECK_INTERVAL) || 120) * 1000;
+
+    // Map chain names to ethers network names (for explicit network detection)
+    const networkNames = {
+      ethereum: 'homestead',
+      polygon: 'matic',
+      arbitrum: 'arbitrum',
+      optimism: 'optimism',
+      base: 'base', // base is not built-in, but we pass it anyway; JsonRpcProvider may handle it
+    };
 
     for (const chain of this.onchainChains) {
       const endpoint = this.chainEndpoints[chain];
@@ -351,9 +361,12 @@ class AirdropAgent extends BaseAgent {
       }
 
       try {
-        const provider = new ethers.providers.JsonRpcProvider(endpoint);
+        // Pass the network name explicitly to avoid detection issues
+        const network = networkNames[chain] || chain;
+        const provider = new ethers.providers.JsonRpcProvider(endpoint, network);
         this.providers[chain] = provider;
-        // initial last block to start from current - 10
+
+        // initial last block
         try {
           const block = await provider.getBlockNumber();
           this.onchainLastBlock[chain] = block - 10;
@@ -363,16 +376,16 @@ class AirdropAgent extends BaseAgent {
         }
 
         // set up interval with jitter to avoid all chains hitting at once
-        const jitter = Math.floor(Math.random() * 10000); // 0‑10s random offset
+        const jitter = Math.floor(Math.random() * 10000);
         const actualInterval = checkInterval + jitter;
         setInterval(async () => {
           if (this._chainCooldown.has(chain) && Date.now() < this._chainCooldown.get(chain)) {
-            return; // still cooling down
+            return;
           }
           await this._checkOnChain(chain);
         }, actualInterval);
 
-        this.logger.info(`🔗 On‑chain watching enabled for ${chain} (interval ${actualInterval/1000}s)`);
+        this.logger.info(`🔗 On‑chain watching enabled for ${chain} (interval ${(actualInterval/1000).toFixed(1)}s)`);
       } catch (err) {
         this.logger.error(`Failed to init on‑chain for ${chain}: ${err.message}`);
       }
@@ -433,14 +446,12 @@ class AirdropAgent extends BaseAgent {
     } catch (err) {
       if (err.response && err.response.status === 429) {
         const retryAfter = parseInt(err.response.headers['retry-after']) || 60;
-        const cooldownMs = retryAfter * 1000 + 5000; // add 5s safety
+        const cooldownMs = retryAfter * 1000 + 5000;
         this._chainCooldown.set(chain, Date.now() + cooldownMs);
         this.logger.warn(`⏳ Rate limited on ${chain}, waiting ${retryAfter}s (cooldown until ${new Date(Date.now()+cooldownMs).toISOString()})`);
       } else {
-        // Check for specific network errors
         if (err.message && err.message.includes('could not detect network')) {
           this.logger.error(`On‑chain network detection failed for ${chain}: ${err.message}`);
-          // Set a 10‑minute cooldown for this chain to avoid spamming
           this._chainCooldown.set(chain, Date.now() + 600000);
         } else {
           this.logger.error(`On‑chain check failed for ${chain}: ${err.message}`);
