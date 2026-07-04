@@ -6,6 +6,17 @@
 const WebhookSender = require('../tools/discord/webhookSender');
 const logger = require('./logger');
 
+// Safe logging fallback
+function safeLog(level, message) {
+  if (logger && typeof logger[level] === 'function') {
+    logger[level](message);
+  } else {
+    // Fallback to console
+    const consoleMethod = console[level] || console.log;
+    consoleMethod(`[Webhook] ${message}`);
+  }
+}
+
 // Webhook mapping: logical key → env var value
 const WEBHOOKS = {
   announcements: process.env.ANNOUNCEMENTS_WEBHOOK_URL,
@@ -33,13 +44,13 @@ const WEBHOOKS = {
 async function sendWebhook(key, payload, options = {}) {
   const url = WEBHOOKS[key];
   if (!url) {
-    logger.warn(`⚠️ Webhook URL missing for key: ${key}`);
+    safeLog('warn', `⚠️ Webhook URL missing for key: ${key}`);
     return;
   }
   try {
     await WebhookSender.send(url, payload, options);
   } catch (err) {
-    logger.error(`Webhook send failed (${key}): ${err.message}`);
+    safeLog('error', `Webhook send failed (${key}): ${err.message}`);
   }
 }
 
