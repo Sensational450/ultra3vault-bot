@@ -1,11 +1,12 @@
 /**
- * ⚡ OptimizationAgent v10.5 (Safe Logger Fallback)
+ * ⚡ OptimizationAgent v10.6 (Safe Logger Fallback – No Re-throw)
  * - Uses sendWebhook('modLog') for all alerts and reports.
  * - No more direct channel.send fallback.
  * - Cleaner, DRYer, fully integrated with your webhook system.
  * - Improved error handling around memory alerts.
  * - Uses MessageFlags.Ephemeral for ephemeral replies.
- * - Safe logging fallback if logger is unavailable.
+ * - Uses console.error as fallback if logger is unavailable.
+ * - Does not re-throw webhook errors to prevent log loops.
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder, SlashCommandBuilder, MessageFlags } = require('discord.js');
@@ -69,7 +70,7 @@ class OptimizationAgent extends BaseAgent {
     // ---- Create temp dir if missing ----
     if (!fs.existsSync(this.tempDir)) fs.mkdirSync(this.tempDir, { recursive: true });
 
-    this.logger.info(`⚡ OptimizationAgent v10.5 ready – alerts via modLog webhook`);
+    this.logger.info(`⚡ OptimizationAgent v10.6 ready – alerts via modLog webhook`);
   }
 
   // ===================== SLASH COMMANDS =====================
@@ -112,7 +113,7 @@ class OptimizationAgent extends BaseAgent {
         { name: '🤖 Agents', value: `${agents.length} loaded`, inline: true }
       )
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.5' });
+      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.6' });
 
     await interaction.editReply({ embeds: [embed] });
   }
@@ -132,7 +133,7 @@ class OptimizationAgent extends BaseAgent {
       .setColor(0x3498db)
       .setDescription(desc)
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.5' });
+      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.6' });
 
     await interaction.editReply({ embeds: [embed] });
   }
@@ -314,7 +315,12 @@ class OptimizationAgent extends BaseAgent {
       try {
         await this._sendAlert(`⚠️ Memory usage at ${usagePercent.toFixed(1)}%. Cleanup triggered.`);
       } catch (err) {
-        this.logger.error(`Failed to send memory alert: ${err.message}`);
+        // Safe logging fallback – if logger is not available, use console.error
+        if (this.logger && typeof this.logger.error === 'function') {
+          this.logger.error(`Failed to send memory alert: ${err.message}`);
+        } else {
+          console.error(`[OptimizationAgent] Failed to send memory alert: ${err.message}`);
+        }
       }
     }
   }
@@ -366,18 +372,18 @@ class OptimizationAgent extends BaseAgent {
       .setDescription(message)
       .setColor(0xff4444)
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.5' });
+      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.6' });
 
     try {
       await sendWebhook('modLog', { embeds: [embed] });
     } catch (err) {
-      // Safe logging – fallback to console if logger is not available
+      // Use console.error as fallback – never re-throw
       if (this.logger && typeof this.logger.error === 'function') {
         this.logger.error(`Failed to send alert via webhook: ${err.message}`);
       } else {
         console.error(`[OptimizationAgent] Failed to send alert: ${err.message}`);
       }
-      throw err;
+      // Do not re-throw – this prevents log loops
     }
   }
 
@@ -415,13 +421,12 @@ class OptimizationAgent extends BaseAgent {
         { name: '⏱️ Uptime', value: `${(process.uptime() / 3600).toFixed(1)} hours`, inline: true }
       )
       .setTimestamp()
-      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.5' });
+      .setFooter({ text: 'Ultra3Vault • Optimization AI v10.6' });
 
     try {
       await sendWebhook('modLog', { embeds: [embed] });
       this.logger.info('📊 Performance report sent');
     } catch (err) {
-      // Safe logging – fallback to console if logger is not available
       if (this.logger && typeof this.logger.error === 'function') {
         this.logger.error(`Failed to send performance report: ${err.message}`);
       } else {
