@@ -1,12 +1,8 @@
 /**
- * 🎁 AirdropAgent v7.6 – Fixed Optimism Network Detection
- * - Explicitly passes network name to JsonRpcProvider to avoid detection errors
- * - Fixed ethereum, polygon, base initialization with correct Alchemy URLs
- * - Uses JsonRpcProvider with custom endpoints for all chains
- * - Added explorer URL mapping for each chain
- * - Implements exponential backoff on 429 (rate limit) responses
- * - Configurable check interval via ONCHAIN_CHECK_INTERVAL (seconds, default 120)
- * - Prevents chain‑flooding with per‑chain cooldown timers
+ * 🎁 AirdropAgent v7.7 – Fixed Base Network Detection
+ * - Passes explicit network object (name + chainId) to JsonRpcProvider
+ * - Fixes "invalid network" for Base (chainId 8453)
+ * - All other features unchanged: RSS, Twitter, Discord, GitHub, on‑chain, scoring, etc.
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags } = require('discord.js');
@@ -69,7 +65,6 @@ class AirdropAgent extends BaseAgent {
     this.providers = {};
     this.contractListeners = [];
     this.onchainLastBlock = {};
-    // per‑chain cooldown timers (ms) to enforce backoff
     this._chainCooldown = new Map();
 
     // ---- Chain endpoint mapping ----
@@ -79,6 +74,15 @@ class AirdropAgent extends BaseAgent {
       arbitrum: `https://arb-mainnet.g.alchemy.com/v2/${this.alchemyKey}`,
       optimism: `https://opt-mainnet.g.alchemy.com/v2/${this.alchemyKey}`,
       base: `https://base-mainnet.g.alchemy.com/v2/${this.alchemyKey}`,
+    };
+
+    // ---- Network configs (name + chainId) for ethers ----
+    this.networkConfigs = {
+      ethereum: { name: 'homestead', chainId: 1 },
+      polygon: { name: 'matic', chainId: 137 },
+      arbitrum: { name: 'arbitrum', chainId: 42161 },
+      optimism: { name: 'optimism', chainId: 10 },
+      base: { name: 'base', chainId: 8453 },
     };
 
     // ---- Explorer URL mapping ----
@@ -158,7 +162,7 @@ class AirdropAgent extends BaseAgent {
     this._expiryTimer = setInterval(() => this._updateStatuses(), 60 * 60 * 1000);
 
     const hasWebhook = !!process.env.PREMIUM_AIRDROP_WEBHOOK_URL;
-    this.logger.info(`🎁 AirdropAgent v7.6 ready (feeds: ${this.feeds.length}, twitter: ${!!this.twitterBearer}, onchain: ${this.onchainChains.length > 0}, discordWatch: ${this.discordWatchChannels.length}, extDiscord: ${this.extDiscordServers.length}, github: ${this.githubRepos.length}, scraping: ${this.enableScraping})`);
+    this.logger.info(`🎁 AirdropAgent v7.7 ready (feeds: ${this.feeds.length}, twitter: ${!!this.twitterBearer}, onchain: ${this.onchainChains.length > 0}, discordWatch: ${this.discordWatchChannels.length}, extDiscord: ${this.extDiscordServers.length}, github: ${this.githubRepos.length}, scraping: ${this.enableScraping})`);
   }
 
   // ---------- Load caches ----------
@@ -344,15 +348,6 @@ class AirdropAgent extends BaseAgent {
 
     const checkInterval = (parseInt(process.env.ONCHAIN_CHECK_INTERVAL) || 120) * 1000;
 
-    // Map chain names to ethers network names (for explicit network detection)
-    const networkNames = {
-      ethereum: 'homestead',
-      polygon: 'matic',
-      arbitrum: 'arbitrum',
-      optimism: 'optimism',
-      base: 'base', // base is not built-in, but we pass it anyway; JsonRpcProvider may handle it
-    };
-
     for (const chain of this.onchainChains) {
       const endpoint = this.chainEndpoints[chain];
       if (!endpoint) {
@@ -360,10 +355,18 @@ class AirdropAgent extends BaseAgent {
         continue;
       }
 
+      const networkConfig = this.networkConfigs[chain];
+      if (!networkConfig) {
+        this.logger.warn(`No network config for chain: ${chain} – skipping`);
+        continue;
+      }
+
       try {
-        // Pass the network name explicitly to avoid detection issues
-        const network = networkNames[chain] || chain;
-        const provider = new ethers.providers.JsonRpcProvider(endpoint, network);
+        // Pass explicit network object (name + chainId) to avoid detection issues
+        const provider = new ethers.providers.JsonRpcProvider(endpoint, {
+          name: networkConfig.name,
+          chainId: networkConfig.chainId,
+        });
         this.providers[chain] = provider;
 
         // initial last block
