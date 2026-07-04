@@ -1,14 +1,15 @@
 /**
- * 📡 SocialFeedAgent v1.6 – Centralized Webhook Integration
+ * 📡 SocialFeedAgent v1.7 – Centralized Webhook Integration (Safe Logger)
  * - Fetches content from RSS feeds (Reddit, YouTube, Twitter, crypto news)
  * - Posts new items via "Netizen" webhook (key: 'socialFeed')
  * - Falls back to channel.send if webhook unavailable or fails
  * - Deduplicates via database, optional AI summarization
+ * - Safe logger fallback – prevents "logger.error is not a function" errors
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder } = require('discord.js');
 const Parser = require('rss-parser');
-const { sendWebhook } = require('../core/webhook'); // ✅ centralized helper
+const { sendWebhook } = require('../core/webhook');
 
 class SocialFeedAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -53,12 +54,21 @@ class SocialFeedAgent extends BaseAgent {
       try {
         await this._fetchAndPost();
       } catch (err) {
-        this.logger.error(`SocialFeed job error: ${err.message}`);
+        // Safe logging fallback
+        if (this.logger && typeof this.logger.error === 'function') {
+          this.logger.error(`SocialFeed job error: ${err.message}`);
+        } else {
+          console.error(`[SocialFeedAgent] SocialFeed job error: ${err.message}`);
+        }
       }
     });
 
     const hasWebhook = !!process.env.SOCIAL_FEED_WEBHOOK_URL;
-    this.logger.info(`📡 SocialFeedAgent v1.6 ready (feeds: ${this.feeds.length}, webhook: ${hasWebhook ? '✅' : '❌'})`);
+    if (this.logger && typeof this.logger.info === 'function') {
+      this.logger.info(`📡 SocialFeedAgent v1.7 ready (feeds: ${this.feeds.length}, webhook: ${hasWebhook ? '✅' : '❌'})`);
+    } else {
+      console.log(`[SocialFeedAgent] 📡 ready (feeds: ${this.feeds.length}, webhook: ${hasWebhook ? '✅' : '❌'})`);
+    }
   }
 
   // ---------- Send via Webhook (centralized) with fallback ----------
@@ -69,24 +79,42 @@ class SocialFeedAgent extends BaseAgent {
         username: this.webhookUsername,
         avatarURL: this.webhookAvatar || undefined,
       });
-      this.logger.debug('✅ Social feed item sent via Netizen webhook');
+      // Success log (safe)
+      if (this.logger && typeof this.logger.debug === 'function') {
+        this.logger.debug('✅ Social feed item sent via Netizen webhook');
+      }
       return;
     } catch (err) {
-      this.logger.warn(`Webhook send failed: ${err.message}`);
+      // Safe error log
+      if (this.logger && typeof this.logger.warn === 'function') {
+        this.logger.warn(`Webhook send failed: ${err.message}`);
+      } else {
+        console.warn(`[SocialFeedAgent] Webhook send failed: ${err.message}`);
+      }
     }
 
     // 2. Fallback to channel.send if webhook failed or was missing
     if (!this.channelId) {
-      this.logger.warn('SOCIAL_FEED_CHANNEL_ID not set – cannot send');
+      if (this.logger && typeof this.logger.warn === 'function') {
+        this.logger.warn('SOCIAL_FEED_CHANNEL_ID not set – cannot send');
+      } else {
+        console.warn('[SocialFeedAgent] SOCIAL_FEED_CHANNEL_ID not set');
+      }
       return;
     }
     const channel = this.client.channels.cache.get(this.channelId);
     if (!channel?.isTextBased()) {
-      this.logger.warn(`Channel ${this.channelId} not found or not text-based`);
+      if (this.logger && typeof this.logger.warn === 'function') {
+        this.logger.warn(`Channel ${this.channelId} not found or not text-based`);
+      } else {
+        console.warn(`[SocialFeedAgent] Channel ${this.channelId} not found`);
+      }
       return;
     }
     await channel.send({ embeds: [embed] });
-    this.logger.debug('✅ Social feed item sent via channel.send fallback');
+    if (this.logger && typeof this.logger.debug === 'function') {
+      this.logger.debug('✅ Social feed item sent via channel.send fallback');
+    }
   }
 
   // ---------- Cache (unchanged) ----------
@@ -101,7 +129,13 @@ class SocialFeedAgent extends BaseAgent {
 
   async _saveCache(link) {
     await this.db.run(`INSERT OR REPLACE INTO social_feed_cache (link, postedAt) VALUES (?, ?)`, [link, Date.now()])
-      .catch(err => this.logger.error(`Cache save failed: ${err.message}`));
+      .catch(err => {
+        if (this.logger && typeof this.logger.error === 'function') {
+          this.logger.error(`Cache save failed: ${err.message}`);
+        } else {
+          console.error(`[SocialFeedAgent] Cache save failed: ${err.message}`);
+        }
+      });
   }
 
   _cleanCache() {
@@ -114,7 +148,9 @@ class SocialFeedAgent extends BaseAgent {
   // ---------- Main job ----------
   async _fetchAndPost() {
     if (!this.channelId && !process.env.SOCIAL_FEED_WEBHOOK_URL) {
-      this.logger.debug('No channel or webhook configured – skipping');
+      if (this.logger && typeof this.logger.debug === 'function') {
+        this.logger.debug('No channel or webhook configured – skipping');
+      }
       return;
     }
 
@@ -130,7 +166,11 @@ class SocialFeedAgent extends BaseAgent {
           allItems.push({ ...item, feedUrl, link });
         }
       } catch (err) {
-        this.logger.error(`Social feed error (${feedUrl}): ${err.message}`);
+        if (this.logger && typeof this.logger.error === 'function') {
+          this.logger.error(`Social feed error (${feedUrl}): ${err.message}`);
+        } else {
+          console.error(`[SocialFeedAgent] Social feed error (${feedUrl}): ${err.message}`);
+        }
       }
     }
 
@@ -143,7 +183,13 @@ class SocialFeedAgent extends BaseAgent {
       postedCount++;
     }
 
-    if (postedCount > 0) this.logger.info(`📡 Posted ${postedCount} new social items`);
+    if (postedCount > 0) {
+      if (this.logger && typeof this.logger.info === 'function') {
+        this.logger.info(`📡 Posted ${postedCount} new social items`);
+      } else {
+        console.log(`[SocialFeedAgent] 📡 Posted ${postedCount} new social items`);
+      }
+    }
     this._cleanCache();
   }
 
@@ -161,7 +207,9 @@ class SocialFeedAgent extends BaseAgent {
         try {
           summary = await summaryAgent.summarize(`${title}. ${description}`, 30, 'news');
         } catch (err) {
-          this.logger.debug(`Summary failed: ${err.message}`);
+          if (this.logger && typeof this.logger.debug === 'function') {
+            this.logger.debug(`Summary failed: ${err.message}`);
+          }
         }
       }
     }
