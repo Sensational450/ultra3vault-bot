@@ -1,7 +1,8 @@
 /**
- * 🧠 AiChatAgent v8.1 – Consolidated /ai Command
+ * 🧠 AiChatAgent v8.2 – Consolidated /ai Command (with Group Support)
  * - All AI features under one command: /ai
- * - Subcommands: ask, askimage, reset, sentiment, imagine, stats, kb, preferences, config
+ * - Subcommands: ask, askimage, reset, sentiment, imagine, stats
+ * - Groups: kb, preferences, config
  * - Knowledge Base, token analytics, signal/whale explanation, security, market summary
  * - Full integration with SignalAgent, WhaleAgent, PriceFeedAgent
  * - All existing features: multi‑AI, multimodal, feedback, tools, etc.
@@ -124,7 +125,7 @@ class AiChatAgent extends BaseAgent {
     const providers = [];
     if (this.openai) providers.push('OpenAI');
     if (this.useGemini) providers.push('Gemini');
-    this.logger.info(`🧠 AiChatAgent v8.1 ready (providers: ${providers.join(' + ') || 'none'})`);
+    this.logger.info(`🧠 AiChatAgent v8.2 ready (providers: ${providers.join(' + ') || 'none'})`);
   }
 
   // ---------- Database ----------
@@ -701,14 +702,30 @@ class AiChatAgent extends BaseAgent {
     return result;
   }
 
-  // ---------- SLASH COMMANDS: Consolidated /ai ----------
+  // ---------- SLASH COMMANDS: Consolidated /ai (with Group Support) ----------
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
     if (interaction.commandName !== 'ai') return;
 
+    const group = interaction.options.getSubcommandGroup();
     const sub = interaction.options.getSubcommand();
     const config = await this.getGuildConfig(interaction.guild.id);
 
+    // Handle groups first
+    if (group === 'kb') {
+      await this.cmdKb(interaction);
+      return;
+    }
+    if (group === 'preferences') {
+      await this.cmdPreferences(interaction);
+      return;
+    }
+    if (group === 'config') {
+      await this.cmdConfig(interaction, config);
+      return;
+    }
+
+    // Handle top-level subcommands
     switch (sub) {
       case 'ask':
         await this.cmdAsk(interaction, config);
@@ -727,15 +744,6 @@ class AiChatAgent extends BaseAgent {
         break;
       case 'stats':
         await this.cmdStats(interaction);
-        break;
-      case 'kb':
-        await this.cmdKb(interaction);
-        break;
-      case 'preferences':
-        await this.cmdPreferences(interaction);
-        break;
-      case 'config':
-        await this.cmdConfig(interaction, config);
         break;
       default:
         await interaction.reply({ content: '❌ Unknown subcommand.', ephemeral: true });
