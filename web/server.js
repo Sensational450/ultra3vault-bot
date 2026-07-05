@@ -1,13 +1,14 @@
 /**
- * 🌐 WebServer v6.0 – B2B Dashboard & Webhook Registration
+ * 🌐 WebServer v6.1 – Memory‑Optimized B2B Dashboard
  * - Express server with webhook, static files, admin API, dashboard API
- * - Discord OAuth2 authentication for the dashboard
+ * - Discord OAuth2 authentication with SQLite session store (persistent, no memory leak)
  * - Webhook registration, testing, and management
  * - Integrated with eventBus, logger, and orchestrator
  * - Emits events for payment success, referral, etc.
  */
 const express = require('express');
 const session = require('express-session');
+const SQLiteStore = require('connect-sqlite3')(session);
 const passport = require('passport');
 const { Strategy: DiscordStrategy } = require('passport-discord');
 const crypto = require('crypto');
@@ -46,14 +47,24 @@ class WebServer {
   // ──────────────────────────────────────────────
 
   _setupMiddleware() {
-    // Session (required for OAuth2)
+    // ── SQLite session store (persistent, prevents memory leaks) ──
+    const sessionStore = new SQLiteStore({
+      db: 'sessions.sqlite',
+      table: 'sessions',
+      concurrentDB: true,
+    });
+
+    // Session middleware
     this.app.use(session({
       secret: this.sessionSecret,
+      store: sessionStore,
       resave: false,
       saveUninitialized: false,
       cookie: {
         secure: process.env.NODE_ENV === 'production',
         maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+        httpOnly: true,
+        sameSite: 'lax',
       },
     }));
 
@@ -68,8 +79,14 @@ class WebServer {
       },
     }));
 
-    // Static files (landing page, CSS, etc.)
-    this.app.use(express.static(path.join(__dirname, 'public')));
+    // Static files with cache headers
+    this.app.use(express.static(path.join(__dirname, 'public'), {
+      maxAge: '1d',
+      etag: true,
+    }));
+
+    // Store session store reference for cleanup
+    this.sessionStore = sessionStore;
   }
 
   // ──────────────────────────────────────────────
@@ -108,13 +125,19 @@ class WebServer {
   _setupRoutes() {
     // ── Public routes ──
 
-    // 🏥 Health check
+    // 🏥 Health check (with memory usage)
     this.app.get('/api', (req, res) => {
+      const mem = process.memoryUsage();
       res.json({
         status: 'OK',
         service: 'Ultra3Vault',
-        version: '6.0',
+        version: '6.1',
         timestamp: Date.now(),
+        memory: {
+          rss: Math.round(mem.rss / 1024 / 1024),
+          heapUsed: Math.round(mem.heapUsed / 1024 / 1024),
+          heapTotal: Math.round(mem.heapTotal / 1024 / 1024),
+        },
       });
     });
 
@@ -145,7 +168,10 @@ class WebServer {
     this.app.get('/auth/logout', (req, res) => {
       req.logout((err) => {
         if (err) this.logger.error(`Logout error: ${err.message}`);
-        res.redirect('/');
+        // Destroy session
+        req.session.destroy(() => {
+          res.redirect('/');
+        });
       });
     });
 
@@ -447,6 +473,10 @@ class WebServer {
   }
 
   async stop() {
+    // Close session store
+    if (this.sessionStore && typeof this.sessionStore.close === 'function') {
+      await this.sessionStore.close();
+    }
     if (this.server) {
       await new Promise((resolve) => this.server.close(resolve));
       this.logger.info('🛑 Web server stopped');
