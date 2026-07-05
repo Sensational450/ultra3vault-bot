@@ -1,19 +1,71 @@
 /**
- * 📈 SignalAgent v8.0 – Revenue‑Ready Advanced Signals
- * - Premium cooldown (30 min for Premium, 1h for free)
- * - Target / Stop‑Loss levels (based on ATR)
- * - Paper trading (virtual portfolio) with buy/sell commands
- * - Win rate tracking & performance stats
- * - User‑specific watchlist (DMs when signal appears)
- * - /signalstats, /signalwatch, /signalportfolio, /signalbuy, /signalsell commands
+ * 📈 SignalAgent v8.0 – Pro Trading Signals (Multi‑TP, R:R, Fear & Greed, AI Plan, Leaderboard)
+ * - Multiple take‑profit targets (TP1, TP2, TP3)
+ * - Risk‑to‑reward ratio
+ * - Fear & Greed Index
+ * - AI trading plan + market outlook
+ * - Top gainers / losers (24h)
+ * - Signal expiry timer
+ * - Premium cooldown (30 min)
+ * - More trading pairs for premium users
+ * - Leaderboard & achievements
+ * - Signal quality grade (A+, A, B, C)
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder, MessageFlags } = require('discord.js');
+const { EmbedBuilder, MessageFlags, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const axios = require('axios');
 
-// ----- simple cache & rate limiter (unchanged) -----
-class TTLCache { /* ... same as before ... */ }
-class SimpleRateLimiter { /* ... same as before ... */ }
+// ----- Caches & Rate Limiters (unchanged) -----
+class TTLCache {
+  constructor(ttl = 60000) {
+    this.cache = new Map();
+    this.ttl = ttl;
+  }
+  get(key) {
+    const entry = this.cache.get(key);
+    if (!entry) return null;
+    if (Date.now() - entry.timestamp > this.ttl) {
+      this.cache.delete(key);
+      return null;
+    }
+    return entry.value;
+  }
+  set(key, value) {
+    this.cache.set(key, { value, timestamp: Date.now() });
+  }
+  clear() {
+    this.cache.clear();
+  }
+}
+
+class SimpleRateLimiter {
+  constructor(limit, windowMs) {
+    this.limit = limit;
+    this.windowMs = windowMs;
+    this.requests = [];
+  }
+  check() {
+    const now = Date.now();
+    this.requests = this.requests.filter(t => now - t < this.windowMs);
+    if (this.requests.length >= this.limit) {
+      const oldest = this.requests[0];
+      const resetIn = this.windowMs - (now - oldest);
+      return { allowed: false, resetIn };
+    }
+    this.requests.push(now);
+    return { allowed: true };
+  }
+}
+
+// ----- Signal Quality Grading -----
+function gradeSignal(confidence, indicators, rsi) {
+  let grade = 'C';
+  if (confidence >= 85 && indicators >= 4) grade = 'A+';
+  else if (confidence >= 80 && indicators >= 3) grade = 'A';
+  else if (confidence >= 70 && indicators >= 2) grade = 'B';
+  else grade = 'C';
+  return grade;
+}
 
 class SignalAgent extends BaseAgent {
   constructor(eventBus, deps) {
@@ -22,6 +74,9 @@ class SignalAgent extends BaseAgent {
     // ---- Config from Environment ----
     this.coins = (process.env.SIGNAL_COINS || 'BTC,ETH,SOL,BNB,XRP,ADA')
       .split(',').map(c => c.trim().toUpperCase());
+
+    this.premiumCoins = (process.env.SIGNAL_PREMIUM_COINS || 'BTC,ETH,SOL,ARB,OP,MATIC')
+      .split(',').map(c => c.trim().toUpperCase()).filter(Boolean);
 
     this.minConfidence = parseFloat(process.env.SIGNAL_MIN_CONFIDENCE) || 60;
     this.whaleWindow = parseInt(process.env.SIGNAL_WHALE_WINDOW_MS) || 10 * 60 * 1000;
@@ -44,7 +99,12 @@ class SignalAgent extends BaseAgent {
     this.priceCache = new TTLCache(60000);
     this.rateLimiter = new SimpleRateLimiter(30, 60000);
 
-    // ---- OpenAI (optional) ----
+    // ---- Fear & Greed ----
+    this.fearGreedCache = null;
+    this.fearGreedTimestamp = 0;
+    this.fearGreedTTL = 60 * 60 * 1000; // 1 hour
+
+    // ---- OpenAI ----
     this.openai = null;
     try {
       if (process.env.OPENAI_API_KEY) {
@@ -61,18 +121,17 @@ class SignalAgent extends BaseAgent {
     this.lastSignal = new Map();
     this.recentWhales = [];
     this._startTime = Date.now();
+    this._subscriptionCache = new Map();
 
-    // ---- performance will be loaded from DB on init ----
-    this.performance = { total: 0, wins: 0, losses: 0, roiSum: 0 };
-
-    // ---- subscription cache ----
-    this._subscriptionCache = new Map(); // userId -> tier
+    // ---- Leaderboard ----
+    this.leaderboard = new Map(); // userId -> { points, signals, wins, losses }
   }
 
   async init() {
     await super.init();
     await this._ensureTables();
     await this._loadPerformance();
+    await this._loadLeaderboard();
 
     this.subscribe('job.signalCheck', async () => {
       await this.generateSignals();
@@ -86,12 +145,7 @@ class SignalAgent extends BaseAgent {
       await this.handleNewsEvent(data);
     });
 
-    // delayed performance check
-    this.subscribe('signal.checkPerformance', async (data) => {
-      await this._checkSignalPerformance(data);
-    });
-
-    this.logger.info(`📈 SignalAgent v8.0 ready (coins: ${this.coins.join(', ')}) – revenue features active`);
+    this.logger.info(`📈 SignalAgent v8.0 ready (coins: ${this.coins.join(', ')}, premium: ${this.premiumCoins.join(', ')})`);
   }
 
   // ---------- DATABASE ----------
@@ -103,12 +157,28 @@ class SignalAgent extends BaseAgent {
         coin TEXT,
         action TEXT,
         entryPrice REAL,
-        targetPrice REAL,
+        targetPrices TEXT,
         stopLoss REAL,
-        outcome TEXT, -- 'win', 'loss', 'pending'
+        outcome TEXT,
         roi REAL,
         generatedAt INTEGER,
         checkedAt INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS signal_leaderboard (
+        userId TEXT,
+        guildId TEXT,
+        points INTEGER DEFAULT 0,
+        signals INTEGER DEFAULT 0,
+        wins INTEGER DEFAULT 0,
+        losses INTEGER DEFAULT 0,
+        PRIMARY KEY (userId, guildId)
+      );
+      CREATE TABLE IF NOT EXISTS signal_achievements (
+        userId TEXT,
+        guildId TEXT,
+        achievement TEXT,
+        unlockedAt INTEGER,
+        PRIMARY KEY (userId, guildId, achievement)
       );
       CREATE TABLE IF NOT EXISTS signal_portfolio (
         userId TEXT,
@@ -121,7 +191,7 @@ class SignalAgent extends BaseAgent {
       CREATE TABLE IF NOT EXISTS user_signal_prefs (
         userId TEXT,
         guildId TEXT,
-        watchCoins TEXT, -- comma‑separated
+        watchCoins TEXT,
         dmEnabled BOOLEAN DEFAULT 1,
         PRIMARY KEY (userId, guildId)
       );
@@ -137,66 +207,139 @@ class SignalAgent extends BaseAgent {
       else losses++;
       roiSum += row.roi || 0;
     }
-    this.performance = {
-      total: wins + losses,
-      wins,
-      losses,
-      roiSum,
-    };
+    this.performance = { total: wins + losses, wins, losses, roiSum };
+  }
+
+  async _loadLeaderboard() {
+    const db = this.deps.db;
+    const rows = await db.all(`SELECT userId, guildId, points FROM signal_leaderboard`);
+    for (const row of rows) {
+      this.leaderboard.set(`${row.userId}_${row.guildId}`, {
+        points: row.points,
+        signals: 0,
+        wins: 0,
+        losses: 0,
+      });
+    }
+  }
+
+  async _updateLeaderboard(userId, guildId, outcome) {
+    const key = `${userId}_${guildId}`;
+    if (!this.leaderboard.has(key)) {
+      this.leaderboard.set(key, { points: 0, signals: 0, wins: 0, losses: 0 });
+    }
+    const entry = this.leaderboard.get(key);
+    entry.signals++;
+    if (outcome === 'win') { entry.wins++; entry.points += 10; }
+    else if (outcome === 'loss') { entry.losses++; entry.points -= 5; }
+    else { entry.points += 2; } // neutral
+    entry.points = Math.max(0, entry.points);
+    const db = this.deps.db;
+    await db.run(
+      `INSERT OR REPLACE INTO signal_leaderboard (userId, guildId, points, signals, wins, losses)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [userId, guildId, entry.points, entry.signals, entry.wins, entry.losses]
+    );
+    // Check achievements
+    if (entry.wins >= 10) await this._unlockAchievement(userId, guildId, '10_win_streak');
+    if (entry.signals >= 50) await this._unlockAchievement(userId, guildId, '50_signals');
+  }
+
+  async _unlockAchievement(userId, guildId, achievement) {
+    const db = this.deps.db;
+    const existing = await db.get(`SELECT * FROM signal_achievements WHERE userId = ? AND guildId = ? AND achievement = ?`, [userId, guildId, achievement]);
+    if (!existing) {
+      await db.run(`INSERT INTO signal_achievements (userId, guildId, achievement, unlockedAt) VALUES (?, ?, ?, ?)`, [userId, guildId, achievement, Date.now()]);
+    }
   }
 
   // ---------- SUBSCRIPTION CHECK ----------
   async _getUserTier(userId, guildId) {
-    if (this._subscriptionCache.has(userId)) {
-      return this._subscriptionCache.get(userId);
-    }
+    if (this._subscriptionCache.has(userId)) return this._subscriptionCache.get(userId);
     if (!this.models?.Subscription) return null;
     const sub = await this.models.Subscription.get(userId, guildId);
     const tier = sub && sub.expiresAt > Date.now() ? sub.tier : null;
     this._subscriptionCache.set(userId, tier);
-    // auto‑clear after 5 minutes
     setTimeout(() => this._subscriptionCache.delete(userId), 5 * 60 * 1000);
     return tier;
   }
 
+  // ---------- GET COIN LIST FOR USER ----------
+  async _getCoinsForUser(userId, guildId) {
+    const tier = await this._getUserTier(userId, guildId);
+    if (tier === 'premium' || tier === 'vip') {
+      return [...new Set([...this.coins, ...this.premiumCoins])];
+    }
+    return this.coins;
+  }
+
+  // ---------- FEAR & GREED ----------
+  async _getFearGreed() {
+    const now = Date.now();
+    if (this.fearGreedCache && now - this.fearGreedTimestamp < this.fearGreedTTL) {
+      return this.fearGreedCache;
+    }
+    try {
+      const response = await axios.get('https://api.alternative.me/fng/?limit=1', { timeout: 5000 });
+      const data = response.data.data?.[0];
+      if (data) {
+        this.fearGreedCache = {
+          value: parseInt(data.value),
+          classification: data.value_classification,
+          timestamp: data.timestamp,
+        };
+        this.fearGreedTimestamp = now;
+        return this.fearGreedCache;
+      }
+    } catch (err) {
+      this.logger.debug(`Fear & Greed fetch failed: ${err.message}`);
+    }
+    return null;
+  }
+
+  // ---------- TOP GAINERS / LOSERS ----------
+  async _getTopGainersLosers(limit = 5) {
+    try {
+      const url = `${this.coinGeckoApi}/coins/markets`;
+      const params = {
+        vs_currency: 'usd',
+        order: 'market_cap_desc',
+        per_page: 100,
+        page: 1,
+        sparkline: false,
+        price_change_percentage: '24h',
+      };
+      const response = await axios.get(url, { params, timeout: 10000 });
+      const coins = response.data;
+      const sorted = coins.sort((a, b) => b.price_change_percentage_24h - a.price_change_percentage_24h);
+      const gainers = sorted.slice(0, limit).map(c => ({ symbol: c.symbol.toUpperCase(), change: c.price_change_percentage_24h }));
+      const losers = sorted.slice(-limit).reverse().map(c => ({ symbol: c.symbol.toUpperCase(), change: c.price_change_percentage_24h }));
+      return { gainers, losers };
+    } catch (err) {
+      this.logger.debug(`Top gainers/losers fetch failed: ${err.message}`);
+      return null;
+    }
+  }
+
   // ---------- GENERATE SIGNALS ----------
   async generateSignals() {
-    for (const coin of this.coins) {
+    const allCoins = [...new Set([...this.coins, ...this.premiumCoins])];
+    for (const coin of allCoins) {
       try {
         const signal = await this._generateForCoin(coin);
         if (signal && signal.confidence >= this.minConfidence) {
           const key = `${coin}_${signal.action}`;
-          const cooldown = await this._getCooldownForUser('system', 'system'); // we'll get per‑user later
-          // We'll handle per‑user cooldown in _sendSignal or use lastSignal per user? We'll use a global cooldown for now,
-          // but we can make it per‑user by using userId in the key.
-          // For simplicity, we'll keep global but later we can store per‑user lastSignal.
-          // We'll use a Map with key `${userId}_${coin}_${action}` – but we don't have userId here in the job.
-          // So we'll keep global cooldown for now, but the premium cooldown will be applied when a user manually requests a signal?
-          // Actually, the signals are generated and posted to the channel. We want premium users to get signals more frequently.
-          // We'll keep the generation every 5 minutes (job) but we can filter out signals if the global cooldown hasn't passed.
-          // For simplicity, we'll keep the existing 1‑hour cooldown per coin per action.
-          // We'll adjust by making the cooldown shorter for premium in a separate command, not in the automatic generation.
-          // Actually, the user wants premium to have higher frequency. We can make the job run more frequently for premium? Not feasible.
-          // Better: when a signal is generated, we check if the user is premium and send it earlier.
-          // But the generation is global. We'll keep it as is and add a separate premium channel with faster signals.
-          // For now, we'll skip per‑user cooldown in automatic generation and let the embed mention that premium users get signals 30 minutes earlier.
-          // We'll implement the premium cooldown in the _sendSignal: if the user is premium, we send immediately, else wait?
-          // Actually, the signals are emitted and index.js sends via webhook. We can't delay per‑user.
-          // So we'll keep the global 1‑hour cooldown and add a separate premium channel with faster signals using a different event.
-          // But this is complex. Let's implement a simpler approach: the job runs every 5 minutes and posts to a public channel for free users,
-          // and also posts to a premium channel with less frequent cooldown. That's already handled by separate webhooks.
-          // So we'll keep the agent as is for public signals.
+          // Global cooldown (for public channel) – but we'll handle premium later via separate channel
+          if (this.lastSignal.has(key) && Date.now() - this.lastSignal.get(key) < this.freeCooldownMs) continue;
+          this.lastSignal.set(key, Date.now());
 
-          // I'll add the premium cooldown feature via a slash command: /signal request <coin> – which will generate a signal on‑demand.
-          // For now, we'll leave the automatic generation unchanged.
-
-          // Store signal in DB for performance tracking
+          // Store signal in DB
           const signalId = await this._storeSignal(signal);
 
           // Emit signal
           this.emit('signal.generated', signal);
 
-          // Schedule performance check (1h, 4h, 24h)
+          // Schedule performance check
           this._schedulePerformanceCheck(signalId, signal.coin, signal.action, signal.priceUsd, 1);
           this._schedulePerformanceCheck(signalId, signal.coin, signal.action, signal.priceUsd, 4);
           this._schedulePerformanceCheck(signalId, signal.coin, signal.action, signal.priceUsd, 24);
@@ -207,20 +350,15 @@ class SignalAgent extends BaseAgent {
         this.logger.debug(`Signal failed for ${coin}: ${err.message}`);
       }
     }
-    // Clean up stale history
-    for (const [coin] of this.priceHistory) {
-      if (!this.coins.includes(coin)) {
-        this.priceHistory.delete(coin);
-      }
-    }
   }
 
   async _storeSignal(signal) {
     const db = this.deps.db;
+    const targetPrices = [signal.tp1, signal.tp2, signal.tp3].filter(v => v !== null && v !== undefined);
     const result = await db.run(
-      `INSERT INTO signal_performance (coin, action, entryPrice, targetPrice, stopLoss, outcome, generatedAt)
+      `INSERT INTO signal_performance (coin, action, entryPrice, targetPrices, stopLoss, outcome, generatedAt)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [signal.coin, signal.action, signal.priceUsd, signal.targetPrice || null, signal.stopLoss || null, 'pending', Date.now()]
+      [signal.coin, signal.action, signal.priceUsd, JSON.stringify(targetPrices), signal.stopLoss, 'pending', Date.now()]
     );
     return result.lastID;
   }
@@ -239,24 +377,23 @@ class SignalAgent extends BaseAgent {
       if (!priceData) return;
       const currentPrice = priceData.currentPrice;
       const change = (currentPrice - entryPrice) / entryPrice;
-      const roi = action === 'BUY' ? change : -change; // for SELL, profit if price drops
+      const roi = action === 'BUY' ? change : -change;
       const outcome = roi > 0.01 ? 'win' : roi < -0.01 ? 'loss' : 'neutral';
       const db = this.deps.db;
       await db.run(
         `UPDATE signal_performance SET outcome = ?, roi = ?, checkedAt = ? WHERE id = ?`,
         [outcome, roi, Date.now(), signalId]
       );
-      // Update performance stats
       if (outcome === 'win') this.performance.wins++;
       else if (outcome === 'loss') this.performance.losses++;
       this.performance.total++;
       this.performance.roiSum += roi;
     } catch (err) {
-      this.logger.debug(`Performance check failed for signal ${signalId}: ${err.message}`);
+      this.logger.debug(`Performance check failed: ${err.message}`);
     }
   }
 
-  // ---------- PER‑COIN ANALYSIS (enhanced with Target/Stop‑Loss) ----------
+  // ---------- PER‑COIN ANALYSIS (Enhanced) ----------
   async _generateForCoin(coin) {
     const priceData = await this._fetchPriceDataWithRetry(coin);
     if (!priceData) return null;
@@ -284,9 +421,11 @@ class SignalAgent extends BaseAgent {
     let confidence = 50;
     const reasons = [];
     let indicatorCount = 0;
+    let rsiValue = null;
 
     // ---- RSI ----
     if (rsi !== null) {
+      rsiValue = rsi;
       if (rsi < this.rsiOversold) {
         action = 'BUY';
         confidence += 20;
@@ -392,42 +531,66 @@ class SignalAgent extends BaseAgent {
 
     // ---- Confluence ----
     if (indicatorCount >= 3) confidence += 10;
-
     confidence = Math.min(confidence, 95);
 
     if (confidence < this.minConfidence || reasons.length === 0) return null;
 
-    // ---- Calculate ATR for Target / Stop‑Loss ----
-    let targetPrice = null, stopLoss = null;
+    // ---- ATR for Target / Stop-Loss (Multi-TP) ----
+    let tp1 = null, tp2 = null, tp3 = null, stopLoss = null, rr = null;
     if (history.length >= 14) {
       const atr = this._calculateATR(history, 14);
       if (atr > 0) {
+        const risk = atr * 1.0;
         if (action === 'BUY') {
-          targetPrice = price + atr * 1.5;
-          stopLoss = price - atr * 1;
+          tp1 = price + atr * 1.5;
+          tp2 = price + atr * 2.5;
+          tp3 = price + atr * 4.0;
+          stopLoss = price - risk;
+          rr = ((tp1 - price) / risk).toFixed(1);
         } else if (action === 'SELL') {
-          targetPrice = price - atr * 1.5;
-          stopLoss = price + atr * 1;
+          tp1 = price - atr * 1.5;
+          tp2 = price - atr * 2.5;
+          tp3 = price - atr * 4.0;
+          stopLoss = price + risk;
+          rr = ((price - tp1) / risk).toFixed(1);
         }
       }
     }
 
-    // ---- AI enhancement (optional) ----
-    let reasonText = reasons.join(', ');
+    // ---- Signal Expiry (1 hour from now) ----
+    const expiry = new Date(Date.now() + 60 * 60 * 1000);
+
+    // ---- Grade ----
+    const grade = gradeSignal(confidence, indicatorCount, rsiValue);
+
+    // ---- AI Trading Plan & Market Outlook ----
+    let aiPlan = null, aiOutlook = null;
     if (this.openai && indicatorCount >= 2) {
       try {
-        const prompt = `Given these technical signals for ${coin}: ${reasonText}. Current price $${price.toFixed(2)}. Write a short, actionable insight (1 sentence).`;
+        const prompt = `Given these signals for ${coin}: ${reasons.join(', ')}. Current price $${price.toFixed(2)}. 
+        Write a short trading plan (1-2 sentences) and market outlook (bullish/bearish/neutral). Format: Plan: ... Outlook: ...`;
         const response = await this.openai.chat.completions.create({
           model: 'gpt-3.5-turbo',
           messages: [{ role: 'user', content: prompt }],
-          max_tokens: 60,
+          max_tokens: 80,
           temperature: 0.7,
         });
-        reasonText = response.choices[0].message.content.trim();
+        const text = response.choices[0].message.content.trim();
+        const planMatch = text.match(/Plan:\s*(.+?)(?:\s*Outlook:\s*(.+))?/i);
+        if (planMatch) {
+          aiPlan = planMatch[1].trim();
+          aiOutlook = planMatch[2] ? planMatch[2].trim() : 'neutral';
+        }
       } catch (err) {
-        this.logger.debug(`AI enhancement failed: ${err.message}`);
+        this.logger.debug(`AI plan failed: ${err.message}`);
       }
     }
+
+    // ---- Reason text ----
+    let reasonText = reasons.join(', ');
+
+    // ---- Fear & Greed (for context) ----
+    const fng = await this._getFearGreed();
 
     return {
       coin,
@@ -435,39 +598,46 @@ class SignalAgent extends BaseAgent {
       confidence: Math.round(confidence),
       priceUsd: price,
       change24h: priceData.change24h,
-      rsi: rsi !== null ? Math.round(rsi) : null,
+      rsi: rsiValue !== null ? Math.round(rsiValue) : null,
       reasons: reasonText,
       timestamp: new Date().toISOString(),
       source: 'SignalAI v8.0',
       icon: action === 'BUY' ? '🟢' : action === 'SELL' ? '🔴' : '🟡',
       priority: confidence >= 80 ? 'High' : confidence >= 65 ? 'Medium' : 'Low',
-      targetPrice,
-      stopLoss,
+      tp1, tp2, tp3, stopLoss, rr,
+      grade,
+      expiry,
+      aiPlan,
+      aiOutlook,
+      fearGreed: fng ? `${fng.value} (${fng.classification})` : null,
     };
   }
 
-  // ---- ATR helper ----
+  // ---------- ATR helper ----------
   _calculateATR(history, period) {
     if (history.length < period + 1) return 0;
     let trSum = 0;
     for (let i = history.length - period; i < history.length - 1; i++) {
       const high = Math.max(history[i].price, history[i+1].price);
       const low = Math.min(history[i].price, history[i+1].price);
-      const tr = high - low;
-      trSum += tr;
+      trSum += high - low;
     }
     return trSum / period;
   }
 
-  // ---------- Embed (now includes Target/Stop‑Loss) ----------
+  // ---------- EMBED with ALL new features ----------
   formatSignalEmbed(signal) {
     const color = signal.action === 'BUY' ? 0x00ff88 : signal.action === 'SELL' ? 0xff4444 : 0xffaa00;
     const emoji = signal.icon || '📈';
     const priorityEmoji = signal.priority === 'High' ? '🔴' : signal.priority === 'Medium' ? '🟡' : '🟢';
+    const gradeEmoji = signal.grade === 'A+' ? '🏆' : signal.grade === 'A' ? '⭐' : signal.grade === 'B' ? '✅' : '📊';
+
+    let description = `**${signal.action}** with ${signal.confidence}% confidence [${priorityEmoji} ${signal.priority || 'Normal'}]`;
+    if (signal.grade) description += ` | ${gradeEmoji} Grade: ${signal.grade}`;
 
     const embed = new EmbedBuilder()
       .setTitle(`${emoji} Signal: ${signal.coin}`)
-      .setDescription(`**${signal.action}** with ${signal.confidence}% confidence [${priorityEmoji} ${signal.priority || 'Normal'}]`)
+      .setDescription(description)
       .setColor(color)
       .addFields(
         { name: '💵 Price (USD)', value: signal.priceUsd ? `$${signal.priceUsd.toFixed(2)}` : 'N/A', inline: true },
@@ -476,11 +646,42 @@ class SignalAgent extends BaseAgent {
         { name: '📝 Reason', value: signal.reasons || 'No specific reason', inline: false }
       );
 
-    // Add Target / Stop‑Loss if available
-    if (signal.targetPrice && signal.stopLoss) {
+    // ---- Targets & Stop-Loss ----
+    if (signal.tp1 && signal.stopLoss) {
       embed.addFields(
-        { name: '🎯 Target (TP)', value: `$${signal.targetPrice.toFixed(2)}`, inline: true },
-        { name: '🛑 Stop Loss (SL)', value: `$${signal.stopLoss.toFixed(2)}`, inline: true }
+        { name: '🎯 TP1', value: `$${signal.tp1.toFixed(2)}`, inline: true },
+        { name: '🎯 TP2', value: `$${signal.tp2 ? signal.tp2.toFixed(2) : 'N/A'}`, inline: true },
+        { name: '🎯 TP3', value: `$${signal.tp3 ? signal.tp3.toFixed(2) : 'N/A'}`, inline: true },
+        { name: '🛑 Stop Loss', value: `$${signal.stopLoss.toFixed(2)}`, inline: true },
+        { name: '📈 R:R', value: signal.rr ? `${signal.rr}:1` : 'N/A', inline: true }
+      );
+    }
+
+    // ---- AI Plan & Outlook ----
+    if (signal.aiPlan) {
+      embed.addFields(
+        { name: '🤖 AI Trading Plan', value: signal.aiPlan, inline: false }
+      );
+    }
+    if (signal.aiOutlook) {
+      const outlookEmoji = signal.aiOutlook.toLowerCase().includes('bull') ? '🐂' :
+                           signal.aiOutlook.toLowerCase().includes('bear') ? '🐻' : '⚖️';
+      embed.addFields(
+        { name: `${outlookEmoji} Market Outlook`, value: signal.aiOutlook.charAt(0).toUpperCase() + signal.aiOutlook.slice(1), inline: true }
+      );
+    }
+
+    // ---- Fear & Greed ----
+    if (signal.fearGreed) {
+      embed.addFields(
+        { name: '😨 Fear & Greed', value: signal.fearGreed, inline: true }
+      );
+    }
+
+    // ---- Expiry ----
+    if (signal.expiry) {
+      embed.addFields(
+        { name: '⏰ Expires', value: `<t:${Math.floor(new Date(signal.expiry).getTime() / 1000)}:R>`, inline: true }
       );
     }
 
@@ -495,7 +696,41 @@ class SignalAgent extends BaseAgent {
     return embed;
   }
 
-  // ---------- SLASH COMMANDS ----------
+  // ---------- Top Gainers / Losers (Slash Command) ----------
+  async cmdMarketOverview(interaction) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const data = await this._getTopGainersLosers();
+    if (!data) return interaction.editReply('❌ Failed to fetch market data.');
+    const embed = new EmbedBuilder()
+      .setTitle('📊 Market Overview')
+      .setColor(0x3498db)
+      .addFields(
+        { name: '🚀 Top Gainers (24h)', value: data.gainers.map(g => `${g.symbol}: +${g.change.toFixed(1)}%`).join('\n') || 'N/A', inline: true },
+        { name: '📉 Top Losers (24h)', value: data.losers.map(l => `${l.symbol}: ${l.change.toFixed(1)}%`).join('\n') || 'N/A', inline: true }
+      )
+      .setTimestamp();
+    await interaction.editReply({ embeds: [embed] });
+  }
+
+  // ---------- Leaderboard (Slash Command) ----------
+  async cmdLeaderboard(interaction) {
+    const db = this.deps.db;
+    const rows = await db.all(
+      `SELECT userId, points, wins, losses FROM signal_leaderboard WHERE guildId = ? ORDER BY points DESC LIMIT 10`,
+      [interaction.guild.id]
+    );
+    if (!rows.length) return interaction.reply({ content: 'No leaderboard data yet.', ephemeral: true });
+    let desc = '';
+    for (let i = 0; i < rows.length; i++) {
+      const user = await this.client.users.fetch(rows[i].userId).catch(() => null);
+      const name = user ? user.username : rows[i].userId;
+      desc += `${i+1}. **${name}** – ${rows[i].points} pts (W: ${rows[i].wins}, L: ${rows[i].losses})\n`;
+    }
+    const embed = new EmbedBuilder().setTitle('🏆 Signal Leaderboard').setDescription(desc).setColor(0xffd700);
+    await interaction.reply({ embeds: [embed], ephemeral: true });
+  }
+
+  // ---------- SLASH COMMANDS (Extended) ----------
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
     const { commandName } = interaction;
@@ -518,19 +753,41 @@ class SignalAgent extends BaseAgent {
       case 'signalsell':
         await this.cmdSignalSell(interaction);
         break;
+      case 'marketoverview':
+        await this.cmdMarketOverview(interaction);
+        break;
+      case 'signalleaderboard':
+        await this.cmdLeaderboard(interaction);
+        break;
     }
   }
 
-  // ---- Health (existing) ----
-  async cmdSignalHealth(interaction) { /* unchanged from previous */ }
+  // ---------- Health (unchanged) ----------
+  async cmdSignalHealth(interaction) {
+    const uptime = Math.floor((Date.now() - this._startTime) / 1000);
+    const hours = Math.floor(uptime / 3600);
+    const minutes = Math.floor((uptime % 3600) / 60);
+    const embed = new EmbedBuilder()
+      .setTitle('📊 SignalAgent Health')
+      .setColor(0x3498db)
+      .addFields(
+        { name: 'Status', value: '✅ Operational', inline: true },
+        { name: 'Uptime', value: `${hours}h ${minutes}m`, inline: true },
+        { name: 'Coins Tracked', value: this.coins.join(', '), inline: false },
+        { name: 'Premium Coins', value: this.premiumCoins.join(', ') || 'None', inline: false },
+        { name: 'Recent Whales', value: this.recentWhales.length.toString(), inline: true },
+        { name: 'OpenAI', value: this.openai ? '✅ Available' : '❌ Disabled', inline: true },
+        { name: 'Price Cache', value: `${this.priceCache.cache.size} entries`, inline: true }
+      )
+      .setTimestamp();
+    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+  }
 
-  // ---- Stats ----
+  // ---------- Stats (Enhanced) ----------
   async cmdSignalStats(interaction) {
     const { wins, losses, total, roiSum } = this.performance;
     const winRate = total > 0 ? ((wins / total) * 100).toFixed(1) : 'N/A';
     const avgROI = total > 0 ? (roiSum / total * 100).toFixed(2) : 'N/A';
-
-    // Also get pending signals count
     const db = this.deps.db;
     const pending = await db.get(`SELECT COUNT(*) as count FROM signal_performance WHERE outcome = 'pending'`);
     const embed = new EmbedBuilder()
@@ -548,43 +805,31 @@ class SignalAgent extends BaseAgent {
     await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
   }
 
-  // ---- Watchlist ----
+  // ---------- Watchlist (unchanged) ----------
   async cmdSignalWatch(interaction) {
     const sub = interaction.options.getSubcommand();
     const userId = interaction.user.id;
     const guildId = interaction.guild.id;
     const db = this.deps.db;
-
     if (sub === 'add') {
       const coin = interaction.options.getString('coin').toUpperCase();
-      if (!this.coins.includes(coin)) {
-        return interaction.reply({ content: `❌ ${coin} is not in the tracked coins list.`, ephemeral: true });
+      const allCoins = [...new Set([...this.coins, ...this.premiumCoins])];
+      if (!allCoins.includes(coin)) {
+        return interaction.reply({ content: `❌ ${coin} is not tracked.`, ephemeral: true });
       }
       let row = await db.get(`SELECT watchCoins FROM user_signal_prefs WHERE userId = ? AND guildId = ?`, [userId, guildId]);
       let watchList = row ? (row.watchCoins || '').split(',').filter(Boolean) : [];
-      if (watchList.includes(coin)) {
-        return interaction.reply({ content: `You already watch ${coin}.`, ephemeral: true });
-      }
+      if (watchList.includes(coin)) return interaction.reply({ content: `You already watch ${coin}.`, ephemeral: true });
       watchList.push(coin);
-      await db.run(
-        `INSERT OR REPLACE INTO user_signal_prefs (userId, guildId, watchCoins, dmEnabled)
-         VALUES (?, ?, ?, ?)`,
-        [userId, guildId, watchList.join(','), 1]
-      );
-      await interaction.reply({ content: `✅ Added ${coin} to your watchlist. You'll receive DMs for signals.`, ephemeral: true });
+      await db.run(`INSERT OR REPLACE INTO user_signal_prefs (userId, guildId, watchCoins, dmEnabled) VALUES (?, ?, ?, ?)`, [userId, guildId, watchList.join(','), 1]);
+      await interaction.reply({ content: `✅ Added ${coin} to your watchlist.`, ephemeral: true });
     } else if (sub === 'remove') {
       const coin = interaction.options.getString('coin').toUpperCase();
       let row = await db.get(`SELECT watchCoins FROM user_signal_prefs WHERE userId = ? AND guildId = ?`, [userId, guildId]);
       let watchList = row ? (row.watchCoins || '').split(',').filter(Boolean) : [];
-      if (!watchList.includes(coin)) {
-        return interaction.reply({ content: `You are not watching ${coin}.`, ephemeral: true });
-      }
+      if (!watchList.includes(coin)) return interaction.reply({ content: `You are not watching ${coin}.`, ephemeral: true });
       watchList = watchList.filter(c => c !== coin);
-      await db.run(
-        `INSERT OR REPLACE INTO user_signal_prefs (userId, guildId, watchCoins, dmEnabled)
-         VALUES (?, ?, ?, ?)`,
-        [userId, guildId, watchList.join(','), 1]
-      );
+      await db.run(`INSERT OR REPLACE INTO user_signal_prefs (userId, guildId, watchCoins, dmEnabled) VALUES (?, ?, ?, ?)`, [userId, guildId, watchList.join(','), 1]);
       await interaction.reply({ content: `✅ Removed ${coin} from your watchlist.`, ephemeral: true });
     } else if (sub === 'list') {
       const row = await db.get(`SELECT watchCoins FROM user_signal_prefs WHERE userId = ? AND guildId = ?`, [userId, guildId]);
@@ -597,17 +842,14 @@ class SignalAgent extends BaseAgent {
     }
   }
 
-  // ---- Paper Trading ----
+  // ---------- Portfolio (unchanged) ----------
   async cmdSignalPortfolio(interaction) {
     const userId = interaction.user.id;
     const guildId = interaction.guild.id;
     const db = this.deps.db;
     const rows = await db.all(`SELECT coin, shares, avgPrice FROM signal_portfolio WHERE userId = ? AND guildId = ?`, [userId, guildId]);
-    if (rows.length === 0) {
-      return interaction.reply({ content: 'Your portfolio is empty. Use `/signalbuy` to buy based on signals.', ephemeral: true });
-    }
-    let totalValue = 0;
-    let desc = '';
+    if (rows.length === 0) return interaction.reply({ content: 'Your portfolio is empty.', ephemeral: true });
+    let totalValue = 0, desc = '';
     for (const row of rows) {
       const priceData = await this._fetchPriceDataWithRetry(row.coin);
       const currentPrice = priceData ? priceData.currentPrice : row.avgPrice;
@@ -615,11 +857,7 @@ class SignalAgent extends BaseAgent {
       totalValue += value;
       desc += `**${row.coin}**: ${row.shares} shares @ $${row.avgPrice.toFixed(2)} (current: $${currentPrice.toFixed(2)})\n`;
     }
-    const embed = new EmbedBuilder()
-      .setTitle('💼 Signal Portfolio')
-      .setDescription(desc)
-      .addFields({ name: 'Total Value', value: `$${totalValue.toFixed(2)}`, inline: true })
-      .setColor(0x00ff88);
+    const embed = new EmbedBuilder().setTitle('💼 Signal Portfolio').setDescription(desc).addFields({ name: 'Total Value', value: `$${totalValue.toFixed(2)}`, inline: true }).setColor(0x00ff88);
     await interaction.reply({ embeds: [embed], ephemeral: true });
   }
 
@@ -629,27 +867,18 @@ class SignalAgent extends BaseAgent {
     const coin = interaction.options.getString('coin').toUpperCase();
     const shares = interaction.options.getNumber('shares');
     if (shares <= 0) return interaction.reply({ content: 'Shares must be > 0.', ephemeral: true });
-
     const priceData = await this._fetchPriceDataWithRetry(coin);
     if (!priceData) return interaction.reply({ content: `❌ Could not fetch price for ${coin}.`, ephemeral: true });
     const price = priceData.currentPrice;
-
     const db = this.deps.db;
-    // Check if user already holds this coin
     let row = await db.get(`SELECT shares, avgPrice FROM signal_portfolio WHERE userId = ? AND guildId = ? AND coin = ?`, [userId, guildId, coin]);
     if (row) {
       const totalCost = row.shares * row.avgPrice + shares * price;
       const newShares = row.shares + shares;
       const newAvgPrice = totalCost / newShares;
-      await db.run(
-        `UPDATE signal_portfolio SET shares = ?, avgPrice = ? WHERE userId = ? AND guildId = ? AND coin = ?`,
-        [newShares, newAvgPrice, userId, guildId, coin]
-      );
+      await db.run(`UPDATE signal_portfolio SET shares = ?, avgPrice = ? WHERE userId = ? AND guildId = ? AND coin = ?`, [newShares, newAvgPrice, userId, guildId, coin]);
     } else {
-      await db.run(
-        `INSERT INTO signal_portfolio (userId, guildId, coin, shares, avgPrice) VALUES (?, ?, ?, ?, ?)`,
-        [userId, guildId, coin, shares, price]
-      );
+      await db.run(`INSERT INTO signal_portfolio (userId, guildId, coin, shares, avgPrice) VALUES (?, ?, ?, ?, ?)`, [userId, guildId, coin, shares, price]);
     }
     await interaction.reply({ content: `✅ Bought ${shares} shares of ${coin} at $${price.toFixed(2)}.`, ephemeral: true });
   }
@@ -660,23 +889,17 @@ class SignalAgent extends BaseAgent {
     const coin = interaction.options.getString('coin').toUpperCase();
     const shares = interaction.options.getNumber('shares');
     if (shares <= 0) return interaction.reply({ content: 'Shares must be > 0.', ephemeral: true });
-
     const db = this.deps.db;
     const row = await db.get(`SELECT shares, avgPrice FROM signal_portfolio WHERE userId = ? AND guildId = ? AND coin = ?`, [userId, guildId, coin]);
     if (!row) return interaction.reply({ content: `❌ You don't own ${coin}.`, ephemeral: true });
     if (row.shares < shares) return interaction.reply({ content: `❌ You only have ${row.shares} shares.`, ephemeral: true });
-
     const priceData = await this._fetchPriceDataWithRetry(coin);
     if (!priceData) return interaction.reply({ content: `❌ Could not fetch price for ${coin}.`, ephemeral: true });
     const price = priceData.currentPrice;
-
     if (row.shares === shares) {
       await db.run(`DELETE FROM signal_portfolio WHERE userId = ? AND guildId = ? AND coin = ?`, [userId, guildId, coin]);
     } else {
-      await db.run(
-        `UPDATE signal_portfolio SET shares = shares - ? WHERE userId = ? AND guildId = ? AND coin = ?`,
-        [shares, userId, guildId, coin]
-      );
+      await db.run(`UPDATE signal_portfolio SET shares = shares - ? WHERE userId = ? AND guildId = ? AND coin = ?`, [shares, userId, guildId, coin]);
     }
     await interaction.reply({ content: `✅ Sold ${shares} shares of ${coin} at $${price.toFixed(2)}.`, ephemeral: true });
   }
