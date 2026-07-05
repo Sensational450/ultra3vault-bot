@@ -1,5 +1,5 @@
 /**
- * 📈 SignalAgent v8.0 – Pro Trading Signals (Multi‑TP, R:R, Fear & Greed, AI Plan, Leaderboard)
+ * 📈 SignalAgent v8.1 – Single /signal Command (Subcommands)
  * - Multiple take‑profit targets (TP1, TP2, TP3)
  * - Risk‑to‑reward ratio
  * - Fear & Greed Index
@@ -10,12 +10,13 @@
  * - More trading pairs for premium users
  * - Leaderboard & achievements
  * - Signal quality grade (A+, A, B, C)
+ * - All subcommands under /signal
  */
 const BaseAgent = require('./baseAgent');
 const { EmbedBuilder, MessageFlags, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const axios = require('axios');
 
-// ----- Caches & Rate Limiters (unchanged) -----
+// ----- Caches & Rate Limiters -----
 class TTLCache {
   constructor(ttl = 60000) {
     this.cache = new Map();
@@ -145,7 +146,7 @@ class SignalAgent extends BaseAgent {
       await this.handleNewsEvent(data);
     });
 
-    this.logger.info(`📈 SignalAgent v8.0 ready (coins: ${this.coins.join(', ')}, premium: ${this.premiumCoins.join(', ')})`);
+    this.logger.info(`📈 SignalAgent v8.1 ready (coins: ${this.coins.join(', ')}, premium: ${this.premiumCoins.join(', ')})`);
   }
 
   // ---------- DATABASE ----------
@@ -601,7 +602,7 @@ class SignalAgent extends BaseAgent {
       rsi: rsiValue !== null ? Math.round(rsiValue) : null,
       reasons: reasonText,
       timestamp: new Date().toISOString(),
-      source: 'SignalAI v8.0',
+      source: 'SignalAI v8.1',
       icon: action === 'BUY' ? '🟢' : action === 'SELL' ? '🔴' : '🟡',
       priority: confidence >= 80 ? 'High' : confidence >= 65 ? 'Medium' : 'Low',
       tp1, tp2, tp3, stopLoss, rr,
@@ -691,7 +692,7 @@ class SignalAgent extends BaseAgent {
       { name: 'Priority', value: signal.priority || 'Normal', inline: true }
     )
     .setTimestamp()
-    .setFooter({ text: 'Ultra3Vault • Signal AI v8.0' });
+    .setFooter({ text: 'Ultra3Vault • Signal AI v8.1' });
 
     return embed;
   }
@@ -730,39 +731,43 @@ class SignalAgent extends BaseAgent {
     await interaction.reply({ embeds: [embed], ephemeral: true });
   }
 
-  // ---------- SLASH COMMANDS (Extended) ----------
+  // ---------- SLASH COMMANDS (Single /signal command) ----------
   async onInteraction(interaction) {
     if (!interaction.isCommand()) return;
-    const { commandName } = interaction;
-    switch (commandName) {
-      case 'signalhealth':
+    if (interaction.commandName !== 'signal') return;
+
+    const sub = interaction.options.getSubcommand();
+    switch (sub) {
+      case 'health':
         await this.cmdSignalHealth(interaction);
         break;
-      case 'signalstats':
+      case 'stats':
         await this.cmdSignalStats(interaction);
         break;
-      case 'signalwatch':
+      case 'watch':
         await this.cmdSignalWatch(interaction);
         break;
-      case 'signalportfolio':
+      case 'portfolio':
         await this.cmdSignalPortfolio(interaction);
         break;
-      case 'signalbuy':
+      case 'buy':
         await this.cmdSignalBuy(interaction);
         break;
-      case 'signalsell':
+      case 'sell':
         await this.cmdSignalSell(interaction);
         break;
-      case 'marketoverview':
+      case 'market':
         await this.cmdMarketOverview(interaction);
         break;
-      case 'signalleaderboard':
+      case 'leaderboard':
         await this.cmdLeaderboard(interaction);
         break;
+      default:
+        await interaction.reply({ content: '❌ Unknown subcommand.', ephemeral: true });
     }
   }
 
-  // ---------- Health (unchanged) ----------
+  // ---------- Health ----------
   async cmdSignalHealth(interaction) {
     const uptime = Math.floor((Date.now() - this._startTime) / 1000);
     const hours = Math.floor(uptime / 3600);
@@ -783,7 +788,7 @@ class SignalAgent extends BaseAgent {
     await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
   }
 
-  // ---------- Stats (Enhanced) ----------
+  // ---------- Stats ----------
   async cmdSignalStats(interaction) {
     const { wins, losses, total, roiSum } = this.performance;
     const winRate = total > 0 ? ((wins / total) * 100).toFixed(1) : 'N/A';
@@ -805,7 +810,7 @@ class SignalAgent extends BaseAgent {
     await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
   }
 
-  // ---------- Watchlist (unchanged) ----------
+  // ---------- Watchlist ----------
   async cmdSignalWatch(interaction) {
     const sub = interaction.options.getSubcommand();
     const userId = interaction.user.id;
@@ -842,7 +847,7 @@ class SignalAgent extends BaseAgent {
     }
   }
 
-  // ---------- Portfolio (unchanged) ----------
+  // ---------- Portfolio ----------
   async cmdSignalPortfolio(interaction) {
     const userId = interaction.user.id;
     const guildId = interaction.guild.id;
