@@ -1,5 +1,5 @@
 /**
- * 🚀 Ultra3Vault v6.0 – Memory‑Optimized Multi‑Agent Discord Bot with B2B Webhook Data Feed
+ * 🚀 Ultra3Vault v6.1 – Memory‑Optimized with Startup Cleanup
  * Entry point: initializes core, agents, web server, and scheduler.
  */
 require('dotenv').config();
@@ -15,8 +15,8 @@ const { WebServer } = require('./web/server');
 const secrets = require('./config/secrets');
 const axios = require('axios');
 const ButtonHandler = require('./tools/discord/buttonHandler');
-const { sendWebhook } = require('./core/webhook'); // internal named webhooks
-const WebhookSender = require('./tools/discord/webhookSender'); // raw URL sender
+const { sendWebhook } = require('./core/webhook');
+const WebhookSender = require('./tools/discord/webhookSender');
 
 // ================= UNHANDLED ERROR HANDLERS =================
 process.on('uncaughtException', (err) => {
@@ -34,23 +34,11 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
   ],
-  partials: [], // Disable partials to reduce cache
+  partials: [],
   sweepers: {
-    // Sweep messages older than 30 minutes every 5 minutes
-    messages: {
-      interval: 300, // seconds = 5 minutes
-      lifetime: 1800, // seconds = 30 minutes
-    },
-    // Prevent user cache from growing indefinitely
-    users: {
-      interval: 3600, // 1 hour
-      filter: () => false, // Do not sweep users (keep them, but they are limited by guild members anyway)
-    },
-    // Limit guild members cache (fetch on demand)
-    members: {
-      interval: 3600,
-      filter: () => false,
-    },
+    messages: { interval: 300, lifetime: 1800 },
+    users: { interval: 3600, filter: () => false },
+    members: { interval: 3600, filter: () => false },
   },
 });
 
@@ -128,17 +116,9 @@ try {
 }
 
 // ================= B2B HELPER: Deliver to Subscribers =================
-/**
- * Deliver an embed payload to all active subscribers who have the agent enabled.
- * @param {string} agentName - e.g., 'NewsAgent', 'SignalAgent'
- * @param {string} eventType - e.g., 'news.summarized', 'signal.generated'
- * @param {EmbedBuilder|Object} embed - Discord embed to send
- * @param {Object} options - Optional: { content, components }
- */
 async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
   try {
     const now = Date.now();
-    // Fetch all active subscriptions with a valid webhook
     const rows = await db.all(
       `SELECT userId, guildId, webhook_url, agentAccess FROM subscriptions
        WHERE webhook_url IS NOT NULL
@@ -147,7 +127,6 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
       [now]
     );
 
-    // Filter by agent access
     const subscribers = rows.filter(row => {
       try {
         const access = row.agentAccess ? JSON.parse(row.agentAccess) : ['moderation'];
@@ -159,14 +138,9 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
 
     if (subscribers.length === 0) return;
 
-    // Build the payload once
     const embedJson = embed.toJSON ? embed.toJSON() : embed;
-    const payload = {
-      embeds: [embedJson],
-      ...options,
-    };
+    const payload = { embeds: [embedJson], ...options };
 
-    // Send to each subscriber (with basic error handling)
     for (const sub of subscribers) {
       try {
         await WebhookSender.send(sub.webhook_url, payload, {}, 2);
@@ -199,7 +173,7 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
       });
     });
 
-    // Register all agents (priorities)
+    // ─── Register all agents ───
     orchestrator.registerAgent(new ModerationAgent(eventBus, { client, logger, db, models }), 100);
     orchestrator.registerAgent(new EconomyAgent(eventBus, { client, logger, db, models }), 90);
     orchestrator.registerAgent(new VipAgent(eventBus, { client, logger, db, models }), 80);
@@ -229,7 +203,24 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
 
     logger.info('✅ All agents registered');
 
-    // API key checks (unchanged)
+    // ─── 💾 STARTUP CLEANUP: Force aggressive cleanup on all agents ───
+    const allAgents = orchestrator.getAllAgents?.() || [];
+    let cleanedCount = 0;
+    for (const agent of allAgents) {
+      const name = agent.constructor?.name || 'Unknown';
+      if (typeof agent.aggressiveCleanup === 'function') {
+        try {
+          await agent.aggressiveCleanup();
+          cleanedCount++;
+          logger.debug(`🧹 Aggressive startup cleanup done on ${name}`);
+        } catch (err) {
+          logger.warn(`⚠️ Aggressive cleanup failed for ${name}: ${err.message}`);
+        }
+      }
+    }
+    logger.info(`🧹 Startup aggressive cleanup completed on ${cleanedCount} agents`);
+
+    // ─── API key checks ───
     if (!process.env.NEWSDATA_API_KEY) {
       logger.warn('⚠️ NEWSDATA_API_KEY is not set. NewsAgent will not fetch articles.');
     }
@@ -266,7 +257,6 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
       const { summary, original, category } = data;
       logger.debug(`📝 Auto‑summary generated for: ${original.title}`);
 
-      // Build the embed
       const embed = new EmbedBuilder()
         .setTitle('📰 Auto‑Summary')
         .setDescription(summary || 'No summary available.')
@@ -278,7 +268,6 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
         .setTimestamp()
         .setFooter({ text: 'Ultra3Vault • Auto‑generated' });
 
-      // 1. Send to internal Chronicle webhook
       try {
         await sendWebhook('cryptoNews', { embeds: [embed] });
         logger.debug(`✅ Auto‑summary posted via Chronicle webhook`);
@@ -286,7 +275,6 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
         logger.error(`Failed to post auto‑summary via webhook: ${err.message}`);
       }
 
-      // 2. Deliver to B2B subscribers
       await deliverToSubscribers('NewsAgent', 'news.summarized', embed);
     });
 
@@ -300,11 +288,9 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
         }
         const embed = whaleAgent.formatWhaleEmbed(tx);
 
-        // 1. Internal webhook
         await sendWebhook('whaleAlerts', { embeds: [embed.toJSON()] });
         logger.info(`🐋 Whale alert posted via internal webhook`);
 
-        // 2. B2B subscribers
         await deliverToSubscribers('WhaleAgent', 'whale.detected', embed);
       } catch (err) {
         logger.error(`Failed to post whale alert: ${err.message}`);
@@ -321,11 +307,9 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
         }
         const embed = signalAgent.formatSignalEmbed(signal);
 
-        // 1. Internal webhook
         await sendWebhook('premiumSignals', { embeds: [embed.toJSON()] });
         logger.info(`📈 Premium signal posted via internal webhook`);
 
-        // 2. B2B subscribers
         await deliverToSubscribers('SignalAgent', 'signal.generated', embed);
       } catch (err) {
         logger.error(`Failed to post premium signal: ${err.message}`);
@@ -342,12 +326,10 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
         }
         const embed = recAgent.formatRecommendationEmbed(rec);
 
-        // Determine which internal webhook to use
         let webhookKey = rec.tier === 'vip' ? 'vipNews' : 'premiumSignals';
         await sendWebhook(webhookKey, { embeds: [embed.toJSON()] });
         logger.info(`🔶 ${rec.tier.toUpperCase()} recommendation posted via internal webhook`);
 
-        // B2B subscribers – always deliver as RecommendationAgent (clients decide tier internally)
         await deliverToSubscribers('RecommendationAgent', 'recommendation.generated', embed);
       } catch (err) {
         logger.error(`Failed to post recommendation: ${err.message}`);
@@ -361,7 +343,6 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     require('./events/ready')(client, orchestrator, { logger, registerCommands: require('./commands/register') });
 
     // ================= SCHEDULED JOBS =================
-    // (All jobs unchanged – they emit events that we've updated above)
     const priceUpdater = require('./jobs/priceUpdater')({ eventBus, logger, cache: null });
     const leaderboardReset = require('./jobs/leaderboardReset')({ eventBus, logger, models });
     const subscriptionRenewal = require('./jobs/subscriptionRenewal')({ eventBus, logger, models, client });
@@ -406,14 +387,13 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     const autoSummarize = async () => eventBus.emit('job.autoSummarize');
     const socialFeed = async () => eventBus.emit('job.socialFeed');
 
-    // Scheduler registrations (unchanged)
+    // ─── Register jobs (but delay starting the scheduler) ───
     scheduler.registerJob('priceUpdater', '*/1 * * * *', priceUpdater);
     scheduler.registerJob('leaderboardReset', '0 0 * * 0', leaderboardReset);
     scheduler.registerJob('subscriptionRenewal', '0 */6 * * *', subscriptionRenewal);
     scheduler.registerJob('cleanupTempData', '0 */2 * * *', cleanupTempData);
     scheduler.registerJob('newsUpdater', '*/10 * * * *', newsUpdater);
 
-    // ✅ Weekly leaderboard via Architect webhook
     if (process.env.LEADERBOARD_WEBHOOK_URL) {
       const weeklyLeaderboard = require('./jobs/weeklyLeaderboard')({
         eventBus,
@@ -427,40 +407,15 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
       logger.warn('⚠️ LEADERBOARD_WEBHOOK_URL not set – weekly leaderboard disabled');
     }
 
-    scheduler.registerJob('airdropCheck', '*/30 * * * *', async () => {
-      eventBus.emit('job.airdropCheck');
-    });
-    logger.info('🎁 Airdrop check job scheduled (every 30 minutes)');
-
-    scheduler.registerJob('whaleCheck', process.env.WHALE_CHECK_INTERVAL || '*/5 * * * *', async () => {
-      eventBus.emit('job.whaleCheck');
-    });
-    logger.info('🐋 Whale check job scheduled');
-
-    scheduler.registerJob('signalCheck', '*/5 * * * *', async () => {
-      eventBus.emit('job.signalCheck');
-    });
-    logger.info('📈 Signal check job scheduled');
-
-    scheduler.registerJob('recommendationCheck', '*/15 * * * *', async () => {
-      eventBus.emit('job.recommendationCheck');
-    });
-    logger.info('🧠 Recommendation scan job scheduled (every 15 minutes)');
-
-    scheduler.registerJob('announcementCheck', '0 * * * *', async () => {
-      eventBus.emit('job.announcementCheck');
-    });
-    logger.info('📢 Auto‑announcement check job scheduled (every hour)');
-
-    scheduler.registerJob('engagementCheck', '0 0 * * *', async () => {
-      eventBus.emit('job.engagementCheck');
-    });
-    logger.info('📊 Engagement check job scheduled (daily at midnight)');
-
+    scheduler.registerJob('airdropCheck', '*/30 * * * *', async () => eventBus.emit('job.airdropCheck'));
+    scheduler.registerJob('whaleCheck', process.env.WHALE_CHECK_INTERVAL || '*/5 * * * *', async () => eventBus.emit('job.whaleCheck'));
+    scheduler.registerJob('signalCheck', '*/5 * * * *', async () => eventBus.emit('job.signalCheck'));
+    scheduler.registerJob('recommendationCheck', '*/15 * * * *', async () => eventBus.emit('job.recommendationCheck'));
+    scheduler.registerJob('announcementCheck', '0 * * * *', async () => eventBus.emit('job.announcementCheck'));
+    scheduler.registerJob('engagementCheck', '0 0 * * *', async () => eventBus.emit('job.engagementCheck'));
     scheduler.registerJob('dailyRetention', '0 20 * * *', dailyRetention);
     scheduler.registerJob('weeklyGrowthReport', '0 9 * * 1', weeklyGrowthReport);
     scheduler.registerJob('inactivityCheck', '0 10 * * 0', inactivityCheck);
-    logger.info('📈 Growth/Retention jobs scheduled');
 
     scheduler.registerJob('healthCheck', '*/15 * * * *', healthCheck);
     scheduler.registerJob('cacheCleanup', '*/30 * * * *', cacheCleanup);
@@ -468,7 +423,6 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     scheduler.registerJob('logRotation', '0 0 * * *', logRotation);
     scheduler.registerJob('tempCleanup', '0 0 * * 0', tempCleanup);
     scheduler.registerJob('performanceReport', '0 20 * * 0', performanceReport);
-    logger.info('⚡ Optimization jobs scheduled');
 
     scheduler.registerJob('dailyContent', '0 9 * * *', dailyContent);
     scheduler.registerJob('educationalContent', '0 */6 * * *', educationalContent);
@@ -477,20 +431,16 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     scheduler.registerJob('announcementReminder', '0 */4 * * *', announcementReminder);
     scheduler.registerJob('vipContent', '0 10 * * *', vipContent);
     scheduler.registerJob('premiumContent', '0 12 * * *', premiumContent);
-    logger.info('📅 Content planning jobs scheduled');
 
     scheduler.registerJob('amasummary', '0 20 * * 0', amaSummary);
-    logger.info('🎙️ AMA summary job scheduled (Sunday 8 PM UTC)');
 
     scheduler.registerJob('performanceAnalysis', '0 */6 * * *', performanceAnalysis);
     scheduler.registerJob('feedbackMining', '0 * * * *', feedbackMining);
     scheduler.registerJob('trendDetection', '0 0 * * *', trendDetection);
     scheduler.registerJob('sentimentAnalysis', '0 */6 * * *', sentimentAnalysis);
     scheduler.registerJob('suggestionReport', '0 20 * * 0', suggestionReport);
-    logger.info('🧠 Self-improvement jobs scheduled');
 
     scheduler.registerJob('trialExpiry', '0 * * * *', trialExpiry);
-    logger.info('⏰ Trial expiry job scheduled (every hour)');
 
     scheduler.registerJob('conversationStarter', '0 9 * * *', conversationStarter);
     scheduler.registerJob('dailyPoll', '0 10 * * *', dailyPoll);
@@ -499,10 +449,8 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     scheduler.registerJob('trivia', '0 14 * * *', trivia);
     scheduler.registerJob('mentor', '0 15 * * *', mentor);
     scheduler.registerJob('autoSummarize', '*/10 * * * *', autoSummarize);
-    logger.info('🎯 Engagement jobs scheduled');
 
     scheduler.registerJob('socialFeed', process.env.SOCIAL_FEED_INTERVAL || '*/30 * * * *', socialFeed);
-    logger.info('📡 Social feed job scheduled');
 
     if (process.env.RENDER_EXTERNAL_URL) {
       scheduler.registerJob('selfPing', '*/10 * * * *', async () => {
@@ -514,6 +462,12 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
         }
       });
     }
+
+    // ─── Start scheduler after a 10‑second delay ───
+    setTimeout(() => {
+      scheduler.start();
+      logger.info('⏰ Scheduler started after delay');
+    }, 10000);
 
     // Discord reconnection handlers
     client.on('shardDisconnect', (event, id) => {
@@ -564,5 +518,4 @@ async function shutdown(signal) {
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-// ================= EXPOSE HELPERS =================
 module.exports = { sendWebhook };
