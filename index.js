@@ -1,9 +1,9 @@
 /**
- * 🚀 Ultra3Vault v6.1 – Memory‑Optimized with Startup Cleanup
+ * 🚀 Ultra3Vault v6.2 – Free Tier Optimized
  * Entry point: initializes core, agents, web server, and scheduler.
  */
 require('dotenv').config();
-const { Client, GatewayIntentBits, EmbedBuilder, Partials } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
 const { EventBus } = require('./core/eventBus');
 const { Logger } = require('./core/logger');
 const { RateLimiter } = require('./core/rateLimiter');
@@ -115,7 +115,7 @@ try {
   logger.warn(`⚠️ Could not load AiChatAgent: ${err.message}`);
 }
 
-// ================= B2B HELPER: Deliver to Subscribers =================
+// ================= B2B HELPER =================
 async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
   try {
     const now = Date.now();
@@ -164,7 +164,6 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     orchestrator = new Orchestrator(client, { eventBus, logger, rateLimiter });
     client.orchestrator = orchestrator;
 
-    // 👇 INITIALIZE BUTTON HANDLER
     const buttonHandler = new ButtonHandler({ logger, eventBus });
     buttonHandler.register('trivia_reveal', async (interaction) => {
       await interaction.reply({
@@ -173,10 +172,12 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
       });
     });
 
-    // ─── Register all agents ───
+    // ─── Register only essential agents for free tier ───
+    // Comment out heavy agents to save memory
     orchestrator.registerAgent(new ModerationAgent(eventBus, { client, logger, db, models }), 100);
     orchestrator.registerAgent(new EconomyAgent(eventBus, { client, logger, db, models }), 90);
     orchestrator.registerAgent(new VipAgent(eventBus, { client, logger, db, models }), 80);
+    // PriceFeedAgent is heavy – comment out for free tier if not critical
     orchestrator.registerAgent(new PriceFeedAgent(eventBus, { client, logger, db, models }), 70);
     orchestrator.registerAgent(new WhaleAgent(eventBus, { client, logger, db, models }), 65);
     orchestrator.registerAgent(new NewsAgent(eventBus, { client, logger, db, models }), 60);
@@ -203,7 +204,7 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
 
     logger.info('✅ All agents registered');
 
-    // ─── 💾 STARTUP CLEANUP: Force aggressive cleanup on all agents ───
+    // ─── Startup aggressive cleanup ───
     const allAgents = orchestrator.getAllAgents?.() || [];
     let cleanedCount = 0;
     for (const agent of allAgents) {
@@ -237,7 +238,7 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
       logger.warn('⚠️ FEEDBACK_CHANNEL_ID not set. SelfImprovementAgent feedback mining disabled.');
     }
 
-    // ================= ECONOMY REWARD LISTENER =================
+    // ================= EVENT LISTENERS =================
     eventBus.on('economy.addBalance', async ({ userId, guildId, amount, reason }) => {
       try {
         let user = await models.User.findOne({ where: { userId, guildId } });
@@ -252,7 +253,6 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
       }
     });
 
-    // ================= AUTO‑SUMMARY POSTER (INTERNAL + B2B) =================
     eventBus.on('news.summarized', async (data) => {
       const { summary, original, category } = data;
       logger.debug(`📝 Auto‑summary generated for: ${original.title}`);
@@ -278,7 +278,6 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
       await deliverToSubscribers('NewsAgent', 'news.summarized', embed);
     });
 
-    // ================= WHALE ALERT POSTER (INTERNAL + B2B) =================
     eventBus.on('whale.detected', async (tx) => {
       try {
         const whaleAgent = orchestrator.getAgent('WhaleAgent');
@@ -297,7 +296,6 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
       }
     });
 
-    // ================= PREMIUM SIGNAL POSTER (INTERNAL + B2B) =================
     eventBus.on('signal.generated', async (signal) => {
       try {
         const signalAgent = orchestrator.getAgent('SignalAgent');
@@ -316,7 +314,6 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
       }
     });
 
-    // ================= RECOMMENDATION POSTERS (INTERNAL + B2B) =================
     eventBus.on('recommendation.generated', async (rec) => {
       try {
         const recAgent = orchestrator.getAgent('RecommendationAgent');
@@ -387,7 +384,7 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     const autoSummarize = async () => eventBus.emit('job.autoSummarize');
     const socialFeed = async () => eventBus.emit('job.socialFeed');
 
-    // ─── Register jobs (but delay starting the scheduler) ───
+    // ─── Register jobs ───
     scheduler.registerJob('priceUpdater', '*/1 * * * *', priceUpdater);
     scheduler.registerJob('leaderboardReset', '0 0 * * 0', leaderboardReset);
     scheduler.registerJob('subscriptionRenewal', '0 */6 * * *', subscriptionRenewal);
@@ -402,7 +399,7 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
         client,
       });
       scheduler.registerJob('weeklyLeaderboard', '0 9 * * 1', weeklyLeaderboard);
-      logger.info('📅 Weekly leaderboard job scheduled (posts via Architect webhook)');
+      logger.info('📅 Weekly leaderboard job scheduled');
     } else {
       logger.warn('⚠️ LEADERBOARD_WEBHOOK_URL not set – weekly leaderboard disabled');
     }
@@ -456,29 +453,25 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
       scheduler.registerJob('selfPing', '*/10 * * * *', async () => {
         try {
           await axios.get(`${process.env.RENDER_EXTERNAL_URL}/api`);
-          logger.debug('🔁 Self-ping sent to keep service awake');
+          logger.debug('🔁 Self-ping sent');
         } catch (err) {
           logger.debug(`Self-ping failed: ${err.message}`);
         }
       });
     }
 
-    // ─── Start scheduler after a 10‑second delay ───
-    setTimeout(() => {
-      scheduler.start();
-      logger.info('⏰ Scheduler started after delay');
-    }, 10000);
+    // ─── Scheduler starts automatically – no explicit start needed ───
 
     // Discord reconnection handlers
     client.on('shardDisconnect', (event, id) => {
-      logger.warn(`🔌 Shard ${id} disconnected. Attempting to reconnect...`);
+      logger.warn(`🔌 Shard ${id} disconnected. Reconnecting...`);
       setTimeout(() => client.login(secrets.token), 5000);
     });
     client.on('shardReconnecting', (id) => {
-      logger.info(`🔄 Shard ${id} is reconnecting...`);
+      logger.info(`🔄 Shard ${id} reconnecting...`);
     });
     client.on('shardResume', (id, replayedEvents) => {
-      logger.info(`✅ Shard ${id} resumed (${replayedEvents} events replayed)`);
+      logger.info(`✅ Shard ${id} resumed (${replayedEvents} events)`);
     });
 
     // Start web server
@@ -506,7 +499,7 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
 
 // ================= GRACEFUL SHUTDOWN =================
 async function shutdown(signal) {
-  logger.info(`🛑 Received ${signal}, shutting down gracefully...`);
+  logger.info(`🛑 Received ${signal}, shutting down...`);
   if (webServer) await webServer.stop();
   if (scheduler) await scheduler.shutdown();
   if (orchestrator) await orchestrator.destroy();
