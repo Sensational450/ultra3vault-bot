@@ -1,6 +1,7 @@
 /**
- * 🚀 Ultra3Vault v6.2 – Free Tier Optimized
+ * 🚀 Ultra3Vault v6.3 – Free Tier Minimal (Memory‑Optimized)
  * Entry point: initializes core, agents, web server, and scheduler.
+ * Disables heavy agents and reduces job frequency to stay under 512MB RAM.
  */
 require('dotenv').config();
 const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
@@ -79,30 +80,34 @@ let orchestrator = null;
 let webServer = null;
 
 // ================= AGENT FACTORIES =================
+// ─── Essential agents (keep) ───
 const ModerationAgent = require('./agents/moderationAgent');
 const EconomyAgent = require('./agents/economyAgent');
 const VipAgent = require('./agents/vipAgent');
-const PriceFeedAgent = require('./agents/priceFeedAgent');
 const NewsAgent = require('./agents/newsAgent');
+const SupportAgent = require('./agents/supportAgent');
 const ReferralAgent = require('./agents/referralAgent');
 const InfoAgent = require('./agents/infoAgent');
-const AirdropAgent = require('./agents/airdropAgent');
 const SummaryAgent = require('./agents/summaryAgent');
-const SupportAgent = require('./agents/supportAgent');
-const WhaleAgent = require('./agents/whaleAgent');
-const AlertPrioritizationAgent = require('./agents/alertPrioritizationAgent');
 const CommunityManagerAgent = require('./agents/communityManagerAgent');
-const SignalAgent = require('./agents/signalAgent');
-const RecommendationAgent = require('./agents/recommendationAgent');
-const GrowthRetentionAgent = require('./agents/growthRetentionAgent');
-const OptimizationAgent = require('./agents/optimizationAgent');
-const LocalizationAgent = require('./agents/localizationAgent');
-const ContentPlanningAgent = require('./agents/contentPlanningAgent');
-const AMAAgent = require('./agents/amaAgent');
-const SelfImprovementAgent = require('./agents/selfImprovementAgent');
 const EngagementAgent = require('./agents/engagementAgent');
-const SocialFeedAgent = require('./agents/socialFeedAgent');
+const ContentPlanningAgent = require('./agents/contentPlanningAgent');
+const OptimizationAgent = require('./agents/optimizationAgent');
+const AlertPrioritizationAgent = require('./agents/alertPrioritizationAgent');
 
+// ─── Heavy agents (disabled for free tier – comment in if needed) ───
+// const PriceFeedAgent = require('./agents/priceFeedAgent');
+// const WhaleAgent = require('./agents/whaleAgent');
+// const AirdropAgent = require('./agents/airdropAgent');
+// const SignalAgent = require('./agents/signalAgent');
+// const AMAAgent = require('./agents/amaAgent');
+// const LocalizationAgent = require('./agents/localizationAgent');
+// const SocialFeedAgent = require('./agents/socialFeedAgent');
+// const RecommendationAgent = require('./agents/recommendationAgent');
+// const GrowthRetentionAgent = require('./agents/growthRetentionAgent');
+// const SelfImprovementAgent = require('./agents/selfImprovementAgent');
+
+// ─── AiChatAgent (optional – only if AI is used) ───
 let AiChatAgent = null;
 try {
   if (secrets.openaiApiKey) {
@@ -172,37 +177,32 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
       });
     });
 
-    // ─── Register only essential agents for free tier ───
-    // Comment out heavy agents to save memory
+    // ─── Register only essential agents (free tier) ───
     orchestrator.registerAgent(new ModerationAgent(eventBus, { client, logger, db, models }), 100);
     orchestrator.registerAgent(new EconomyAgent(eventBus, { client, logger, db, models }), 90);
     orchestrator.registerAgent(new VipAgent(eventBus, { client, logger, db, models }), 80);
-    // PriceFeedAgent is heavy – comment out for free tier if not critical
-    orchestrator.registerAgent(new PriceFeedAgent(eventBus, { client, logger, db, models }), 70);
-    orchestrator.registerAgent(new WhaleAgent(eventBus, { client, logger, db, models }), 65);
     orchestrator.registerAgent(new NewsAgent(eventBus, { client, logger, db, models }), 60);
     orchestrator.registerAgent(new AlertPrioritizationAgent(eventBus, { client, logger, db, models }), 55);
-    orchestrator.registerAgent(new SignalAgent(eventBus, { client, logger, db, models }), 54);
-    if (AiChatAgent) {
-      orchestrator.registerAgent(new AiChatAgent(eventBus, { client, logger, db, models }), 50);
-    }
-    orchestrator.registerAgent(new AMAAgent(eventBus, { client, logger, db, models, orchestrator }), 48);
     orchestrator.registerAgent(new SupportAgent(eventBus, { client, logger, db, models }), 45);
     orchestrator.registerAgent(new ReferralAgent(eventBus, { client, logger, db, models }), 40);
-    orchestrator.registerAgent(new AirdropAgent(eventBus, { client, logger, db, models }), 35);
     orchestrator.registerAgent(new InfoAgent(eventBus, { client, logger, db, models }), 30);
     orchestrator.registerAgent(new SummaryAgent(eventBus, { client, logger, db, models }), 25);
     orchestrator.registerAgent(new CommunityManagerAgent(eventBus, { client, logger, db, models }), 20);
     orchestrator.registerAgent(new EngagementAgent(eventBus, { client, logger, db, models, orchestrator }), 19);
     orchestrator.registerAgent(new ContentPlanningAgent(eventBus, { client, logger, db, models, orchestrator }), 18);
-    orchestrator.registerAgent(new LocalizationAgent(eventBus, { client, logger, db, models }), 15);
-    orchestrator.registerAgent(new SocialFeedAgent(eventBus, { client, logger, db, models, orchestrator }), 14);
-    orchestrator.registerAgent(new RecommendationAgent(eventBus, { client, logger, db, models }), 10);
-    orchestrator.registerAgent(new GrowthRetentionAgent(eventBus, { client, logger, db, models }), 5);
     orchestrator.registerAgent(new OptimizationAgent(eventBus, { client, logger, db, models, orchestrator }), 1);
-    orchestrator.registerAgent(new SelfImprovementAgent(eventBus, { client, logger, db, models, orchestrator }), 0);
 
-    logger.info('✅ All agents registered');
+    // ─── Optional: AiChatAgent (if needed) ───
+    if (AiChatAgent) {
+      orchestrator.registerAgent(new AiChatAgent(eventBus, { client, logger, db, models }), 50);
+    }
+
+    // ─── Disabled agents (commented out to save memory) ───
+    // PriceFeedAgent, WhaleAgent, AirdropAgent, SignalAgent, AMAAgent,
+    // LocalizationAgent, SocialFeedAgent, RecommendationAgent,
+    // GrowthRetentionAgent, SelfImprovementAgent
+
+    logger.info('✅ All essential agents registered (heavy agents disabled)');
 
     // ─── Startup aggressive cleanup ───
     const allAgents = orchestrator.getAllAgents?.() || [];
@@ -225,20 +225,11 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     if (!process.env.NEWSDATA_API_KEY) {
       logger.warn('⚠️ NEWSDATA_API_KEY is not set. NewsAgent will not fetch articles.');
     }
-    if (!process.env.PREMIUM_AIRDROP_CHANNEL_ID) {
-      logger.warn('⚠️ PREMIUM_AIRDROP_CHANNEL_ID not set. AirdropAgent will be disabled.');
-    }
-    if (!process.env.WHALE_ALERT_CHANNEL_ID && !process.env.ETHERSCAN_API_KEY) {
-      logger.warn('⚠️ No whale alert channel or Etherscan key set. WhaleAgent may not function.');
-    }
     if (!process.env.AMA_CHANNEL_ID) {
-      logger.warn('⚠️ AMA_CHANNEL_ID not set. AMAAgent will be disabled.');
-    }
-    if (!process.env.FEEDBACK_CHANNEL_ID) {
-      logger.warn('⚠️ FEEDBACK_CHANNEL_ID not set. SelfImprovementAgent feedback mining disabled.');
+      logger.warn('⚠️ AMA_CHANNEL_ID not set. AMAAgent is disabled anyway.');
     }
 
-    // ================= EVENT LISTENERS =================
+    // ================= EVENT LISTENERS (keep only those for active agents) =================
     eventBus.on('economy.addBalance', async ({ userId, guildId, amount, reason }) => {
       try {
         let user = await models.User.findOne({ where: { userId, guildId } });
@@ -278,60 +269,8 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
       await deliverToSubscribers('NewsAgent', 'news.summarized', embed);
     });
 
-    eventBus.on('whale.detected', async (tx) => {
-      try {
-        const whaleAgent = orchestrator.getAgent('WhaleAgent');
-        if (!whaleAgent) {
-          logger.warn('WhaleAgent not found');
-          return;
-        }
-        const embed = whaleAgent.formatWhaleEmbed(tx);
-
-        await sendWebhook('whaleAlerts', { embeds: [embed.toJSON()] });
-        logger.info(`🐋 Whale alert posted via internal webhook`);
-
-        await deliverToSubscribers('WhaleAgent', 'whale.detected', embed);
-      } catch (err) {
-        logger.error(`Failed to post whale alert: ${err.message}`);
-      }
-    });
-
-    eventBus.on('signal.generated', async (signal) => {
-      try {
-        const signalAgent = orchestrator.getAgent('SignalAgent');
-        if (!signalAgent) {
-          logger.warn('SignalAgent not found');
-          return;
-        }
-        const embed = signalAgent.formatSignalEmbed(signal);
-
-        await sendWebhook('premiumSignals', { embeds: [embed.toJSON()] });
-        logger.info(`📈 Premium signal posted via internal webhook`);
-
-        await deliverToSubscribers('SignalAgent', 'signal.generated', embed);
-      } catch (err) {
-        logger.error(`Failed to post premium signal: ${err.message}`);
-      }
-    });
-
-    eventBus.on('recommendation.generated', async (rec) => {
-      try {
-        const recAgent = orchestrator.getAgent('RecommendationAgent');
-        if (!recAgent) {
-          logger.warn('RecommendationAgent not found');
-          return;
-        }
-        const embed = recAgent.formatRecommendationEmbed(rec);
-
-        let webhookKey = rec.tier === 'vip' ? 'vipNews' : 'premiumSignals';
-        await sendWebhook(webhookKey, { embeds: [embed.toJSON()] });
-        logger.info(`🔶 ${rec.tier.toUpperCase()} recommendation posted via internal webhook`);
-
-        await deliverToSubscribers('RecommendationAgent', 'recommendation.generated', embed);
-      } catch (err) {
-        logger.error(`Failed to post recommendation: ${err.message}`);
-      }
-    });
+    // Whale, Signal, Recommendation events are disabled because their agents are not loaded.
+    // Remove their listeners or keep them (they won't fire).
 
     // ================= ATTACH DISCORD EVENTS =================
     require('./events/messageCreate')(client, orchestrator, { logger });
@@ -339,7 +278,7 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     require('./events/guildMemberAdd')(client, orchestrator, { logger });
     require('./events/ready')(client, orchestrator, { logger, registerCommands: require('./commands/register') });
 
-    // ================= SCHEDULED JOBS =================
+    // ================= SCHEDULED JOBS (reduced frequency) =================
     const priceUpdater = require('./jobs/priceUpdater')({ eventBus, logger, cache: null });
     const leaderboardReset = require('./jobs/leaderboardReset')({ eventBus, logger, models });
     const subscriptionRenewal = require('./jobs/subscriptionRenewal')({ eventBus, logger, models, client });
@@ -384,8 +323,8 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     const autoSummarize = async () => eventBus.emit('job.autoSummarize');
     const socialFeed = async () => eventBus.emit('job.socialFeed');
 
-    // ─── Register jobs ───
-    scheduler.registerJob('priceUpdater', '*/1 * * * *', priceUpdater);
+    // ─── Register jobs with increased intervals ───
+    scheduler.registerJob('priceUpdater', '*/5 * * * *', priceUpdater); // every 5 min (was 1)
     scheduler.registerJob('leaderboardReset', '0 0 * * 0', leaderboardReset);
     scheduler.registerJob('subscriptionRenewal', '0 */6 * * *', subscriptionRenewal);
     scheduler.registerJob('cleanupTempData', '0 */2 * * *', cleanupTempData);
@@ -404,10 +343,12 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
       logger.warn('⚠️ LEADERBOARD_WEBHOOK_URL not set – weekly leaderboard disabled');
     }
 
-    scheduler.registerJob('airdropCheck', '*/30 * * * *', async () => eventBus.emit('job.airdropCheck'));
-    scheduler.registerJob('whaleCheck', process.env.WHALE_CHECK_INTERVAL || '*/5 * * * *', async () => eventBus.emit('job.whaleCheck'));
-    scheduler.registerJob('signalCheck', '*/5 * * * *', async () => eventBus.emit('job.signalCheck'));
-    scheduler.registerJob('recommendationCheck', '*/15 * * * *', async () => eventBus.emit('job.recommendationCheck'));
+    // Heavy jobs disabled or interval increased
+    // scheduler.registerJob('airdropCheck', '*/60 * * * *', ...); // disabled
+    // scheduler.registerJob('whaleCheck', '*/15 * * * *', ...);  // disabled
+    // scheduler.registerJob('signalCheck', '*/15 * * * *', ...); // disabled
+
+    // Keep essential check jobs
     scheduler.registerJob('announcementCheck', '0 * * * *', async () => eventBus.emit('job.announcementCheck'));
     scheduler.registerJob('engagementCheck', '0 0 * * *', async () => eventBus.emit('job.engagementCheck'));
     scheduler.registerJob('dailyRetention', '0 20 * * *', dailyRetention);
@@ -460,7 +401,7 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
       });
     }
 
-    // ─── Scheduler starts automatically – no explicit start needed ───
+    // Scheduler starts automatically
 
     // Discord reconnection handlers
     client.on('shardDisconnect', (event, id) => {
