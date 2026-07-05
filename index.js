@@ -1,7 +1,8 @@
 /**
- * 🚀 Ultra3Vault v6.3 – Free Tier Minimal (Memory‑Optimized)
+ * 🚀 Ultra3Vault v6.4 – CacheManager Integration & Memory‑Optimized
  * Entry point: initializes core, agents, web server, and scheduler.
  * Disables heavy agents and reduces job frequency to stay under 512MB RAM.
+ * Uses central CacheManager for all temporary data.
  */
 require('dotenv').config();
 const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
@@ -13,6 +14,7 @@ const { Orchestrator } = require('./core/orchestrator');
 const { Database } = require('./tools/database/db');
 const Models = require('./tools/database/models');
 const { WebServer } = require('./web/server');
+const CacheManager = require('./tools/cacheTempData'); // New cache manager
 const secrets = require('./config/secrets');
 const axios = require('axios');
 const ButtonHandler = require('./tools/discord/buttonHandler');
@@ -73,6 +75,18 @@ const db = new Database({
   migrationsPath: './tools/database/migrations',
   eventBus,
   logger,
+});
+
+// ================= CACHE MANAGER =================
+const cacheManager = new CacheManager({
+  eventBus,
+  logger,
+  defaultTTL: 60000,          // 1 minute
+  maxEntriesPerNamespace: 500, // per agent
+  evictionStrategy: 'lru',     // least recently used
+  cleanupInterval: 30000,      // 30 seconds
+  memoryThreshold: 80,         // % heap usage to trigger aggressive eviction
+  protectedNamespaces: ['config', 'admin'],
 });
 
 // ================= ORCHESTRATOR & WEB SERVER (outer scope) =================
@@ -169,6 +183,10 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     orchestrator = new Orchestrator(client, { eventBus, logger, rateLimiter });
     client.orchestrator = orchestrator;
 
+    // Make cache manager available globally
+    client.cache = cacheManager;
+    global.cache = cacheManager; // for easy access in jobs
+
     const buttonHandler = new ButtonHandler({ logger, eventBus });
     buttonHandler.register('trivia_reveal', async (interaction) => {
       await interaction.reply({
@@ -178,48 +196,30 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     });
 
     // ─── Register only essential agents (free tier) ───
-    orchestrator.registerAgent(new ModerationAgent(eventBus, { client, logger, db, models }), 100);
-    orchestrator.registerAgent(new EconomyAgent(eventBus, { client, logger, db, models }), 90);
-    orchestrator.registerAgent(new VipAgent(eventBus, { client, logger, db, models }), 80);
-    orchestrator.registerAgent(new NewsAgent(eventBus, { client, logger, db, models }), 60);
-    orchestrator.registerAgent(new AlertPrioritizationAgent(eventBus, { client, logger, db, models }), 55);
-    orchestrator.registerAgent(new SupportAgent(eventBus, { client, logger, db, models }), 45);
-    orchestrator.registerAgent(new ReferralAgent(eventBus, { client, logger, db, models }), 40);
-    orchestrator.registerAgent(new InfoAgent(eventBus, { client, logger, db, models }), 30);
-    orchestrator.registerAgent(new SummaryAgent(eventBus, { client, logger, db, models }), 25);
-    orchestrator.registerAgent(new CommunityManagerAgent(eventBus, { client, logger, db, models }), 20);
-    orchestrator.registerAgent(new EngagementAgent(eventBus, { client, logger, db, models, orchestrator }), 19);
-    orchestrator.registerAgent(new ContentPlanningAgent(eventBus, { client, logger, db, models, orchestrator }), 18);
-    orchestrator.registerAgent(new OptimizationAgent(eventBus, { client, logger, db, models, orchestrator }), 1);
+    // Pass cache manager to agents via deps
+    orchestrator.registerAgent(new ModerationAgent(eventBus, { client, logger, db, models, cache: cacheManager }), 100);
+    orchestrator.registerAgent(new EconomyAgent(eventBus, { client, logger, db, models, cache: cacheManager }), 90);
+    orchestrator.registerAgent(new VipAgent(eventBus, { client, logger, db, models, cache: cacheManager }), 80);
+    orchestrator.registerAgent(new NewsAgent(eventBus, { client, logger, db, models, cache: cacheManager }), 60);
+    orchestrator.registerAgent(new AlertPrioritizationAgent(eventBus, { client, logger, db, models, cache: cacheManager }), 55);
+    orchestrator.registerAgent(new SupportAgent(eventBus, { client, logger, db, models, cache: cacheManager }), 45);
+    orchestrator.registerAgent(new ReferralAgent(eventBus, { client, logger, db, models, cache: cacheManager }), 40);
+    orchestrator.registerAgent(new InfoAgent(eventBus, { client, logger, db, models, cache: cacheManager }), 30);
+    orchestrator.registerAgent(new SummaryAgent(eventBus, { client, logger, db, models, cache: cacheManager }), 25);
+    orchestrator.registerAgent(new CommunityManagerAgent(eventBus, { client, logger, db, models, cache: cacheManager }), 20);
+    orchestrator.registerAgent(new EngagementAgent(eventBus, { client, logger, db, models, orchestrator, cache: cacheManager }), 19);
+    orchestrator.registerAgent(new ContentPlanningAgent(eventBus, { client, logger, db, models, orchestrator, cache: cacheManager }), 18);
+    orchestrator.registerAgent(new OptimizationAgent(eventBus, { client, logger, db, models, orchestrator, cache: cacheManager }), 1);
 
-    // ─── Optional: AiChatAgent (if needed) ───
     if (AiChatAgent) {
-      orchestrator.registerAgent(new AiChatAgent(eventBus, { client, logger, db, models }), 50);
+      orchestrator.registerAgent(new AiChatAgent(eventBus, { client, logger, db, models, cache: cacheManager }), 50);
     }
-
-    // ─── Disabled agents (commented out to save memory) ───
-    // PriceFeedAgent, WhaleAgent, AirdropAgent, SignalAgent, AMAAgent,
-    // LocalizationAgent, SocialFeedAgent, RecommendationAgent,
-    // GrowthRetentionAgent, SelfImprovementAgent
 
     logger.info('✅ All essential agents registered (heavy agents disabled)');
 
-    // ─── Startup aggressive cleanup ───
-    const allAgents = orchestrator.getAllAgents?.() || [];
-    let cleanedCount = 0;
-    for (const agent of allAgents) {
-      const name = agent.constructor?.name || 'Unknown';
-      if (typeof agent.aggressiveCleanup === 'function') {
-        try {
-          await agent.aggressiveCleanup();
-          cleanedCount++;
-          logger.debug(`🧹 Aggressive startup cleanup done on ${name}`);
-        } catch (err) {
-          logger.warn(`⚠️ Aggressive cleanup failed for ${name}: ${err.message}`);
-        }
-      }
-    }
-    logger.info(`🧹 Startup aggressive cleanup completed on ${cleanedCount} agents`);
+    // ─── Startup aggressive cleanup on cache manager ───
+    cacheManager.aggressiveEvict(30);
+    logger.info('🧹 CacheManager aggressive eviction performed on startup');
 
     // ─── API key checks ───
     if (!process.env.NEWSDATA_API_KEY) {
@@ -270,7 +270,6 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     });
 
     // Whale, Signal, Recommendation events are disabled because their agents are not loaded.
-    // Remove their listeners or keep them (they won't fire).
 
     // ================= ATTACH DISCORD EVENTS =================
     require('./events/messageCreate')(client, orchestrator, { logger });
@@ -282,7 +281,15 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     const priceUpdater = require('./jobs/priceUpdater')({ eventBus, logger, cache: null });
     const leaderboardReset = require('./jobs/leaderboardReset')({ eventBus, logger, models });
     const subscriptionRenewal = require('./jobs/subscriptionRenewal')({ eventBus, logger, models, client });
-    const cleanupTempData = require('./jobs/cleanupTempData')({ eventBus, logger });
+    // Pass cache manager to cleanup jobs
+    const cleanupTempData = require('./jobs/cleanupTempData')({
+      eventBus,
+      logger,
+      db,
+      cacheManager, // use new cache manager
+      cleanupAgeMs: 3600000,
+      aggressiveMode: false,
+    });
     const newsUpdater = require('./jobs/newsUpdater')({ eventBus, logger });
 
     const dailyRetention = require('./jobs/dailyRetention')({ eventBus, logger, models, client, orchestrator });
@@ -290,8 +297,8 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     const inactivityCheck = require('./jobs/inactivityCheck')({ eventBus, logger, models, client, orchestrator });
 
     const healthCheck = require('./jobs/healthCheck')({ eventBus, logger, orchestrator });
-    const cacheCleanup = require('./jobs/cacheCleanup')({ eventBus, logger, orchestrator });
-    const memoryMonitor = require('./jobs/memoryMonitor')({ eventBus, logger, orchestrator });
+    const cacheCleanup = require('./jobs/cacheCleanup')({ eventBus, logger, orchestrator, cacheManager });
+    const memoryMonitor = require('./jobs/memoryMonitor')({ eventBus, logger, orchestrator, cacheManager });
     const logRotation = require('./jobs/logRotation')({ eventBus, logger, orchestrator });
     const tempCleanup = require('./jobs/tempCleanup')({ eventBus, logger, orchestrator });
     const performanceReport = require('./jobs/performanceReport')({ eventBus, logger, orchestrator });
@@ -324,7 +331,7 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     const socialFeed = async () => eventBus.emit('job.socialFeed');
 
     // ─── Register jobs with increased intervals ───
-    scheduler.registerJob('priceUpdater', '*/5 * * * *', priceUpdater); // every 5 min (was 1)
+    scheduler.registerJob('priceUpdater', '*/5 * * * *', priceUpdater);
     scheduler.registerJob('leaderboardReset', '0 0 * * 0', leaderboardReset);
     scheduler.registerJob('subscriptionRenewal', '0 */6 * * *', subscriptionRenewal);
     scheduler.registerJob('cleanupTempData', '0 */2 * * *', cleanupTempData);
@@ -344,9 +351,6 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     }
 
     // Heavy jobs disabled or interval increased
-    // scheduler.registerJob('airdropCheck', '*/60 * * * *', ...); // disabled
-    // scheduler.registerJob('whaleCheck', '*/15 * * * *', ...);  // disabled
-    // scheduler.registerJob('signalCheck', '*/15 * * * *', ...); // disabled
 
     // Keep essential check jobs
     scheduler.registerJob('announcementCheck', '0 * * * *', async () => eventBus.emit('job.announcementCheck'));
@@ -422,7 +426,7 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
       client,
       db,
       models,
-      caches: {},
+      caches: { manager: cacheManager },
       orchestrator,
       port: process.env.PORT || 3000,
     });
@@ -445,6 +449,7 @@ async function shutdown(signal) {
   if (scheduler) await scheduler.shutdown();
   if (orchestrator) await orchestrator.destroy();
   if (db) await db.close();
+  if (cacheManager) await cacheManager.shutdown();
   if (client) client.destroy();
   process.exit(0);
 }
