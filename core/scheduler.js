@@ -1,13 +1,15 @@
 const cron = require('node-cron');
 
 /**
- * Scheduler v5.0
+ * Scheduler v6.0 – Memory‑Safe
  * - Cron and one‑time delayed jobs
  * - Pause / resume (global and per job)
  * - EventBus integration
  * - Retry logic for failed jobs
- * - Max runs limit (optional)
+ * - Max runs limit
  * - Immediate execution option on registration
+ * - Cleanup on retry exhaustion
+ * - Periodic stale job cleanup
  * - Stats and job status
  */
 class Scheduler {
@@ -20,11 +22,27 @@ class Scheduler {
     this.delayedJobs = new Map();
     this.globalPaused = false;
     this.stats = { totalJobs: 0, totalExecutions: 0, totalErrors: 0 };
+    // Track failed jobs that are pending removal
+    this._pendingRemovals = new Set();
+
+    // Periodic cleanup of stale paused jobs (every hour)
+    this._cleanupInterval = setInterval(() => this._cleanupStaleJobs(), 60 * 60 * 1000);
   }
 
   // ---------- Internal Helpers ----------
   _emit(event, data) {
     if (this.eventBus?.emit) this.eventBus.emit(event, data);
+  }
+
+  _cleanupStaleJobs() {
+    const now = Date.now();
+    const staleThreshold = 7 * 24 * 60 * 60 * 1000; // 7 days
+    for (const [id, data] of this.jobs.entries()) {
+      if (data.paused && data._pausedSince && (now - data._pausedSince) > staleThreshold) {
+        this.logger.warn(`🧹 Removing stale paused job: ${id}`);
+        this.removeJob(id);
+      }
+    }
   }
 
   async _executeJob(id, task, retryCount = 0) {
@@ -40,7 +58,6 @@ class Scheduler {
     try {
       await task();
       this._emit('scheduler.job.complete', { id, timestamp: Date.now() });
-      // Reset failure count on success
       data.failures = 0;
     } catch (err) {
       this.stats.totalErrors++;
@@ -50,23 +67,33 @@ class Scheduler {
       data.failures = (data.failures || 0) + 1;
       const maxRetries = data.retries ?? this.defaultRetries;
       if (maxRetries > 0 && data.failures <= maxRetries) {
-        const delay = Math.min(1000 * Math.pow(2, data.failures), 30000); // exponential backoff, max 30s
+        const delay = Math.min(1000 * Math.pow(2, data.failures), 30000);
         this.logger.warn(`⚠️ Job "${id}" failed, retrying in ${delay}ms (attempt ${data.failures}/${maxRetries})`);
         setTimeout(() => {
           if (!data.paused && !this.globalPaused) {
             this._executeJob(id, task, data.failures);
           }
         }, delay);
-      } else if (maxRetries > 0) {
-        this.logger.error(`❌ Job "${id}" exhausted all ${maxRetries} retries. Giving up.`);
+      } else {
+        // ✅ FIX: Exhausted retries – remove the job
+        this.logger.error(`❌ Job "${id}" exhausted all ${maxRetries} retries. Removing.`);
         this._emit('scheduler.job.aborted', { id, failures: data.failures });
+        this.removeJob(id);
       }
     } finally {
       data.running = false;
-      if (data.type === 'delayed') this.removeJob(id);
-      if (data.maxRuns && data.runCount) {
+      // If job is delayed, remove it (success or failure without retry)
+      if (data.type === 'delayed') {
+        // But only if it's not already removed (e.g., exhausted retries removed it)
+        if (this.jobs.has(id)) {
+          this.removeJob(id);
+        }
+      }
+      if (data.maxRuns && data.runCount !== undefined) {
         data.runCount++;
-        if (data.runCount >= data.maxRuns) this.removeJob(id);
+        if (data.runCount >= data.maxRuns) {
+          this.removeJob(id);
+        }
       }
     }
   }
@@ -99,6 +126,7 @@ class Scheduler {
       task,
       running: false,
       paused: false,
+      _pausedSince: null,
       type: 'cron',
       retries,
       maxRuns,
@@ -124,17 +152,17 @@ class Scheduler {
       const data = this.jobs.get(id);
       if (!data || data.paused) return;
       await this._executeJob(id, task);
-      this.delayedJobs.delete(id);
-      this.jobs.delete(id);
+      // _executeJob will remove it if type is delayed
     }, delayMs);
 
-    this.delayedJobs.set(id, { timeout, task });
+    this.delayedJobs.set(id, { timeout, task, paused: false });
     this.jobs.set(id, {
       job: null,
       cronExpression: null,
       task,
       running: false,
       paused: false,
+      _pausedSince: null,
       type: 'delayed',
       delayMs,
       retries,
@@ -152,8 +180,10 @@ class Scheduler {
     if (data?.type === 'cron' && data.job) data.job.stop();
     this.jobs.delete(id);
     const delayed = this.delayedJobs.get(id);
-    if (delayed) clearTimeout(delayed.timeout);
-    this.delayedJobs.delete(id);
+    if (delayed) {
+      clearTimeout(delayed.timeout);
+      this.delayedJobs.delete(id);
+    }
     this._emit('scheduler.job.removed', { id });
   }
 
@@ -161,6 +191,7 @@ class Scheduler {
     const data = this.jobs.get(id);
     if (data) {
       data.paused = true;
+      data._pausedSince = Date.now();
       if (data.type === 'cron' && data.job) data.job.stop();
     }
     const delayed = this.delayedJobs.get(id);
@@ -175,6 +206,7 @@ class Scheduler {
     const data = this.jobs.get(id);
     if (data) {
       data.paused = false;
+      data._pausedSince = null;
       if (data.type === 'cron' && data.job) data.job.start();
       else if (data.type === 'delayed' && !data.running) {
         const delay = data.delayMs;
@@ -189,6 +221,7 @@ class Scheduler {
     this.globalPaused = true;
     for (const [id, data] of this.jobs.entries()) {
       if (data.type === 'cron' && data.job) data.job.stop();
+      data._pausedSince = Date.now();
     }
     for (const [id, delayed] of this.delayedJobs.entries()) {
       clearTimeout(delayed.timeout);
@@ -202,6 +235,7 @@ class Scheduler {
     for (const [id, data] of this.jobs.entries()) {
       if (!data.paused && data.type === 'cron' && data.job) data.job.start();
       else if (data.paused && data.type === 'delayed') this.resumeJob(id);
+      data._pausedSince = null;
     }
     this._emit('scheduler.all.resumed');
   }
@@ -220,6 +254,7 @@ class Scheduler {
       failures: data.failures,
       maxRuns: data.maxRuns,
       runCount: data.runCount,
+      pausedSince: data._pausedSince,
     };
   }
 
@@ -231,16 +266,19 @@ class Scheduler {
       activeJobs: this.jobs.size,
       delayedJobs: this.delayedJobs.size,
       globalPaused: this.globalPaused,
+      pendingRemovals: this._pendingRemovals.size,
     };
   }
 
   shutdown() {
+    clearInterval(this._cleanupInterval);
     for (const [, data] of this.jobs.entries()) {
       if (data.type === 'cron' && data.job) data.job.stop();
     }
     for (const [, delayed] of this.delayedJobs.entries()) clearTimeout(delayed.timeout);
     this.jobs.clear();
     this.delayedJobs.clear();
+    this._pendingRemovals.clear();
     this._emit('scheduler.shutdown');
   }
 }
