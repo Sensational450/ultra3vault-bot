@@ -3,28 +3,469 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Ultra3Vault • Dashboard</title>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap">
+  <title>Ultra3Vault • B2B Dashboard</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <link rel="stylesheet" href="/dashboard.css">
+  <style>
+    /* ─────────────────────────────────────────────── */
+    /* CSS Variables & Reset */
+    /* ─────────────────────────────────────────────── */
+    :root {
+      --bg-primary: #0d1117;
+      --bg-secondary: #161b22;
+      --bg-card: #1c2128;
+      --bg-input: #0d1117;
+      --border-color: #30363d;
+      --text-primary: #f0f6fc;
+      --text-secondary: #8b949e;
+      --text-muted: #484f58;
+      --accent: #238636;
+      --accent-hover: #2ea043;
+      --accent-blue: #1f6feb;
+      --accent-blue-hover: #388bfd;
+      --danger: #f85149;
+      --warning: #d29922;
+      --radius: 8px;
+      --shadow: 0 8px 24px rgba(0,0,0,0.4);
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      padding: 20px;
+    }
+
+    /* ─────────────────────────────────────────────── */
+    /* Scrollbar */
+    /* ─────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 8px; }
+    ::-webkit-scrollbar-track { background: var(--bg-secondary); }
+    ::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+    /* ─────────────────────────────────────────────── */
+    /* Layout */
+    /* ─────────────────────────────────────────────── */
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    /* ─────────────────────────────────────────────── */
+    /* Header */
+    /* ─────────────────────────────────────────────── */
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 24px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    header h1 {
+      font-size: 24px;
+      font-weight: 800;
+      background: linear-gradient(135deg, #00ff88, #00cc88);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .user-info {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+
+    .user-info img {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      border: 2px solid var(--border-color);
+    }
+
+    .status-badge {
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .status-badge.online { background: var(--accent); color: #fff; }
+    .status-badge.offline { background: var(--danger); color: #fff; }
+
+    .btn-outline {
+      background: transparent;
+      border: 1px solid var(--border-color);
+      color: var(--text-secondary);
+      padding: 6px 14px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      transition: all 0.2s;
+    }
+    .btn-outline:hover {
+      border-color: var(--text-primary);
+      color: var(--text-primary);
+    }
+
+    /* ─────────────────────────────────────────────── */
+    /* Navigation */
+    /* ─────────────────────────────────────────────── */
+    nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      padding: 4px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      margin-bottom: 24px;
+    }
+
+    .tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-secondary);
+      padding: 10px 20px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 500;
+      transition: all 0.2s;
+      font-family: 'Inter', sans-serif;
+    }
+    .tab-btn:hover { color: var(--text-primary); background: rgba(255,255,255,0.05); }
+    .tab-btn.active {
+      background: var(--accent-blue);
+      color: #fff;
+    }
+
+    /* ─────────────────────────────────────────────── */
+    /* Tab Content */
+    /* ─────────────────────────────────────────────── */
+    .tab-content {
+      display: none;
+      animation: fadeIn 0.3s ease;
+    }
+    .tab-content.active { display: block; }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ─────────────────────────────────────────────── */
+    /* Stats Grid */
+    /* ─────────────────────────────────────────────── */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+
+    .stat-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      padding: 20px;
+      text-align: center;
+      transition: all 0.2s;
+    }
+    .stat-card:hover { border-color: var(--text-muted); }
+
+    .stat-card h3 {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 8px;
+    }
+    .stat-card p {
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+    .stat-card .sub {
+      font-size: 14px;
+      font-weight: 400;
+      color: var(--text-secondary);
+    }
+
+    /* ─────────────────────────────────────────────── */
+    /* Chart */
+    /* ─────────────────────────────────────────────── */
+    .chart-container {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      padding: 20px;
+      margin-top: 16px;
+    }
+    .chart-container canvas { max-height: 300px; }
+
+    /* ─────────────────────────────────────────────── */
+    /* Lists */
+    /* ─────────────────────────────────────────────── */
+    .list-container {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      padding: 16px;
+      margin-top: 12px;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+
+    .list-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border-color);
+      font-size: 14px;
+    }
+    .list-item:last-child { border-bottom: none; }
+    .list-item .label { color: var(--text-secondary); }
+    .list-item .value { font-weight: 600; }
+
+    .badge {
+      padding: 2px 10px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .badge.success { background: var(--accent); color: #fff; }
+    .badge.danger { background: var(--danger); color: #fff; }
+    .badge.warning { background: var(--warning); color: #fff; }
+    .badge.info { background: var(--accent-blue); color: #fff; }
+    .badge.muted { background: var(--text-muted); color: #fff; }
+
+    /* ─────────────────────────────────────────────── */
+    /* Admin Forms */
+    /* ─────────────────────────────────────────────── */
+    .admin-form {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+    .admin-form h3 {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 12px;
+    }
+    .admin-form .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+    .admin-form input,
+    .admin-form select {
+      background: var(--bg-input);
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+      padding: 8px 12px;
+      border-radius: var(--radius);
+      font-size: 14px;
+      font-family: 'Inter', sans-serif;
+      flex: 1;
+      min-width: 150px;
+    }
+    .admin-form input:focus,
+    .admin-form select:focus {
+      outline: none;
+      border-color: var(--accent-blue);
+    }
+
+    .btn-primary {
+      background: var(--accent-blue);
+      border: none;
+      color: #fff;
+      padding: 8px 20px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 14px;
+      font-family: 'Inter', sans-serif;
+      transition: background 0.2s;
+    }
+    .btn-primary:hover { background: var(--accent-blue-hover); }
+
+    .btn-success {
+      background: var(--accent);
+      border: none;
+      color: #fff;
+      padding: 8px 20px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 14px;
+      font-family: 'Inter', sans-serif;
+      transition: background 0.2s;
+    }
+    .btn-success:hover { background: var(--accent-hover); }
+
+    .btn-danger {
+      background: var(--danger);
+      border: none;
+      color: #fff;
+      padding: 8px 20px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 14px;
+      font-family: 'Inter', sans-serif;
+      transition: background 0.2s;
+    }
+    .btn-danger:hover { background: #d73a49; }
+
+    #adminResult {
+      margin-top: 12px;
+      padding: 12px 16px;
+      border-radius: var(--radius);
+      display: none;
+    }
+    #adminResult.success { display: block; background: rgba(35, 134, 54, 0.15); border: 1px solid var(--accent); color: var(--accent); }
+    #adminResult.error { display: block; background: rgba(248, 81, 73, 0.15); border: 1px solid var(--danger); color: var(--danger); }
+
+    /* ─────────────────────────────────────────────── */
+    /* Loading & Empty States */
+    /* ─────────────────────────────────────────────── */
+    .loading {
+      color: var(--text-secondary);
+      font-size: 14px;
+      padding: 20px;
+      text-align: center;
+    }
+
+    .empty {
+      color: var(--text-muted);
+      font-size: 14px;
+      padding: 20px;
+      text-align: center;
+      font-style: italic;
+    }
+
+    /* ─────────────────────────────────────────────── */
+    /* Responsive */
+    /* ─────────────────────────────────────────────── */
+    @media (max-width: 768px) {
+      header { flex-direction: column; align-items: flex-start; }
+      .header-right { width: 100%; justify-content: space-between; }
+      .stats-grid { grid-template-columns: repeat(2, 1fr); }
+      .admin-form .row { flex-direction: column; }
+      .admin-form input, .admin-form select { width: 100%; }
+      nav { overflow-x: auto; flex-wrap: nowrap; }
+      .tab-btn { font-size: 12px; padding: 8px 14px; white-space: nowrap; }
+    }
+
+    @media (max-width: 480px) {
+      .stats-grid { grid-template-columns: 1fr; }
+      header h1 { font-size: 18px; }
+    }
+
+    /* ─────────────────────────────────────────────── */
+    /* Login Screen */
+    /* ─────────────────────────────────────────────── */
+    .login-screen {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 80vh;
+      text-align: center;
+    }
+    .login-screen h1 {
+      font-size: 48px;
+      font-weight: 800;
+      background: linear-gradient(135deg, #00ff88, #00cc88);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 12px;
+    }
+    .login-screen p {
+      color: var(--text-secondary);
+      font-size: 18px;
+      margin-bottom: 32px;
+    }
+    .login-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      background: #5865f2;
+      border: none;
+      color: #fff;
+      padding: 14px 36px;
+      border-radius: var(--radius);
+      font-size: 18px;
+      font-weight: 600;
+      font-family: 'Inter', sans-serif;
+      cursor: pointer;
+      transition: background 0.2s;
+      text-decoration: none;
+    }
+    .login-btn:hover { background: #4752c4; }
+    .login-btn svg { width: 24px; height: 24px; fill: #fff; }
+  </style>
 </head>
 <body>
-  <div id="app">
+
+<div class="container" id="app">
+  <!-- ─── LOGIN SCREEN ─── -->
+  <div id="loginScreen" class="login-screen">
+    <h1>🚀 Ultra3Vault</h1>
+    <p>B2B Data Feed Dashboard — Configure your server's webhook feeds.</p>
+    <a href="/auth/discord" class="login-btn">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 127.14 96.36"><path d="M107.7,8.07A105.15,105.15,0,0,0,81.47,0a72.06,72.06,0,0,0-3.36,6.83A97.68,97.68,0,0,0,49,6.83,72.37,72.37,0,0,0,45.64,0,105.89,105.89,0,0,0,19.39,8.09C2.79,32.65-1.71,56.6.54,80.21h0A105.73,105.73,0,0,0,32.71,96.36,77.7,77.7,0,0,0,39.6,85.25a68.42,68.42,0,0,1-10.85-5.18c.91-.66,1.8-1.34,2.66-2.05a75.57,75.57,0,0,0,64.32,0c.87.71,1.76,1.39,2.66,2.05a68.42,68.42,0,0,1-10.85,5.18,77.7,77.7,0,0,0,6.89,11.1A105.73,105.73,0,0,0,126.6,80.22C129.24,52.84,122.09,29.11,107.7,8.07ZM42.45,65.69C36.18,65.69,31,60,31,53s5-12.74,11.43-12.74S54,46,53.89,53,48.84,65.69,42.45,65.69Zm42.24,0C78.41,65.69,73.22,60,73.22,53s5-12.74,11.44-12.74S96.23,46,96.12,53,91.08,65.69,84.69,65.69Z"/></svg>
+      Login with Discord
+    </a>
+  </div>
+
+  <!-- ─── DASHBOARD ─── -->
+  <div id="dashboardContent" style="display:none;">
     <header>
       <h1>🚀 Ultra3Vault Dashboard</h1>
-      <div id="status">🟢 Online</div>
+      <div class="header-right">
+        <div class="user-info" id="userInfo">
+          <img id="userAvatar" src="" alt="Avatar">
+          <span id="userName">Loading...</span>
+        </div>
+        <span class="status-badge online" id="statusBadge">🟢 Online</span>
+        <a href="/auth/logout" class="btn-outline">Logout</a>
+      </div>
     </header>
 
     <nav>
       <button class="tab-btn active" data-tab="overview">📊 Overview</button>
-      <button class="tab-btn" data-tab="economy">💰 Economy</button>
+      <button class="tab-btn" data-tab="servers">🖥️ Servers</button>
       <button class="tab-btn" data-tab="subscriptions">👑 Subscriptions</button>
       <button class="tab-btn" data-tab="agents">🤖 Agents</button>
-      <button class="tab-btn" data-tab="activities">📅 Activities</button>
       <button class="tab-btn" data-tab="admin">⚙️ Admin</button>
     </nav>
 
     <div id="tabs">
+      <!-- ─── OVERVIEW TAB ─── -->
       <div id="tab-overview" class="tab-content active">
         <div class="stats-grid">
           <div class="stat-card"><h3>Uptime</h3><p id="uptime">-</p></div>
@@ -39,17 +480,18 @@
         </div>
       </div>
 
-      <div id="tab-economy" class="tab-content">
-        <h2>💰 Economy Stats</h2>
-        <div class="stats-grid">
-          <div class="stat-card"><h3>Total Tokens</h3><p id="totalTokens">-</p></div>
-          <div class="stat-card"><h3>Daily Rewards (24h)</h3><p id="dailyCount">-</p></div>
-          <div class="stat-card"><h3>Daily Amount</h3><p id="dailyTotal">-</p></div>
+      <!-- ─── SERVERS TAB (B2B Webhook Config) ─── -->
+      <div id="tab-servers" class="tab-content">
+        <h2>🖥️ Your Servers</h2>
+        <p style="color:var(--text-secondary); margin-bottom:16px;">
+          Select a server to configure its B2B data feed webhook.
+        </p>
+        <div id="guildList" class="list-container">
+          <div class="loading">Loading your servers...</div>
         </div>
-        <h3>Top 10 Balances</h3>
-        <ul id="topBalances"></ul>
       </div>
 
+      <!-- ─── SUBSCRIPTIONS TAB ─── -->
       <div id="tab-subscriptions" class="tab-content">
         <h2>👑 Subscriptions</h2>
         <div class="stats-grid">
@@ -62,37 +504,82 @@
         </div>
       </div>
 
+      <!-- ─── AGENTS TAB ─── -->
       <div id="tab-agents" class="tab-content">
         <h2>🤖 Agent Health</h2>
-        <ul id="agentHealth"></ul>
+        <div id="agentHealth" class="list-container">
+          <div class="loading">Loading agent status...</div>
+        </div>
       </div>
 
-      <div id="tab-activities" class="tab-content">
-        <h2>📅 Recent Activities</h2>
-        <ul id="activitiesList"></ul>
-      </div>
-
+      <!-- ─── ADMIN TAB ─── -->
       <div id="tab-admin" class="tab-content">
         <h2>⚙️ Admin Actions</h2>
         <div class="admin-form">
-          <h3>Grant Subscription</h3>
-          <input type="text" id="grantUserId" placeholder="User ID">
-          <input type="text" id="grantGuildId" placeholder="Guild ID">
-          <select id="grantTier"><option value="vip">VIP</option><option value="premium">Premium</option></select>
-          <input type="number" id="grantDays" placeholder="Days (default 30)" value="30">
-          <button id="grantBtn">Grant</button>
+          <h3>🎁 Grant Subscription</h3>
+          <div class="row">
+            <input type="text" id="grantUserId" placeholder="User ID">
+            <input type="text" id="grantGuildId" placeholder="Guild ID">
+            <select id="grantTier"><option value="vip">VIP</option><option value="premium">Premium</option></select>
+            <input type="number" id="grantDays" placeholder="Days" value="30">
+            <button class="btn-success" id="grantBtn">Grant</button>
+          </div>
         </div>
         <div class="admin-form">
-          <h3>Revoke Subscription</h3>
-          <input type="text" id="revokeUserId" placeholder="User ID">
-          <input type="text" id="revokeGuildId" placeholder="Guild ID">
-          <button id="revokeBtn">Revoke</button>
+          <h3>🚫 Revoke Subscription</h3>
+          <div class="row">
+            <input type="text" id="revokeUserId" placeholder="User ID">
+            <input type="text" id="revokeGuildId" placeholder="Guild ID">
+            <button class="btn-danger" id="revokeBtn">Revoke</button>
+          </div>
         </div>
         <div id="adminResult"></div>
       </div>
     </div>
   </div>
+</div>
 
-  <script src="/dashboard.js"></script>
+<!-- ─── CONFIG MODAL ─── -->
+<div id="configModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.8); z-index:1000; align-items:center; justify-content:center;">
+  <div style="background:var(--bg-secondary); border:1px solid var(--border-color); border-radius:var(--radius); max-width:600px; width:90%; max-height:90vh; overflow-y:auto; padding:32px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+      <h2 id="modalTitle" style="font-size:20px;">Configure Server</h2>
+      <button onclick="closeConfigModal()" style="background:transparent; border:none; color:var(--text-secondary); font-size:24px; cursor:pointer;">✕</button>
+    </div>
+    <input type="hidden" id="modalGuildId">
+    <div style="margin-bottom:16px;">
+      <label style="display:block; font-weight:600; margin-bottom:6px; font-size:14px;">Webhook URL</label>
+      <div style="display:flex; gap:8px;">
+        <input type="text" id="modalWebhookUrl" placeholder="https://discord.com/api/webhooks/..." style="flex:1; background:var(--bg-input); border:1px solid var(--border-color); color:var(--text-primary); padding:10px 14px; border-radius:var(--radius); font-family:'Inter',sans-serif;">
+        <button class="btn-primary" id="modalTestBtn" style="white-space:nowrap;">Test</button>
+      </div>
+      <small style="color:var(--text-muted);">Create a webhook in your Discord server's integration settings.</small>
+    </div>
+    <div style="margin-bottom:16px;">
+      <label style="display:block; font-weight:600; margin-bottom:6px; font-size:14px;">Select Agents (Data Feeds)</label>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+        <label style="display:flex; align-items:center; gap:8px; font-size:14px; cursor:pointer;">
+          <input type="checkbox" class="agent-checkbox" value="ModerationAgent"> 🛡️ Moderation
+        </label>
+        <label style="display:flex; align-items:center; gap:8px; font-size:14px; cursor:pointer;">
+          <input type="checkbox" class="agent-checkbox" value="NewsAgent"> 📰 News
+        </label>
+        <label style="display:flex; align-items:center; gap:8px; font-size:14px; cursor:pointer;">
+          <input type="checkbox" class="agent-checkbox" value="SignalAgent"> 📈 Signals
+        </label>
+        <label style="display:flex; align-items:center; gap:8px; font-size:14px; cursor:pointer;">
+          <input type="checkbox" class="agent-checkbox" value="WhaleAgent"> 🐋 Whale
+        </label>
+      </div>
+    </div>
+    <div id="modalTestResult" style="margin-bottom:12px;"></div>
+    <div style="display:flex; gap:12px; justify-content:flex-end;">
+      <button class="btn-outline" onclick="closeConfigModal()">Cancel</button>
+      <button class="btn-success" id="modalSaveBtn">Save Configuration</button>
+    </div>
+  </div>
+</div>
+
+<script src="/dashboard.js"></script>
 </body>
 </html>
