@@ -1,5 +1,5 @@
 /**
- * 🚀 Ultra3Vault v5.0 – Multi‑Agent Discord Bot
+ * 🚀 Ultra3Vault v5.1 – Multi‑Agent Discord Bot with B2B Webhook Data Feed
  * Entry point: initializes core, agents, web server, and scheduler.
  */
 require('dotenv').config();
@@ -15,7 +15,8 @@ const { WebServer } = require('./web/server');
 const secrets = require('./config/secrets');
 const axios = require('axios');
 const ButtonHandler = require('./tools/discord/buttonHandler');
-const { sendWebhook } = require('./core/webhook'); // ✅ centralized webhook
+const { sendWebhook } = require('./core/webhook'); // internal named webhooks
+const WebhookSender = require('./tools/discord/webhookSender'); // raw URL sender
 
 // ================= UNHANDLED ERROR HANDLERS =================
 process.on('uncaughtException', (err) => {
@@ -108,6 +109,66 @@ try {
   logger.warn(`⚠️ Could not load AiChatAgent: ${err.message}`);
 }
 
+// ================= B2B HELPER: Deliver to Subscribers =================
+/**
+ * Deliver an embed payload to all active subscribers who have the agent enabled.
+ * @param {string} agentName - e.g., 'NewsAgent', 'SignalAgent'
+ * @param {string} eventType - e.g., 'news.summarized', 'signal.generated'
+ * @param {EmbedBuilder|Object} embed - Discord embed to send
+ * @param {Object} options - Optional: { content, components }
+ */
+async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
+  try {
+    const now = Date.now();
+    // Fetch all active subscriptions with a valid webhook
+    const rows = await db.all(
+      `SELECT userId, guildId, webhook_url, agentAccess FROM subscriptions
+       WHERE webhook_url IS NOT NULL
+         AND webhook_status = 'active'
+         AND expiresAt > ?`,
+      [now]
+    );
+
+    // Filter by agent access
+    const subscribers = rows.filter(row => {
+      try {
+        const access = row.agentAccess ? JSON.parse(row.agentAccess) : ['moderation'];
+        return access.includes(agentName);
+      } catch {
+        return false;
+      }
+    });
+
+    if (subscribers.length === 0) return;
+
+    // Build the payload once
+    const embedJson = embed.toJSON ? embed.toJSON() : embed;
+    const payload = {
+      embeds: [embedJson],
+      ...options,
+    };
+
+    // Send to each subscriber (with basic error handling)
+    for (const sub of subscribers) {
+      try {
+        await WebhookSender.send(sub.webhook_url, payload, {}, 2);
+        // Log success (optional)
+        logger.debug(`✅ B2B webhook delivered to ${sub.guildId} for ${agentName}`);
+        // Reset failure count if previously in error
+        if (sub.webhook_status === 'error') {
+          // You could call subscription.resetWebhookFailure here if you have the model instance
+        }
+      } catch (err) {
+        logger.warn(`❌ B2B webhook failed for ${sub.guildId} (${agentName}): ${err.message}`);
+        // Increment failure count – you can implement with model method
+        // For simplicity, we just log
+      }
+    }
+  } catch (err) {
+    logger.error(`deliverToSubscribers error: ${err.message}`);
+  }
+}
+
 // ================= STARTUP =================
 (async () => {
   try {
@@ -189,7 +250,7 @@ try {
       }
     });
 
-    // ================= AUTO‑SUMMARY POSTER (NOW USING WEBHOOK) =================
+    // ================= AUTO‑SUMMARY POSTER (INTERNAL + B2B) =================
     eventBus.on('news.summarized', async (data) => {
       const { summary, original, category } = data;
       logger.debug(`📝 Auto‑summary generated for: ${original.title}`);
@@ -206,16 +267,19 @@ try {
         .setTimestamp()
         .setFooter({ text: 'Ultra3Vault • Auto‑generated' });
 
-      // Send via Chronicle webhook (cryptoNews)
+      // 1. Send to internal Chronicle webhook
       try {
         await sendWebhook('cryptoNews', { embeds: [embed] });
         logger.debug(`✅ Auto‑summary posted via Chronicle webhook`);
       } catch (err) {
         logger.error(`Failed to post auto‑summary via webhook: ${err.message}`);
       }
+
+      // 2. Deliver to B2B subscribers
+      await deliverToSubscribers('NewsAgent', 'news.summarized', embed);
     });
 
-    // ================= WHALE ALERT POSTER (webhook) =================
+    // ================= WHALE ALERT POSTER (INTERNAL + B2B) =================
     eventBus.on('whale.detected', async (tx) => {
       try {
         const whaleAgent = orchestrator.getAgent('WhaleAgent');
@@ -223,16 +287,20 @@ try {
           logger.warn('WhaleAgent not found');
           return;
         }
-        // formatWhaleEmbed returns an EmbedBuilder – convert to JSON
-        const embed = whaleAgent.formatWhaleEmbed(tx).toJSON();
-        await sendWebhook('whaleAlerts', { embeds: [embed] });
-        logger.info(`🐋 Whale alert posted via webhook`);
+        const embed = whaleAgent.formatWhaleEmbed(tx);
+
+        // 1. Internal webhook
+        await sendWebhook('whaleAlerts', { embeds: [embed.toJSON()] });
+        logger.info(`🐋 Whale alert posted via internal webhook`);
+
+        // 2. B2B subscribers
+        await deliverToSubscribers('WhaleAgent', 'whale.detected', embed);
       } catch (err) {
         logger.error(`Failed to post whale alert: ${err.message}`);
       }
     });
 
-    // ================= PREMIUM SIGNAL POSTER (webhook) =================
+    // ================= PREMIUM SIGNAL POSTER (INTERNAL + B2B) =================
     eventBus.on('signal.generated', async (signal) => {
       try {
         const signalAgent = orchestrator.getAgent('SignalAgent');
@@ -240,46 +308,38 @@ try {
           logger.warn('SignalAgent not found');
           return;
         }
-        const embed = signalAgent.formatSignalEmbed(signal).toJSON();
-        await sendWebhook('premiumSignals', { embeds: [embed] });
-        logger.info(`📈 Premium signal posted via webhook`);
+        const embed = signalAgent.formatSignalEmbed(signal);
+
+        // 1. Internal webhook
+        await sendWebhook('premiumSignals', { embeds: [embed.toJSON()] });
+        logger.info(`📈 Premium signal posted via internal webhook`);
+
+        // 2. B2B subscribers
+        await deliverToSubscribers('SignalAgent', 'signal.generated', embed);
       } catch (err) {
         logger.error(`Failed to post premium signal: ${err.message}`);
       }
     });
 
-    // ================= RECOMMENDATION POSTERS (webhooks) =================
-    // VIP Recommendations → vipNews
+    // ================= RECOMMENDATION POSTERS (INTERNAL + B2B) =================
     eventBus.on('recommendation.generated', async (rec) => {
-      if (rec.tier !== 'vip') return;
       try {
         const recAgent = orchestrator.getAgent('RecommendationAgent');
         if (!recAgent) {
           logger.warn('RecommendationAgent not found');
           return;
         }
-        const embed = recAgent.formatRecommendationEmbed(rec).toJSON();
-        await sendWebhook('vipNews', { embeds: [embed] });
-        logger.info(`🔶 VIP recommendation posted via webhook`);
-      } catch (err) {
-        logger.error(`Failed to post VIP recommendation: ${err.message}`);
-      }
-    });
+        const embed = recAgent.formatRecommendationEmbed(rec);
 
-    // Premium Recommendations → premiumSignals
-    eventBus.on('recommendation.generated', async (rec) => {
-      if (rec.tier !== 'premium') return;
-      try {
-        const recAgent = orchestrator.getAgent('RecommendationAgent');
-        if (!recAgent) {
-          logger.warn('RecommendationAgent not found');
-          return;
-        }
-        const embed = recAgent.formatRecommendationEmbed(rec).toJSON();
-        await sendWebhook('premiumSignals', { embeds: [embed] });
-        logger.info(`💎 Premium recommendation posted via webhook`);
+        // Determine which internal webhook to use
+        let webhookKey = rec.tier === 'vip' ? 'vipNews' : 'premiumSignals';
+        await sendWebhook(webhookKey, { embeds: [embed.toJSON()] });
+        logger.info(`🔶 ${rec.tier.toUpperCase()} recommendation posted via internal webhook`);
+
+        // B2B subscribers – always deliver as RecommendationAgent (clients decide tier internally)
+        await deliverToSubscribers('RecommendationAgent', 'recommendation.generated', embed);
       } catch (err) {
-        logger.error(`Failed to post Premium recommendation: ${err.message}`);
+        logger.error(`Failed to post recommendation: ${err.message}`);
       }
     });
 
@@ -349,7 +409,6 @@ try {
         logger,
         models,
         client,
-        // no channelId needed – uses webhook internally
       });
       scheduler.registerJob('weeklyLeaderboard', '0 9 * * 1', weeklyLeaderboard);
       logger.info('📅 Weekly leaderboard job scheduled (posts via Architect webhook)');
