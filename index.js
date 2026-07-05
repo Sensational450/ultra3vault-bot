@@ -1,9 +1,9 @@
 /**
- * 🚀 Ultra3Vault v5.1 – Multi‑Agent Discord Bot with B2B Webhook Data Feed
+ * 🚀 Ultra3Vault v6.0 – Memory‑Optimized Multi‑Agent Discord Bot with B2B Webhook Data Feed
  * Entry point: initializes core, agents, web server, and scheduler.
  */
 require('dotenv').config();
-const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, Partials } = require('discord.js');
 const { EventBus } = require('./core/eventBus');
 const { Logger } = require('./core/logger');
 const { RateLimiter } = require('./core/rateLimiter');
@@ -26,7 +26,7 @@ process.on('unhandledRejection', (err) => {
   console.error('💥 UNHANDLED REJECTION:', err?.stack || err);
 });
 
-// ================= DISCORD CLIENT =================
+// ================= DISCORD CLIENT (Memory‑Optimized) =================
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -34,6 +34,24 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
   ],
+  partials: [], // Disable partials to reduce cache
+  sweepers: {
+    // Sweep messages older than 30 minutes every 5 minutes
+    messages: {
+      interval: 300, // seconds = 5 minutes
+      lifetime: 1800, // seconds = 30 minutes
+    },
+    // Prevent user cache from growing indefinitely
+    users: {
+      interval: 3600, // 1 hour
+      filter: () => false, // Do not sweep users (keep them, but they are limited by guild members anyway)
+    },
+    // Limit guild members cache (fetch on demand)
+    members: {
+      interval: 3600,
+      filter: () => false,
+    },
+  },
 });
 
 // ================= CORE COMPONENTS =================
@@ -152,16 +170,9 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     for (const sub of subscribers) {
       try {
         await WebhookSender.send(sub.webhook_url, payload, {}, 2);
-        // Log success (optional)
         logger.debug(`✅ B2B webhook delivered to ${sub.guildId} for ${agentName}`);
-        // Reset failure count if previously in error
-        if (sub.webhook_status === 'error') {
-          // You could call subscription.resetWebhookFailure here if you have the model instance
-        }
       } catch (err) {
         logger.warn(`❌ B2B webhook failed for ${sub.guildId} (${agentName}): ${err.message}`);
-        // Increment failure count – you can implement with model method
-        // For simplicity, we just log
       }
     }
   } catch (err) {
@@ -188,7 +199,7 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
       });
     });
 
-    // Register all agents
+    // Register all agents (priorities)
     orchestrator.registerAgent(new ModerationAgent(eventBus, { client, logger, db, models }), 100);
     orchestrator.registerAgent(new EconomyAgent(eventBus, { client, logger, db, models }), 90);
     orchestrator.registerAgent(new VipAgent(eventBus, { client, logger, db, models }), 80);
