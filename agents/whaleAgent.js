@@ -1,5 +1,5 @@
 /**
- * 🐋 WhaleAgent v8.1 – Memory‑Optimized On‑Chain Intelligence Platform
+ * 🐋 WhaleAgent v8.1 – Memory‑Optimized On-Chain Intelligence Platform
  * - Multi-chain support (ETH, BTC, SOL, BNB, Base, Arbitrum, Optimism, Polygon, Avalanche)
  * - Smart money tracking, wallet P&L, portfolio value
  * - AI analysis of whale transactions (OpenAI)
@@ -7,21 +7,22 @@
  * - Community features: watchlists, leaderboards, predictions
  * - Admin controls, premium gating, health checks
  * - All commands consolidated under /whale
- * - Memory‑safe: bounded caches, periodic cleanup, aggressive cleanup
+ * - Memory‑safe loading with bounded caches and periodic cleanup
  */
 const BaseAgent = require('./baseAgent');
-const { EmbedBuilder, MessageFlags } = require('discord.js');
+const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags } = require('discord.js');
 const axios = require('axios');
 const { ethers } = require('ethers');
 
 // ─── Memory limits ─────────────────────────────────────────────
-const MAX_SEEN_TXS = 5000;                // Max seen transactions cache
-const MAX_WATCHLIST_PER_USER = 100;       // Max addresses per user watchlist
-const MAX_WALLET_STATS_ENTRIES = 1000;    // Max wallet performance entries
-const MAX_RECENT_WHALES = 100;            // Max recent whale list
-const MAX_COMMUNITY_PREDICTIONS = 1000;   // Max predictions in memory
+const MAX_SEEN_TXS = 5000;
+const MAX_RECENT_WHALES = 100;
+const MAX_WALLET_PERFORMANCE = 1000;
+const MAX_WATCHLISTS_PER_USER = 50;
+const MAX_COMMUNITY_PREDICTIONS = 1000;
+const MAX_SEEN_TXS_HARD_CAP = 7000;
 
-// ─── Simple cache & rate limiter (unchanged) ──────────────────
+// ---- Simple cache & rate limiter ----
 class TTLCache {
   constructor(ttl = 60000) { this.cache = new Map(); this.ttl = ttl; }
   get(key) { const e = this.cache.get(key); if (!e) return null; if (Date.now() - e.timestamp > this.ttl) { this.cache.delete(key); return null; } return e.value; }
@@ -29,7 +30,6 @@ class TTLCache {
   clear() { this.cache.clear(); }
   size() { return this.cache.size; }
 }
-
 class SimpleRateLimiter {
   constructor(limit, windowMs) { this.limit = limit; this.windowMs = windowMs; this.requests = []; }
   check() {
@@ -74,9 +74,21 @@ class WhaleAgent extends BaseAgent {
 
     // ---- Caches (bounded) ----
     this.cacheTTL = parseInt(process.env.WHALE_CACHE_TTL) || 60 * 60 * 1000;
-    this.seenTxs = new Map();          // Will be trimmed
+    this.seenTxs = new Map();
     this.priceCache = new TTLCache(30000);
     this.rateLimiter = new SimpleRateLimiter(30, 60000);
+
+    // ---- Recent whales (bounded) ----
+    this._recentWhales = [];
+
+    // ---- Wallet performance (bounded) ----
+    this._walletPerformance = new Map();
+
+    // ---- Watchlists (loaded from DB, limited per user) ----
+    this._watchlists = new Map();
+
+    // ---- Community predictions (bounded) ----
+    this._communityPredictions = new Map();
 
     // ---- Explorer URLs ----
     this.explorers = {
@@ -106,10 +118,7 @@ class WhaleAgent extends BaseAgent {
       }
     } catch (err) { this.logger.warn('OpenAI not available'); }
 
-    // ---- Database tables (will be ensured in init) ----
-    // Additional tables for wallet tracking, performance, etc.
-
-    // ---- State (bounded) ----
+    // ---- State ----
     this._startTime = Date.now();
     this._lastRun = null;
     this._sources = {
@@ -117,9 +126,6 @@ class WhaleAgent extends BaseAgent {
       alchemy: !!this.alchemyKey && this.chains.length > 0,
       blockchair: true,
     };
-    this._recentWhales = [];              // bounded
-    this._walletPerformance = new Map();  // bounded
-    this._communityPredictions = new Map(); // bounded
 
     // ---- Retry ----
     this.maxRetries = 3;
@@ -145,14 +151,15 @@ class WhaleAgent extends BaseAgent {
       await this.checkWhales();
     });
 
+    // Subscribe to price updates for context (if needed)
     this.subscribe('price.alert', async (data) => {
-      // Store recent price for context
+      // Store recent price for context (no-op)
     });
 
-    // Run cleanup to trim caches after loading
+    // Run initial cleanup
     await this.cleanup();
 
-    // Periodic cleanup (every 30 min)
+    // Periodic memory trimming every 30 minutes
     this._cleanupInterval = setInterval(() => this.cleanup(), 30 * 60 * 1000);
 
     const sourceList = Object.entries(this._sources)
@@ -215,7 +222,7 @@ class WhaleAgent extends BaseAgent {
         txHash TEXT,
         userId TEXT,
         guildId TEXT,
-        sentiment TEXT,
+        sentiment TEXT, -- bullish or bearish
         timestamp INTEGER,
         PRIMARY KEY (txHash, userId)
       );
@@ -235,23 +242,28 @@ class WhaleAgent extends BaseAgent {
     `);
   }
 
-  // ---------- Load watchlists (bounded per user) ----------
+  // ---------- Load watchlists (bounded) ----------
   async _loadWatchlists() {
     const db = this.deps.db;
-    this._watchlists = new Map(); // userId -> Set of addresses
-    const rows = await db.all(`SELECT userId, walletAddress FROM whale_watchlists`);
+    this._watchlists = new Map();
+    // Load only up to MAX_WATCHLISTS_PER_USER per user to prevent memory bloat
+    const rows = await db.all(`
+      SELECT userId, walletAddress FROM whale_watchlists
+      GROUP BY userId
+      ORDER BY addedAt DESC
+      LIMIT ?
+    `, [MAX_WATCHLISTS_PER_USER * 100]); // overall cap
     for (const row of rows) {
       if (!this._watchlists.has(row.userId)) this._watchlists.set(row.userId, new Set());
       const set = this._watchlists.get(row.userId);
-      // Limit per user
-      if (set.size < MAX_WATCHLIST_PER_USER) {
+      if (set.size < MAX_WATCHLISTS_PER_USER) {
         set.add(row.walletAddress);
       }
     }
-    this.logger.debug(`Loaded watchlists for ${this._watchlists.size} users (capped at ${MAX_WATCHLIST_PER_USER} per user)`);
+    this.logger.debug(`Loaded watchlists for ${this._watchlists.size} users`);
   }
 
-  // ---------- Load wallet stats (bounded total) ----------
+  // ---------- Load wallet stats (bounded) ----------
   async _loadWalletStats() {
     const db = this.deps.db;
     const rows = await db.all(`
@@ -259,7 +271,8 @@ class WhaleAgent extends BaseAgent {
       FROM whale_wallet_performance
       ORDER BY totalTrades DESC
       LIMIT ?
-    `, [MAX_WALLET_STATS_ENTRIES]);
+    `, [MAX_WALLET_PERFORMANCE]);
+    this._walletPerformance.clear();
     for (const row of rows) {
       const key = `${row.walletAddress}_${row.guildId}`;
       this._walletPerformance.set(key, {
@@ -270,10 +283,10 @@ class WhaleAgent extends BaseAgent {
         winRate: row.totalTrades > 0 ? (row.wins / row.totalTrades) : 0,
       });
     }
-    this.logger.debug(`Loaded ${this._walletPerformance.size} wallet stats entries (capped at ${MAX_WALLET_STATS_ENTRIES})`);
+    this.logger.debug(`Loaded ${this._walletPerformance.size} wallet performance records`);
   }
 
-  // ---------- MAIN CHECK (unchanged, but with cleanup) ----------
+  // ---------- MAIN CHECK ----------
   async checkWhales() {
     this._lastRun = Date.now();
     try {
@@ -350,30 +363,46 @@ class WhaleAgent extends BaseAgent {
         this.seenTxs.set(cacheKey, Date.now());
 
         // Trim seenTxs if too large
-        if (this.seenTxs.size > MAX_SEEN_TXS) {
-          const entries = [...this.seenTxs.entries()];
-          // Keep the most recent half (sorted by timestamp)
-          entries.sort((a, b) => a[1] - b[1]);
-          const toKeep = entries.slice(-MAX_SEEN_TXS / 2);
-          this.seenTxs = new Map(toKeep);
-          this.logger.debug(`Trimmed seenTxs to ${this.seenTxs.size} entries`);
+        if (this.seenTxs.size > MAX_SEEN_TXS_HARD_CAP) {
+          this._trimSeenTxs();
         }
 
-        // Keep recent whales list bounded
+        // Add to recent whales (bounded)
         this._recentWhales.push(tx);
         if (this._recentWhales.length > MAX_RECENT_WHALES) {
-          this._recentWhales = this._recentWhales.slice(-MAX_RECENT_WHALES);
+          this._recentWhales.shift();
         }
 
         this.logger.info(`🐋 Whale: ${tx.amount} ${tx.symbol} ($${tx.usdValue.toLocaleString()}) on ${tx.blockchain} - ${tx.classification || 'Unknown'}`);
       }
       this._cleanCache();
 
+      // Update analytics
       if (unique.length > 0) {
         this.logger.info(`🐋 Found ${unique.length} whale transactions (emitted ${unique.filter(tx => this.assets.includes(tx.symbol.toUpperCase())).length})`);
       }
     } catch (err) {
       this.logger.error(`❌ Whale check failed: ${err.message}`);
+    }
+  }
+
+  // ---------- Trim seenTxs ----------
+  _trimSeenTxs() {
+    if (this.seenTxs.size <= MAX_SEEN_TXS) return;
+    // Remove oldest entries (Map preserves insertion order)
+    const entries = [...this.seenTxs.entries()];
+    const toDelete = entries.slice(0, this.seenTxs.size - MAX_SEEN_TXS);
+    for (const [key] of toDelete) {
+      this.seenTxs.delete(key);
+    }
+    this.logger.debug(`Trimmed seenTxs to ${this.seenTxs.size} entries`);
+  }
+
+  // ---------- CACHE CLEANUP ----------
+  _cleanCache() {
+    const now = Date.now();
+    for (const [key, ts] of this.seenTxs.entries()) {
+      if (now - ts > this.cacheTTL) this.seenTxs.delete(key);
     }
   }
 
@@ -567,63 +596,425 @@ class WhaleAgent extends BaseAgent {
     }));
   }
 
-  // ---------- CACHE CLEANUP ----------
-  _cleanCache() {
-    const now = Date.now();
-    const entries = [...this.seenTxs.entries()];
-    let trimmed = 0;
-    for (const [key, ts] of entries) {
-      if (now - ts > this.cacheTTL) {
-        this.seenTxs.delete(key);
-        trimmed++;
-      }
+  // ---------- SLASH COMMANDS (Consolidated /whale) ----------
+  async onInteraction(interaction) {
+    if (!interaction.isCommand()) return;
+    if (interaction.commandName !== 'whale') return;
+
+    const sub = interaction.options.getSubcommand();
+    const group = interaction.options.getSubcommandGroup();
+
+    // Handle groups first
+    if (group === 'wallet') {
+      await this.cmdWallet(interaction);
+      return;
     }
-    if (trimmed) this.logger.debug(`Cleaned ${trimmed} old seenTxs entries`);
+    if (group === 'portfolio') {
+      await this.cmdPortfolio(interaction);
+      return;
+    }
+    if (group === 'config') {
+      await this.cmdConfig(interaction);
+      return;
+    }
+
+    // Top-level subcommands
+    switch (sub) {
+      case 'status':
+        await this.cmdStatus(interaction);
+        break;
+      case 'stats':
+        await this.cmdStats(interaction);
+        break;
+      case 'top':
+        await this.cmdTop(interaction);
+        break;
+      case 'history':
+        await this.cmdHistory(interaction);
+        break;
+      case 'watch':
+        await this.cmdWatch(interaction);
+        break;
+      case 'ignore':
+        await this.cmdIgnore(interaction);
+        break;
+      case 'predict':
+        await this.cmdPredict(interaction);
+        break;
+      case 'leaderboard':
+        await this.cmdLeaderboard(interaction);
+        break;
+      default:
+        await interaction.reply({ content: '❌ Unknown subcommand.', ephemeral: true });
+    }
+  }
+
+  // ---------- Subcommand: status ----------
+  async cmdStatus(interaction) {
+    const uptime = Math.floor((Date.now() - this._startTime) / 1000);
+    const hours = Math.floor(uptime / 3600);
+    const minutes = Math.floor((uptime % 3600) / 60);
+    const db = this.deps.db;
+    const total = await db.get(`SELECT COUNT(*) as count FROM whale_transactions`);
+    const embed = new EmbedBuilder()
+      .setTitle('🐋 Whale Agent – Status')
+      .setColor(0x3498db)
+      .addFields(
+        { name: 'Status', value: '✅ Operational', inline: true },
+        { name: 'Uptime', value: `${hours}h ${minutes}m`, inline: true },
+        { name: 'Threshold', value: `$${(this.minValueUsd/1e6).toFixed(0)}M`, inline: true },
+        { name: 'Total Txs', value: total?.count?.toString() || '0', inline: true },
+        { name: 'Sources', value: Object.entries(this._sources).filter(([, v]) => v).map(([k]) => k).join(', ') || 'None', inline: false },
+        { name: 'Chains', value: this.chains.join(', ') || 'None', inline: false },
+        { name: 'Cache Size', value: `${this.seenTxs.size} txs`, inline: true },
+        { name: 'Last Run', value: this._lastRun ? `<t:${Math.floor(this._lastRun/1000)}:R>` : 'Never', inline: true }
+      )
+      .setTimestamp();
+    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+  }
+
+  // ---------- Subcommand: stats ----------
+  async cmdStats(interaction) {
+    const db = this.deps.db;
+    const today = new Date(); today.setHours(0,0,0,0);
+    const weekAgo = new Date(); weekAgo.setDate(weekAgo.getDate() - 7);
+    const rows = await db.all(`
+      SELECT 
+        COUNT(*) as total,
+        SUM(CASE WHEN classification = 'Deposit' THEN 1 ELSE 0 END) as deposits,
+        SUM(CASE WHEN classification = 'Withdrawal' THEN 1 ELSE 0 END) as withdrawals,
+        SUM(CASE WHEN classification = 'Wallet-to-Wallet' THEN 1 ELSE 0 END) as wallet_to_wallet,
+        AVG(usdValue) as avgUsd,
+        MAX(usdValue) as maxUsd,
+        MIN(usdValue) as minUsd
+      FROM whale_transactions
+      WHERE timestamp >= ?
+    `, [weekAgo.getTime()]);
+    const todayCount = await db.get(`SELECT COUNT(*) as count FROM whale_transactions WHERE timestamp >= ?`, [today.getTime()]);
+    const embed = new EmbedBuilder()
+      .setTitle('📊 Whale Statistics (Last 7 Days)')
+      .setColor(0xff7700)
+      .addFields(
+        { name: 'Total Txs', value: rows.total?.toString() || '0', inline: true },
+        { name: 'Today', value: todayCount?.count?.toString() || '0', inline: true },
+        { name: 'Deposits', value: rows.deposits?.toString() || '0', inline: true },
+        { name: 'Withdrawals', value: rows.withdrawals?.toString() || '0', inline: true },
+        { name: 'Wallet-to-Wallet', value: rows.wallet_to_wallet?.toString() || '0', inline: true },
+        { name: 'Avg USD', value: rows.avgUsd ? `$${(rows.avgUsd/1e6).toFixed(1)}M` : 'N/A', inline: true },
+        { name: 'Max USD', value: rows.maxUsd ? `$${(rows.maxUsd/1e6).toFixed(1)}M` : 'N/A', inline: true },
+        { name: 'Min USD', value: rows.minUsd ? `$${(rows.minUsd/1e6).toFixed(1)}M` : 'N/A', inline: true }
+      )
+      .setTimestamp();
+    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+  }
+
+  // ---------- Subcommand: top ----------
+  async cmdTop(interaction) {
+    const limit = interaction.options.getInteger('limit') || 5;
+    const db = this.deps.db;
+    const rows = await db.all(`
+      SELECT * FROM whale_transactions
+      ORDER BY usdValue DESC
+      LIMIT ?
+    `, [limit]);
+    if (!rows.length) return interaction.reply({ content: 'No whale transactions recorded yet.', ephemeral: true });
+    let desc = '';
+    for (const row of rows) {
+      const label = row.fromLabel || row.toLabel || '';
+      desc += `• **${row.symbol}** ${row.amount.toFixed(2)} ($${(row.usdValue/1e6).toFixed(1)}M) – ${row.classification || 'Transfer'}\n`;
+    }
+    const embed = new EmbedBuilder()
+      .setTitle(`🏆 Top ${limit} Whale Transactions`)
+      .setDescription(desc)
+      .setColor(0xffd700);
+    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+  }
+
+  // ---------- Subcommand: history ----------
+  async cmdHistory(interaction) {
+    const limit = interaction.options.getInteger('limit') || 5;
+    const db = this.deps.db;
+    const rows = await db.all(`
+      SELECT * FROM whale_transactions
+      ORDER BY timestamp DESC
+      LIMIT ?
+    `, [limit]);
+    if (!rows.length) return interaction.reply({ content: 'No whale transactions recorded yet.', ephemeral: true });
+    let desc = '';
+    for (const row of rows) {
+      const time = new Date(row.timestamp);
+      desc += `• **${row.symbol}** ${row.amount.toFixed(2)} ($${(row.usdValue/1e6).toFixed(1)}M) – ${row.classification || 'Transfer'} – <t:${Math.floor(time.getTime()/1000)}:R>\n`;
+    }
+    const embed = new EmbedBuilder()
+      .setTitle('📜 Recent Whale Transactions')
+      .setDescription(desc)
+      .setColor(0x3498db);
+    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+  }
+
+  // ---------- Subcommand: watch (watchlist) ----------
+  async cmdWatch(interaction) {
+    const sub = interaction.options.getSubcommand();
+    const userId = interaction.user.id;
+    const guildId = interaction.guild.id;
+    const address = interaction.options.getString('address');
+    const db = this.deps.db;
+    if (sub === 'add') {
+      // Check blacklist
+      const blacklisted = await db.get(`SELECT * FROM whale_blacklist WHERE walletAddress = ? AND guildId = ?`, [address, guildId]);
+      if (blacklisted) return interaction.reply({ content: '❌ This wallet is blacklisted.', ephemeral: true });
+      await db.run(
+        `INSERT OR REPLACE INTO whale_watchlists (userId, guildId, walletAddress, addedAt) VALUES (?, ?, ?, ?)`,
+        [userId, guildId, address, Date.now()]
+      );
+      if (!this._watchlists.has(userId)) this._watchlists.set(userId, new Set());
+      this._watchlists.get(userId).add(address);
+      await interaction.reply({ content: `✅ Added wallet ${address} to your watchlist.`, ephemeral: true });
+    } else if (sub === 'remove') {
+      await db.run(`DELETE FROM whale_watchlists WHERE userId = ? AND guildId = ? AND walletAddress = ?`, [userId, guildId, address]);
+      if (this._watchlists.has(userId)) this._watchlists.get(userId).delete(address);
+      await interaction.reply({ content: `✅ Removed wallet ${address} from your watchlist.`, ephemeral: true });
+    } else if (sub === 'list') {
+      const rows = await db.all(`SELECT walletAddress FROM whale_watchlists WHERE userId = ? AND guildId = ?`, [userId, guildId]);
+      if (!rows.length) return interaction.reply({ content: 'Your watchlist is empty.', ephemeral: true });
+      const list = rows.map(r => `• ${r.walletAddress}`).join('\n');
+      const embed = new EmbedBuilder().setTitle('👀 Your Whale Watchlist').setDescription(list).setColor(0x3498db);
+      await interaction.reply({ embeds: [embed], ephemeral: true });
+    }
+  }
+
+  // ---------- Subcommand: ignore (blacklist) ----------
+  async cmdIgnore(interaction) {
+    const address = interaction.options.getString('address');
+    const guildId = interaction.guild.id;
+    const db = this.deps.db;
+    await db.run(
+      `INSERT OR REPLACE INTO whale_blacklist (walletAddress, guildId, reason) VALUES (?, ?, ?)`,
+      [address, guildId, 'user ignored']
+    );
+    await interaction.reply({ content: `✅ Ignored wallet ${address}. You will not see alerts from it.`, ephemeral: true });
+  }
+
+  // ---------- Subcommand: predict (community sentiment) ----------
+  async cmdPredict(interaction) {
+    const txHash = interaction.options.getString('tx');
+    const sentiment = interaction.options.getString('sentiment');
+    const userId = interaction.user.id;
+    const guildId = interaction.guild.id;
+    const db = this.deps.db;
+    // Check if tx exists
+    const tx = await db.get(`SELECT hash FROM whale_transactions WHERE hash = ?`, [txHash]);
+    if (!tx) return interaction.reply({ content: '❌ Transaction not found.', ephemeral: true });
+    await db.run(
+      `INSERT OR REPLACE INTO whale_community_predictions (txHash, userId, guildId, sentiment, timestamp) VALUES (?, ?, ?, ?, ?)`,
+      [txHash, userId, guildId, sentiment, Date.now()]
+    );
+    await interaction.reply({ content: `✅ You voted ${sentiment} for this whale transaction!`, ephemeral: true });
+  }
+
+  // ---------- Subcommand: leaderboard ----------
+  async cmdLeaderboard(interaction) {
+    const db = this.deps.db;
+    const rows = await db.all(`
+      SELECT userId, COUNT(*) as votes FROM whale_community_predictions
+      WHERE guildId = ?
+      GROUP BY userId
+      ORDER BY votes DESC
+      LIMIT 10
+    `, [interaction.guild.id]);
+    if (!rows.length) return interaction.reply({ content: 'No predictions yet.', ephemeral: true });
+    let desc = '';
+    for (let i = 0; i < rows.length; i++) {
+      const user = await this.client.users.fetch(rows[i].userId).catch(() => null);
+      const name = user ? user.username : rows[i].userId;
+      desc += `${i+1}. **${name}** – ${rows[i].votes} predictions\n`;
+    }
+    const embed = new EmbedBuilder().setTitle('🏆 Whale Prediction Leaderboard').setDescription(desc).setColor(0xffd700);
+    await interaction.reply({ embeds: [embed], ephemeral: true });
+  }
+
+  // ---------- Subcommand: wallet (group) ----------
+  async cmdWallet(interaction) {
+    const sub = interaction.options.getSubcommand();
+    const address = interaction.options.getString('address');
+    const db = this.deps.db;
+    if (sub === 'view') {
+      // Get transaction history for this wallet
+      const rows = await db.all(`
+        SELECT * FROM whale_transactions
+        WHERE fromAddress = ? OR toAddress = ?
+        ORDER BY usdValue DESC
+        LIMIT 20
+      `, [address, address]);
+      if (!rows.length) return interaction.reply({ content: `No transactions found for wallet ${address}`, ephemeral: true });
+      let desc = '';
+      for (const row of rows) {
+        desc += `• ${row.symbol} ${row.amount.toFixed(2)} ($${(row.usdValue/1e6).toFixed(1)}M) – ${row.classification || 'Transfer'}\n`;
+      }
+      const embed = new EmbedBuilder()
+        .setTitle(`🔍 Wallet ${address.slice(0,10)}...`)
+        .setDescription(desc)
+        .setColor(0x3498db);
+      await interaction.reply({ embeds: [embed], ephemeral: true });
+    } else if (sub === 'score') {
+      // Calculate a score based on transaction volume and frequency
+      const rows = await db.all(`
+        SELECT COUNT(*) as count, SUM(usdValue) as totalVolume, AVG(usdValue) as avgVolume
+        FROM whale_transactions
+        WHERE fromAddress = ? OR toAddress = ?
+      `, [address, address]);
+      if (!rows.length || !rows[0].count) return interaction.reply({ content: `No data for wallet ${address}`, ephemeral: true });
+      const { count, totalVolume, avgVolume } = rows[0];
+      const score = Math.min(100, Math.floor((totalVolume / 1e9) * 10 + count * 0.5));
+      const embed = new EmbedBuilder()
+        .setTitle(`📊 Wallet Score: ${address.slice(0,10)}...`)
+        .setDescription(`Score: **${score}/100**\n\nTransactions: ${count}\nTotal Volume: $${(totalVolume/1e6).toFixed(1)}M\nAvg Volume: $${(avgVolume/1e6).toFixed(1)}M`)
+        .setColor(0x3498db);
+      await interaction.reply({ embeds: [embed], ephemeral: true });
+    }
+  }
+
+  // ---------- Subcommand: portfolio (group) ----------
+  async cmdPortfolio(interaction) {
+    const sub = interaction.options.getSubcommand();
+    const userId = interaction.user.id;
+    const guildId = interaction.guild.id;
+    const db = this.deps.db;
+    if (sub === 'view') {
+      // Show wallets the user is watching with their total volume
+      const watchlist = await db.all(`SELECT walletAddress FROM whale_watchlists WHERE userId = ? AND guildId = ?`, [userId, guildId]);
+      if (!watchlist.length) return interaction.reply({ content: 'Your watchlist is empty.', ephemeral: true });
+      let desc = '';
+      for (const w of watchlist) {
+        const stats = await db.get(`
+          SELECT COUNT(*) as count, SUM(usdValue) as totalVolume
+          FROM whale_transactions
+          WHERE fromAddress = ? OR toAddress = ?
+        `, [w.walletAddress, w.walletAddress]);
+        desc += `• ${w.walletAddress.slice(0,10)}... – ${stats?.count || 0} txs, $${(stats?.totalVolume/1e6 || 0).toFixed(1)}M\n`;
+      }
+      const embed = new EmbedBuilder().setTitle('📊 Your Whale Portfolio').setDescription(desc).setColor(0x00ff88);
+      await interaction.reply({ embeds: [embed], ephemeral: true });
+    }
+  }
+
+  // ---------- Subcommand: config (admin) ----------
+  async cmdConfig(interaction) {
+    if (!interaction.memberPermissions.has('Administrator')) {
+      return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    }
+    const sub = interaction.options.getSubcommand();
+    const guildId = interaction.guild.id;
+    const db = this.deps.db;
+    if (sub === 'set') {
+      const key = interaction.options.getString('key');
+      const value = interaction.options.getString('value');
+      // Store in a config table (we'll use a generic table)
+      await db.run(
+        `INSERT OR REPLACE INTO guild_configs (guildId, configKey, config) VALUES (?, ?, ?)`,
+        [guildId, `whale_${key}`, JSON.stringify(value)]
+      );
+      await interaction.reply({ content: `✅ ${key} set to ${value}`, ephemeral: true });
+    } else if (sub === 'show') {
+      const rows = await db.all(`SELECT configKey, config FROM guild_configs WHERE guildId = ? AND configKey LIKE 'whale_%'`, [guildId]);
+      if (!rows.length) return interaction.reply({ content: 'No whale config set.', ephemeral: true });
+      let desc = '';
+      for (const row of rows) {
+        desc += `• ${row.configKey.replace('whale_','')}: ${JSON.parse(row.config)}\n`;
+      }
+      const embed = new EmbedBuilder().setTitle('⚙️ Whale Config').setDescription(desc).setColor(0x3498db);
+      await interaction.reply({ embeds: [embed], ephemeral: true });
+    }
+  }
+
+  // ---------- EMBED (enriched) ----------
+  formatWhaleEmbed(tx) {
+    const explorerUrl = this.explorers[tx.blockchain.toUpperCase()] || this.explorers.ETH;
+    const txLink = `${explorerUrl}${tx.hash}`;
+    const fromLabel = tx.fromLabel || tx.from.owner || tx.from.address.substring(0,10)+'...';
+    const toLabel = tx.toLabel || tx.to.owner || tx.to.address.substring(0,10)+'...';
+
+    const embed = new EmbedBuilder()
+      .setTitle(`🐋 Whale Alert: ${tx.amount.toFixed(2)} ${tx.symbol}`)
+      .setDescription(`**${tx.transactionType || 'Transfer'}** on **${tx.blockchain.toUpperCase()}**`)
+      .setColor(0xff7700)
+      .addFields(
+        { name: '💰 USD Value', value: `$${tx.usdValue.toLocaleString()}`, inline: true },
+        { name: '🔗 Blockchain', value: tx.blockchain.toUpperCase(), inline: true },
+        { name: '🏷️ Classification', value: tx.classification || 'Unknown', inline: true },
+        { name: '⬅️ From', value: fromLabel, inline: false },
+        { name: '➡️ To', value: toLabel, inline: false },
+        { name: '🔍 TX', value: `[View](${txLink})`, inline: false }
+      );
+
+    if (tx.priceUsd) {
+      embed.addFields(
+        { name: '💵 Price', value: `$${tx.priceUsd.toFixed(2)}`, inline: true },
+        { name: '📈 24h Change', value: `${tx.change24h ? tx.change24h.toFixed(1)+'%' : 'N/A'}`, inline: true },
+        { name: '📊 Market Cap', value: tx.marketCap ? `$${(tx.marketCap/1e9).toFixed(1)}B` : 'N/A', inline: true }
+      );
+    }
+    if (tx.aiSummary) {
+      embed.addFields({ name: '🧠 AI Insight', value: tx.aiSummary, inline: false });
+    }
+    if (tx.riskLevel) {
+      const riskEmoji = tx.riskLevel === 'High' ? '🔴' : tx.riskLevel === 'Low' ? '🟢' : '🟡';
+      embed.addFields({ name: '⚠️ Risk Level', value: `${riskEmoji} ${tx.riskLevel}`, inline: true });
+    }
+    embed.setTimestamp(new Date(tx.timestamp))
+      .setFooter({ text: 'Ultra3Vault • Whale Monitor v8.1' });
+
+    return embed;
   }
 
   // ---------- MEMORY CLEANUP ----------
   async cleanup() {
     this.logger.debug('🧹 WhaleAgent cleanup running...');
 
-    // 1. Trim seenTxs (beyond TTL and size)
-    this._cleanCache();
+    // 1. Trim seenTxs
     if (this.seenTxs.size > MAX_SEEN_TXS) {
-      const entries = [...this.seenTxs.entries()];
-      entries.sort((a, b) => a[1] - b[1]);
-      const toKeep = entries.slice(-MAX_SEEN_TXS / 2);
-      this.seenTxs = new Map(toKeep);
-      this.logger.debug(`Trimmed seenTxs to ${this.seenTxs.size} entries`);
+      this._trimSeenTxs();
     }
 
-    // 2. Trim priceCache (via TTL, but we can also clear if too large)
-    if (this.priceCache.size() > 100) {
-      // TTL will handle, but we can also force clear old ones
-      // Not needed, TTL does it automatically
-    }
-
-    // 3. Trim recentWhales
+    // 2. Trim recentWhales
     if (this._recentWhales.length > MAX_RECENT_WHALES) {
       this._recentWhales = this._recentWhales.slice(-MAX_RECENT_WHALES);
-      this.logger.debug(`Trimmed recentWhales to ${this._recentWhales.length}`);
     }
 
-    // 4. Trim communityPredictions (if too many)
-    if (this._communityPredictions.size > MAX_COMMUNITY_PREDICTIONS) {
-      const entries = [...this._communityPredictions.entries()];
-      // Keep most recent by timestamp (we store timestamp in value)
-      entries.sort((a, b) => a[1] - b[1]);
-      const toKeep = entries.slice(-MAX_COMMUNITY_PREDICTIONS);
-      this._communityPredictions = new Map(toKeep);
-      this.logger.debug(`Trimmed communityPredictions to ${this._communityPredictions.size}`);
-    }
-
-    // 5. Optionally trim walletPerformance
-    if (this._walletPerformance.size > MAX_WALLET_STATS_ENTRIES) {
+    // 3. Trim walletPerformance
+    if (this._walletPerformance.size > MAX_WALLET_PERFORMANCE) {
       const entries = [...this._walletPerformance.entries()];
-      entries.sort((a, b) => (b[1].trades || 0) - (a[1].trades || 0));
-      const toKeep = entries.slice(0, MAX_WALLET_STATS_ENTRIES);
-      this._walletPerformance = new Map(toKeep);
-      this.logger.debug(`Trimmed walletPerformance to ${this._walletPerformance.size}`);
+      entries.sort((a, b) => b[1].trades - a[1].trades);
+      const keep = entries.slice(0, MAX_WALLET_PERFORMANCE);
+      this._walletPerformance.clear();
+      for (const [key, value] of keep) {
+        this._walletPerformance.set(key, value);
+      }
+    }
+
+    // 4. Trim watchlists per user
+    for (const [userId, set] of this._watchlists) {
+      if (set.size > MAX_WATCHLISTS_PER_USER) {
+        const items = [...set].slice(0, MAX_WATCHLISTS_PER_USER);
+        this._watchlists.set(userId, new Set(items));
+      }
+    }
+
+    // 5. Price cache (TTLCache auto-cleans)
+    // No manual trim needed.
+
+    // 6. Optionally clean old DB records (keep last 30 days)
+    const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    try {
+      const result = await this.db.run(
+        `DELETE FROM whale_transactions WHERE timestamp < ?`,
+        [thirtyDaysAgo]
+      );
+      if (result.changes > 0) {
+        this.logger.debug(`🗄️ Archived ${result.changes} old whale transactions`);
+      }
+    } catch (err) {
+      this.logger.error(`DB cleanup failed: ${err.message}`);
     }
 
     this.logger.debug('✅ WhaleAgent cleanup complete');
@@ -638,24 +1029,15 @@ class WhaleAgent extends BaseAgent {
     this.seenTxs.clear();
     this.priceCache.clear();
     this._recentWhales = [];
-    this._communityPredictions.clear();
     this._walletPerformance.clear();
-    // Reload minimal data
+    this._watchlists.clear();
+    // Reload minimal from DB
     await this._loadWatchlists();
     await this._loadWalletStats();
     this.logger.debug('🔥 WhaleAgent aggressive cleanup complete');
   }
 
-  // ---------- SLASH COMMANDS (unchanged) ----------
-  // (All command methods remain as in v8.0)
-  // ...
-
-  // ---------- EMBED (unchanged) ----------
-  formatWhaleEmbed(tx) {
-    // ... (same as before)
-  }
-
-  // ---------- DESTROY ----------
+  // ---------- Cleanup ----------
   async destroy() {
     if (this._cleanupInterval) clearInterval(this._cleanupInterval);
     this.seenTxs.clear();
