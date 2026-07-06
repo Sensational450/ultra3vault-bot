@@ -1,542 +1,511 @@
 /**
- * 🗄️ CacheManager – Production Temporary Cache Service
+ * 🧠 CacheManager – Core Cache Service
  * 
- * Central cache for all agents with:
- * - Namespaces (per agent)
- * - TTL with automatic expiration
- * - LRU / LFU / FIFO eviction
- * - Per‑namespace limits
- * - Events & analytics
- * - Memory monitoring
- * - Health checks
- * - Redis fallback support (optional)
+ * Manages all in‑memory caches with TTL, LRU/LFU/FIFO eviction,
+ * adaptive cleanup, health monitoring, and Redis support.
  * 
- * Usage:
- *   const cache = new CacheManager({ eventBus, logger });
- *   await cache.set('priceFeed', 'BTC', 45000, 30000);
- *   const price = await cache.get('priceFeed', 'BTC');
+ * Used by all agents and the CleanupService.
  */
-const { EventEmitter } = require('events');
+const { performance } = require('perf_hooks');
+const { EmbedBuilder } = require('discord.js');
+const { sendWebhook } = require('../core/webhook');
 
-// ─── Helpers ───────────────────────────────────────────────────────
-function estimateSize(value) {
-  try {
-    return JSON.stringify(value).length;
-  } catch {
-    return 100; // fallback
-  }
-}
+// ─── Configuration ─────────────────────────────────────────────
+const CONFIG = {
+  cleanupInterval: parseInt(process.env.CACHE_CLEANUP_INTERVAL_MS) || 30 * 60 * 1000,
+  adaptiveEnabled: process.env.CACHE_ADAPTIVE_ENABLED !== 'false',
+  memoryThreshold: parseFloat(process.env.CACHE_MEMORY_THRESHOLD) || 80,
+  protectedKeys: (process.env.CACHE_PROTECTED_KEYS || '').split(',').filter(Boolean),
+  maxCacheSize: parseInt(process.env.CACHE_MAX_ENTRIES) || 10000,
+  ttlDefault: parseInt(process.env.CACHE_DEFAULT_TTL_MS) || 3600000,
+  analyticsRetention: parseInt(process.env.CACHE_ANALYTICS_RETENTION) || 1000,
+  redisUrl: process.env.REDIS_URL,
+  metricsExport: process.env.CACHE_METRICS_EXPORT === 'true',
+};
 
-class CacheManager {
-  /**
-   * @param {Object} options
-   * @param {EventBus} options.eventBus - for emitting events
-   * @param {Logger} options.logger - for logging
-   * @param {number} options.defaultTTL - default TTL in ms (default: 60000)
-   * @param {number} options.maxEntriesPerNamespace - max entries per namespace (default: 1000)
-   * @param {string} options.evictionStrategy - 'lru', 'lfu', 'fifo' (default: 'lru')
-   * @param {number} options.cleanupInterval - background cleanup interval (default: 60000)
-   * @param {number} options.memoryThreshold - % memory usage to trigger aggressive eviction (default: 80)
-   * @param {string[]} options.protectedNamespaces - namespaces never evicted (default: [])
-   * @param {Object} options.redis - optional Redis client for distributed cache
-   */
-  constructor(options = {}) {
-    this.eventBus = options.eventBus;
-    this.logger = options.logger || console;
-    this.defaultTTL = options.defaultTTL || 60000;
-    this.maxEntriesPerNamespace = options.maxEntriesPerNamespace || 1000;
+// ─── ManagedCache (internal class) ────────────────────────────
+class ManagedCache {
+  constructor(name, options = {}) {
+    this.name = name;
+    this.maxSize = options.maxSize || CONFIG.maxCacheSize;
+    this.ttl = options.ttl || CONFIG.ttlDefault;
     this.evictionStrategy = options.evictionStrategy || 'lru';
-    this.cleanupInterval = options.cleanupInterval || 60000;
-    this.memoryThreshold = options.memoryThreshold || 80;
-    this.protectedNamespaces = options.protectedNamespaces || [];
-    this.redis = options.redis || null;
-
-    // ─── Internal storage ──────────────────────────────────────────
-    this.namespaces = new Map();        // namespace -> Map(key -> entry)
-    this.metadata = new Map();          // namespace -> { created, updated, hits, misses, evictions, expired }
-    this.accessOrder = new Map();       // namespace -> Map(key -> lastAccessTime) for LRU
-    this.freq = new Map();              // namespace -> Map(key -> accessCount) for LFU
-
-    this._cleanupTimer = null;
-    this._stats = {
-      totalSets: 0,
-      totalGets: 0,
-      totalHits: 0,
-      totalMisses: 0,
-      totalEvictions: 0,
-      totalExpired: 0,
-      totalMemoryUsage: 0,
+    this.cache = new Map();
+    this.accessCount = new Map();
+    this.expiryMap = new Map();
+    this.metrics = {
+      hits: 0,
+      misses: 0,
+      evictions: 0,
+      expired: 0,
+      totalItems: 0,
+      memoryUsage: 0,
+      lastCleanup: Date.now(),
     };
-
-    this._startBackgroundCleanup();
-    this._startMemoryMonitor();
+    this.history = [];
   }
 
-  // ─── Internal Helpers ────────────────────────────────────────────
-
-  _getNamespace(ns) {
-    if (!this.namespaces.has(ns)) {
-      this.namespaces.set(ns, new Map());
-      this.metadata.set(ns, { created: Date.now(), updated: Date.now(), hits: 0, misses: 0, evictions: 0, expired: 0 });
-      this.accessOrder.set(ns, new Map());
-      this.freq.set(ns, new Map());
-    }
-    return this.namespaces.get(ns);
-  }
-
-  _updateAccess(ns, key) {
-    // Update LRU order
-    const order = this.accessOrder.get(ns);
-    if (order) {
-      order.set(key, Date.now());
-      // Keep order map sorted? We'll evict based on oldest timestamp.
-    }
-    // Update LFU count
-    const freqMap = this.freq.get(ns);
-    if (freqMap) {
-      freqMap.set(key, (freqMap.get(key) || 0) + 1);
-    }
-  }
-
-  _evict(ns, count = 1) {
-    const store = this.namespaces.get(ns);
-    if (!store) return;
-    const entries = Array.from(store.entries());
-    if (entries.length === 0) return;
-
-    let toEvict = [];
-    const strategy = this.evictionStrategy;
-
-    if (strategy === 'lru') {
-      const order = this.accessOrder.get(ns);
-      if (order) {
-        // Get keys sorted by last access time (oldest first)
-        const sorted = Array.from(order.entries()).sort((a, b) => a[1] - b[1]);
-        toEvict = sorted.slice(0, count).map(([key]) => key);
-      } else {
-        // Fallback: evict first entries
-        toEvict = entries.slice(0, count).map(([key]) => key);
-      }
-    } else if (strategy === 'lfu') {
-      const freqMap = this.freq.get(ns);
-      if (freqMap) {
-        const sorted = Array.from(freqMap.entries()).sort((a, b) => a[1] - b[1]);
-        toEvict = sorted.slice(0, count).map(([key]) => key);
-      } else {
-        toEvict = entries.slice(0, count).map(([key]) => key);
-      }
-    } else { // fifo
-      toEvict = entries.slice(0, count).map(([key]) => key);
-    }
-
-    for (const key of toEvict) {
-      this._delete(ns, key, 'evict');
-    }
-  }
-
-  _delete(ns, key, reason = 'delete') {
-    const store = this.namespaces.get(ns);
-    if (!store || !store.has(key)) return false;
-
-    const entry = store.get(key);
-    store.delete(key);
-    const order = this.accessOrder.get(ns);
-    if (order) order.delete(key);
-    const freq = this.freq.get(ns);
-    if (freq) freq.delete(key);
-
-    const meta = this.metadata.get(ns);
-    if (meta) {
-      if (reason === 'expire') meta.expired++;
-      else if (reason === 'evict') meta.evictions++;
-    }
-
-    this._updateStats();
-    this._emit('cache:delete', { namespace: ns, key, reason });
-    return true;
-  }
-
-  _updateStats() {
-    let totalEntries = 0;
-    let totalMemory = 0;
-    for (const [ns, store] of this.namespaces) {
-      totalEntries += store.size;
-      for (const [, entry] of store) {
-        totalMemory += entry.size || 0;
-      }
-    }
-    this._stats.totalMemoryUsage = totalMemory;
-    return { totalEntries, totalMemory };
-  }
-
-  _emit(event, data) {
-    if (this.eventBus?.emit) {
-      this.eventBus.emit(event, data);
-    }
-  }
-
-  _startBackgroundCleanup() {
-    if (this._cleanupTimer) clearInterval(this._cleanupTimer);
-    this._cleanupTimer = setInterval(() => {
-      this.cleanupExpired();
-    }, this.cleanupInterval);
-  }
-
-  _startMemoryMonitor() {
-    setInterval(() => {
-      const mem = process.memoryUsage();
-      const usagePct = (mem.heapUsed / mem.heapTotal) * 100;
-      if (usagePct > this.memoryThreshold) {
-        this.logger.warn(`⚠️ Cache memory high (${usagePct.toFixed(1)}%) – aggressive eviction triggered`);
-        this.aggressiveEvict();
-        this._emit('cache:memoryPressure', { usagePct, timestamp: Date.now() });
-      }
-    }, 30000); // every 30s
-  }
-
-  // ─── Public API ───────────────────────────────────────────────────
-
-  /**
-   * Set a value in a namespace
-   * @param {string} ns - namespace (e.g., 'priceFeed')
-   * @param {string} key - cache key
-   * @param {*} value - value to store
-   * @param {number} ttl - time-to-live in ms (overrides default)
-   * @param {Object} options - { protected: false, compress: false }
-   * @returns {Promise<void>}
-   */
-  async set(ns, key, value, ttl = this.defaultTTL, options = {}) {
-    if (!ns || !key) throw new Error('Namespace and key are required');
-    const store = this._getNamespace(ns);
-    const size = estimateSize(value);
-
-    // Evict if over limit (unless protected)
-    if (!this.protectedNamespaces.includes(ns) && store.size >= this.maxEntriesPerNamespace) {
-      this._evict(ns, 1);
-    }
-
-    const entry = {
-      value,
-      createdAt: Date.now(),
-      lastAccessed: Date.now(),
-      ttl,
-      size,
-      protected: options.protected || false,
-    };
-    store.set(key, entry);
-    this._updateAccess(ns, key);
-
-    this._stats.totalSets++;
-    this._updateStats();
-    this._emit('cache:set', { namespace: ns, key, ttl, timestamp: Date.now() });
-
-    // If Redis is configured, also set there
-    if (this.redis) {
-      try {
-        await this.redis.setex(`${ns}:${key}`, Math.ceil(ttl / 1000), JSON.stringify(value));
-      } catch (err) {
-        this.logger.error(`Redis set failed: ${err.message}`);
-      }
-    }
-  }
-
-  /**
-   * Get a value from a namespace
-   * @param {string} ns - namespace
-   * @param {string} key - cache key
-   * @param {boolean} touch - whether to extend TTL (default: false)
-   * @returns {Promise<*>} value or undefined
-   */
-  async get(ns, key, touch = false) {
-    const store = this.namespaces.get(ns);
-    if (!store) return undefined;
-
-    const entry = store.get(key);
-    if (!entry) {
-      this._stats.totalMisses++;
-      const meta = this.metadata.get(ns);
-      if (meta) meta.misses++;
-      this._emit('cache:miss', { namespace: ns, key });
-      return undefined;
-    }
-
-    // Check expiration
+  get(key) {
     const now = Date.now();
-    if (entry.ttl > 0 && (now - entry.createdAt) > entry.ttl) {
-      this._delete(ns, key, 'expire');
-      this._stats.totalExpired++;
-      this._emit('cache:expire', { namespace: ns, key });
+    if (this.expiryMap.has(key) && this.expiryMap.get(key) < now) {
+      this._delete(key);
+      this.metrics.expired++;
       return undefined;
     }
-
-    this._stats.totalHits++;
-    this._stats.totalGets++;
-    const meta = this.metadata.get(ns);
-    if (meta) meta.hits++;
-    entry.lastAccessed = now;
-    this._updateAccess(ns, key);
-
-    if (touch && entry.ttl > 0) {
-      // Extend TTL by resetting creation time (or extending)
-      entry.createdAt = now;
+    const value = this.cache.get(key);
+    if (value !== undefined) {
+      this.metrics.hits++;
+      if (this.evictionStrategy === 'lru') {
+        this.cache.delete(key);
+        this.cache.set(key, value);
+      } else if (this.evictionStrategy === 'lfu') {
+        this.accessCount.set(key, (this.accessCount.get(key) || 0) + 1);
+      }
+    } else {
+      this.metrics.misses++;
     }
-
-    this._emit('cache:hit', { namespace: ns, key, timestamp: now });
-    return entry.value;
+    return value;
   }
 
-  /**
-   * Check if key exists and is not expired
-   */
-  async has(ns, key) {
-    const val = await this.get(ns, key);
-    return val !== undefined;
+  set(key, value, ttlMs = this.ttl) {
+    if (this.cache.size >= this.maxSize) this._evict();
+    this.cache.set(key, value);
+    this.expiryMap.set(key, Date.now() + ttlMs);
+    if (this.evictionStrategy === 'lfu') {
+      this.accessCount.set(key, (this.accessCount.get(key) || 0) + 1);
+    }
+    this.metrics.totalItems = this.cache.size;
+    this.metrics.memoryUsage = this._estimateSize();
   }
 
-  /**
-   * Delete a key from a namespace
-   */
-  async delete(ns, key) {
-    return this._delete(ns, key, 'delete');
+  delete(key) { this._delete(key); }
+
+  _delete(key) {
+    this.cache.delete(key);
+    this.expiryMap.delete(key);
+    if (this.evictionStrategy === 'lfu') this.accessCount.delete(key);
+    this.metrics.totalItems = this.cache.size;
+    this.metrics.memoryUsage = this._estimateSize();
   }
 
-  /**
-   * Clear an entire namespace
-   */
-  async clear(ns) {
-    const store = this.namespaces.get(ns);
-    if (store) {
-      store.clear();
-      this.accessOrder.get(ns)?.clear();
-      this.freq.get(ns)?.clear();
-      this._emit('cache:clear', { namespace: ns });
+  _evict() {
+    let keyToRemove = null;
+    if (this.evictionStrategy === 'lru') {
+      const firstKey = this.cache.keys().next().value;
+      keyToRemove = firstKey;
+    } else if (this.evictionStrategy === 'lfu') {
+      let minCount = Infinity;
+      for (const [key, count] of this.accessCount.entries()) {
+        if (count < minCount) { minCount = count; keyToRemove = key; }
+      }
+    } else {
+      const firstKey = this.cache.keys().next().value;
+      keyToRemove = firstKey;
+    }
+    if (keyToRemove) {
+      this._delete(keyToRemove);
+      this.metrics.evictions++;
     }
   }
 
-  /**
-   * Clear all namespaces
-   */
-  async clearAll() {
-    for (const ns of this.namespaces.keys()) {
-      await this.clear(ns);
-    }
-    this._emit('cache:clearAll', { timestamp: Date.now() });
+  clear() {
+    this.cache.clear();
+    this.expiryMap.clear();
+    if (this.evictionStrategy === 'lfu') this.accessCount.clear();
+    this.metrics.totalItems = 0;
+    this.metrics.memoryUsage = 0;
   }
 
-  /**
-   * Extend TTL for a key (touch)
-   */
-  async touch(ns, key, ttl = this.defaultTTL) {
-    const store = this.namespaces.get(ns);
-    if (!store) return false;
-    const entry = store.get(key);
-    if (!entry) return false;
-    entry.createdAt = Date.now();
-    entry.ttl = ttl;
-    this._emit('cache:touch', { namespace: ns, key, ttl });
-    return true;
-  }
+  size() { return this.cache.size; }
+  keys() { return this.cache.keys(); }
 
-  /**
-   * Get statistics for a namespace (or all)
-   */
-  getStats(ns) {
-    if (ns) {
-      const meta = this.metadata.get(ns);
-      const store = this.namespaces.get(ns);
-      if (!meta) return null;
-      return {
-        namespace: ns,
-        entries: store ? store.size : 0,
-        hits: meta.hits,
-        misses: meta.misses,
-        hitRate: meta.hits + meta.misses > 0 ? (meta.hits / (meta.hits + meta.misses)) : 0,
-        evictions: meta.evictions,
-        expired: meta.expired,
-        created: meta.created,
-        updated: meta.updated,
-      };
-    }
-    // Overall stats
-    let totalEntries = 0;
-    let totalHits = 0;
-    let totalMisses = 0;
-    let totalEvictions = 0;
-    let totalExpired = 0;
-    for (const [ns, meta] of this.metadata) {
-      const store = this.namespaces.get(ns);
-      totalEntries += store ? store.size : 0;
-      totalHits += meta.hits;
-      totalMisses += meta.misses;
-      totalEvictions += meta.evictions;
-      totalExpired += meta.expired;
-    }
-    return {
-      namespaces: this.namespaces.size,
-      totalEntries,
-      totalHits,
-      totalMisses,
-      hitRate: totalHits + totalMisses > 0 ? (totalHits / (totalHits + totalMisses)) : 0,
-      totalEvictions,
-      totalExpired,
-      memoryUsage: this._stats.totalMemoryUsage,
-      uptime: Date.now() - (this._startTime || Date.now()),
-    };
-  }
-
-  /**
-   * Manually cleanup expired entries in all namespaces
-   * @returns {number} number of expired entries removed
-   */
-  cleanupExpired() {
+  _estimateSize() {
     let total = 0;
-    const now = Date.now();
-    for (const [ns, store] of this.namespaces) {
-      const toRemove = [];
-      for (const [key, entry] of store) {
-        if (entry.ttl > 0 && (now - entry.createdAt) > entry.ttl) {
-          toRemove.push(key);
-        }
-      }
-      for (const key of toRemove) {
-        this._delete(ns, key, 'expire');
-        total++;
-      }
-    }
-    if (total > 0) {
-      this._stats.totalExpired += total;
-      this._emit('cache:expired', { count: total, timestamp: now });
+    for (const [key, value] of this.cache) {
+      total += JSON.stringify(key).length + JSON.stringify(value).length;
     }
     return total;
   }
 
-  /**
-   * Aggressive eviction – removes oldest/largest entries across all namespaces
-   * @param {number} percent - percentage of entries to evict (default: 20)
-   */
-  aggressiveEvict(percent = 20) {
-    let totalEvicted = 0;
-    for (const [ns, store] of this.namespaces) {
-      if (this.protectedNamespaces.includes(ns)) continue;
-      const count = Math.max(1, Math.floor(store.size * percent / 100));
-      this._evict(ns, count);
-      totalEvicted += count;
-    }
-    if (totalEvicted > 0) {
-      this._stats.totalEvictions += totalEvicted;
-      this._emit('cache:aggressiveEvict', { count: totalEvicted, timestamp: Date.now() });
-    }
-    return totalEvicted;
-  }
-
-  /**
-   * Get memory usage (approximate)
-   */
-  getMemoryUsage() {
-    return this._stats.totalMemoryUsage;
-  }
-
-  /**
-   * Health check – returns true if cache is operational
-   */
-  healthCheck() {
-    const memUsage = process.memoryUsage().heapUsed / process.memoryUsage().heapTotal * 100;
-    const ok = memUsage < this.memoryThreshold;
-    return {
-      healthy: ok,
-      memoryUsage: memUsage,
-      entries: this._stats.totalEntries,
-      message: ok ? 'OK' : 'Memory pressure high',
-    };
-  }
-
-  /**
-   * Shutdown – clean up intervals and flush (if needed)
-   */
-  async shutdown() {
-    if (this._cleanupTimer) {
-      clearInterval(this._cleanupTimer);
-      this._cleanupTimer = null;
-    }
-    this._emit('cache:shutdown', { timestamp: Date.now() });
-    // If Redis, close connection
-    if (this.redis) {
-      await this.redis.quit();
-    }
-  }
-
-  // ─── Batch Operations ───────────────────────────────────────────
-
-  /**
-   * Set multiple values in a namespace
-   */
-  async setMany(ns, entries, ttl = this.defaultTTL) {
-    for (const [key, value] of Object.entries(entries)) {
-      await this.set(ns, key, value, ttl);
-    }
-  }
-
-  /**
-   * Get multiple values from a namespace
-   */
-  async getMany(ns, keys) {
-    const results = {};
-    for (const key of keys) {
-      results[key] = await this.get(ns, key);
-    }
-    return results;
-  }
-
-  /**
-   * Delete multiple keys from a namespace
-   */
-  async deleteMany(ns, keys) {
+  cleanExpired() {
+    const now = Date.now();
     let count = 0;
-    for (const key of keys) {
-      if (await this.delete(ns, key)) count++;
+    for (const [key, expiry] of this.expiryMap) {
+      if (expiry < now) { this._delete(key); count++; this.metrics.expired++; }
     }
     return count;
   }
 
-  // ─── Event Subscription ─────────────────────────────────────────
+  getStats() {
+    const hitRate = this.metrics.hits + this.metrics.misses > 0
+      ? this.metrics.hits / (this.metrics.hits + this.metrics.misses)
+      : 0;
+    return {
+      name: this.name,
+      size: this.cache.size,
+      maxSize: this.maxSize,
+      hitRate: (hitRate * 100).toFixed(1) + '%',
+      evictions: this.metrics.evictions,
+      expired: this.metrics.expired,
+      memoryUsage: (this.metrics.memoryUsage / 1024 / 1024).toFixed(2) + ' MB',
+      lastCleanup: this.metrics.lastCleanup,
+    };
+  }
+  toJSON() { return this.getStats(); }
+}
 
-  /**
-   * Subscribe to cache events
-   * @param {string} event - event name (e.g., 'cache:set')
-   * @param {Function} listener
-   */
-  on(event, listener) {
+// ─── Main CacheManager ──────────────────────────────────────────
+class CacheManager {
+  constructor(options = {}) {
+    this.eventBus = options.eventBus;
+    this.logger = options.logger || console;
+    this.orchestrator = options.orchestrator;
+    this.caches = new Map();
+    this.agentCacheMapping = new Map();
+    this.healthStatus = 'healthy';
+    this.cleanupCount = 0;
+    this.lastFullCleanup = Date.now();
+    this.adaptiveInterval = CONFIG.cleanupInterval;
+    this.redis = null;
+    this.metricsBuffer = [];
+    this.analytics = {
+      totalCleanups: 0,
+      totalEvictions: 0,
+      totalExpired: 0,
+      avgCleanupDuration: 0,
+      peakMemoryUsage: 0,
+    };
+
+    this._registerDefaultCaches();
+
     if (this.eventBus) {
-      this.eventBus.on(event, listener);
+      this.eventBus.on('memory.monitor', (data) => this._handleMemoryEvent(data));
+      this.eventBus.on('memory.warning', (data) => this._handleMemoryWarning(data));
+      this.eventBus.on('memory.critical', (data) => this._handleMemoryCritical(data));
+    }
+
+    if (CONFIG.redisUrl) this._initRedis();
+    this._startHealthMonitor();
+  }
+
+  _registerDefaultCaches() {
+    const defaultCaches = [
+      { name: 'priceCache', maxSize: 500, ttl: 30000 },
+      { name: 'indicatorCache', maxSize: 200, ttl: 60000 },
+      { name: 'metricCache', maxSize: 100, ttl: 300000 },
+      { name: 'historicalCache', maxSize: 2000, ttl: 3600000 },
+      { name: 'seenTxs', maxSize: 5000, ttl: 3600000 },
+      { name: 'userAlerts', maxSize: 1000, ttl: 86400000 },
+      { name: 'spamTracker', maxSize: 1000, ttl: 60000 },
+      { name: 'raidTracker', maxSize: 500, ttl: 300000 },
+      { name: 'reputationCache', maxSize: 2000, ttl: 3600000 },
+      { name: 'lastPostCache', maxSize: 500, ttl: 86400000 },
+      { name: 'globalPosted', maxSize: 2000, ttl: 86400000 },
+      { name: 'aiResponseCache', maxSize: 500, ttl: 300000 },
+      { name: 'guildConfigs', maxSize: 500, ttl: 3600000 },
+      { name: 'dbQueryCache', maxSize: 200, ttl: 30000 },
+      { name: 'apiResponseCache', maxSize: 300, ttl: 60000 },
+    ];
+    for (const cfg of defaultCaches) {
+      this.registerCache(cfg.name, cfg);
+    }
+  }
+
+  registerCache(name, options = {}) {
+    if (this.caches.has(name)) {
+      this.logger.warn(`Cache ${name} already registered, overwriting.`);
+    }
+    const cache = new ManagedCache(name, options);
+    this.caches.set(name, cache);
+    this.logger.debug(`📦 Registered cache: ${name}`);
+    return cache;
+  }
+
+  discoverAgentCaches() {
+    if (!this.orchestrator) return;
+    const agents = this.orchestrator.getAllAgents?.() || [];
+    for (const agent of agents) {
+      const name = agent.constructor?.name || 'UnknownAgent';
+      const possibleCaches = ['priceCache', 'indicatorCache', 'metricsCache', 'historicalCache',
+        'seenTxs', 'userAlerts', 'spamTracker', 'raidTracker', 'reputationCache',
+        'lastPostCache', 'globalPosted', 'responseCache', 'guildConfigs'];
+      for (const prop of possibleCaches) {
+        if (agent[prop] && typeof agent[prop] === 'object' && !agent[prop]._managed) {
+          if (agent[prop] instanceof Map || agent[prop] instanceof Set || agent[prop].cache) {
+            const cacheName = `${name}.${prop}`;
+            if (!this.caches.has(cacheName)) {
+              this.agentCacheMapping.set(`${name}:${prop}`, { agent, prop });
+              this.logger.debug(`📦 Discovered agent cache: ${name}.${prop}`);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  async performCleanup(options = {}) {
+    const { aggressive = false } = options;
+    const start = performance.now();
+
+    let totalExpired = 0;
+    let totalEvictions = 0;
+    for (const [name, cache] of this.caches) {
+      if (aggressive) {
+        if (CONFIG.protectedKeys.length > 0) {
+          const protectedValues = new Map();
+          for (const key of CONFIG.protectedKeys) {
+            const val = cache.get(key);
+            if (val !== undefined) protectedValues.set(key, val);
+          }
+          cache.clear();
+          for (const [key, val] of protectedValues) {
+            cache.set(key, val);
+          }
+        } else {
+          cache.clear();
+        }
+        totalEvictions += cache.size();
+      } else {
+        const expired = cache.cleanExpired();
+        totalExpired += expired;
+        if (cache.size() > cache.maxSize) {
+          const toRemove = cache.size() - cache.maxSize;
+          for (let i = 0; i < toRemove; i++) {
+            cache._evict();
+            totalEvictions++;
+          }
+        }
+        cache.metrics.lastCleanup = Date.now();
+      }
+    }
+
+    if (this.orchestrator) {
+      const allAgents = this.orchestrator.getAllAgents?.() || [];
+      for (const agent of allAgents) {
+        const name = agent.constructor?.name || 'UnknownAgent';
+        let methodName = aggressive ? 'aggressiveCleanup' : 'cleanup';
+        if (typeof agent[methodName] !== 'function') methodName = 'clearCache';
+        if (typeof agent[methodName] === 'function') {
+          try {
+            await agent[methodName].call(agent);
+          } catch (err) {
+            this.logger.error(`❌ ${name} cleanup failed: ${err.message}`);
+          }
+        }
+      }
+    }
+
+    const duration = performance.now() - start;
+    this.analytics.totalCleanups++;
+    this.analytics.totalEvictions += totalEvictions;
+    this.analytics.totalExpired += totalExpired;
+    this.analytics.avgCleanupDuration = (this.analytics.avgCleanupDuration * (this.analytics.totalCleanups - 1) + duration) / this.analytics.totalCleanups;
+
+    this.cleanupCount++;
+    this.lastFullCleanup = Date.now();
+
+    if (CONFIG.adaptiveEnabled) this._adjustInterval();
+
+    if (this.eventBus) {
+      this.eventBus.emit('cache.cleanup', {
+        aggressive,
+        duration,
+        totalExpired,
+        totalEvictions,
+        timestamp: Date.now(),
+        cacheStats: this.getStats(),
+      });
+    }
+
+    if (CONFIG.metricsExport) {
+      this.metricsBuffer.push({
+        timestamp: Date.now(),
+        duration,
+        aggressive,
+        totalExpired,
+        totalEvictions,
+        cacheStats: this.getStats(),
+      });
+      if (this.metricsBuffer.length > 100) this.metricsBuffer.shift();
+    }
+
+    this.logger.debug(`🧹 Cache cleanup completed in ${duration.toFixed(1)}ms (expired: ${totalExpired}, evicted: ${totalEvictions})`);
+  }
+
+  _adjustInterval() {
+    const memUsage = process.memoryUsage().heapUsed / process.memoryUsage().heapTotal * 100;
+    const cacheCount = this.getTotalEntries();
+    let newInterval = CONFIG.cleanupInterval;
+    if (memUsage > CONFIG.memoryThreshold || cacheCount > 10000) {
+      newInterval = Math.max(60000, CONFIG.cleanupInterval * 0.5);
+    } else if (memUsage < 40 && cacheCount < 1000) {
+      newInterval = CONFIG.cleanupInterval * 1.5;
+    }
+    if (newInterval !== this.adaptiveInterval) {
+      this.adaptiveInterval = newInterval;
+      this.logger.debug(`🔄 Adaptive interval adjusted to ${this.adaptiveInterval/1000}s`);
+      if (this.eventBus) {
+        this.eventBus.emit('cache.intervalChange', { newInterval });
+      }
+    }
+  }
+
+  _handleMemoryEvent(data) {
+    this.logger.debug(`💾 Memory: ${data.usagePct.toFixed(1)}%`);
+  }
+
+  async _handleMemoryWarning(data) {
+    this.logger.warn(`⚠️ Memory warning: ${data.usagePct.toFixed(1)}% – triggering normal cleanup`);
+    await this.performCleanup({ aggressive: false });
+  }
+
+  async _handleMemoryCritical(data) {
+    this.logger.error(`🔥 Memory critical: ${data.usagePct.toFixed(1)}% – triggering aggressive cleanup`);
+    await this.performCleanup({ aggressive: true });
+  }
+
+  _startHealthMonitor() {
+    setInterval(() => {
+      this._checkHealth();
+    }, 60000);
+  }
+
+  async _checkHealth() {
+    const stats = this.getStats();
+    const warnings = [];
+    for (const cache of stats.caches) {
+      if (cache.size > cache.maxSize * 0.9) {
+        warnings.push(`Cache ${cache.name} is near max size (${cache.size}/${cache.maxSize})`);
+      }
+      if (cache.hitRate < 0.3) {
+        warnings.push(`Cache ${cache.name} has low hit rate (${cache.hitRate})`);
+      }
+    }
+    if (warnings.length > 0) {
+      this.healthStatus = 'degraded';
+      if (process.env.CACHE_HEALTH_WEBHOOK_URL) {
+        const embed = new EmbedBuilder()
+          .setTitle('⚠️ Cache Health Warning')
+          .setDescription(warnings.join('\n'))
+          .setColor(0xffaa00)
+          .setTimestamp();
+        try {
+          await sendWebhook('cacheHealth', { embeds: [embed] });
+        } catch (err) {
+          this.logger.error(`Failed to send cache health alert: ${err.message}`);
+        }
+      }
+      this.logger.warn('Cache health warnings:', warnings);
     } else {
-      // Fallback: use local EventEmitter
-      if (!this._ee) this._ee = new EventEmitter();
-      this._ee.on(event, listener);
+      this.healthStatus = 'healthy';
     }
   }
 
-  // ─── Debug / Inspection ────────────────────────────────────────
-
-  /**
-   * Get all keys in a namespace (for debugging)
-   */
-  inspect(ns) {
-    const store = this.namespaces.get(ns);
-    if (!store) return [];
-    return Array.from(store.keys());
+  getStats() {
+    const caches = Array.from(this.caches.values()).map(c => c.getStats());
+    const totalEntries = caches.reduce((sum, c) => sum + c.size, 0);
+    const totalMemory = caches.reduce((sum, c) => sum + parseFloat(c.memoryUsage), 0);
+    const hitRate = caches.reduce((sum, c) => {
+      const parts = c.hitRate.split('%');
+      return sum + (parts.length > 1 ? parseFloat(parts[0]) : 0);
+    }, 0) / (caches.length || 1);
+    return {
+      caches,
+      totalEntries,
+      totalMemory: totalMemory.toFixed(2) + ' MB',
+      avgHitRate: hitRate.toFixed(1) + '%',
+      cleanupCount: this.cleanupCount,
+      lastCleanup: this.lastFullCleanup,
+      adaptiveInterval: this.adaptiveInterval,
+      healthStatus: this.healthStatus,
+      analytics: this.analytics,
+    };
   }
 
-  /**
-   * Get all entries in a namespace (for debugging)
-   */
-  dump(ns) {
-    const store = this.namespaces.get(ns);
-    if (!store) return {};
-    const result = {};
-    for (const [key, entry] of store) {
-      result[key] = entry.value;
+  getCache(name) { return this.caches.get(name); }
+
+  getTotalEntries() {
+    let total = 0;
+    for (const cache of this.caches.values()) {
+      total += cache.size();
     }
-    return result;
+    return total;
+  }
+
+  async _initRedis() {
+    try {
+      const redis = require('redis');
+      this.redis = redis.createClient({ url: CONFIG.redisUrl });
+      await this.redis.connect();
+      this.logger.info('🔗 Redis connected for cache manager');
+      this.redis.subscribe('cache:invalidate', (message) => {
+        const data = JSON.parse(message);
+        const cache = this.caches.get(data.cache);
+        if (cache && data.key) {
+          cache.delete(data.key);
+          this.logger.debug(`🗑️ Redis invalidation: ${data.cache}:${data.key}`);
+        }
+      });
+    } catch (err) {
+      this.logger.error(`Redis init failed: ${err.message}`);
+    }
+  }
+
+  async generateReport() {
+    const stats = this.getStats();
+    const embed = new EmbedBuilder()
+      .setTitle('📊 Cache Manager Report')
+      .setColor(0x3498db)
+      .addFields(
+        { name: 'Total Entries', value: stats.totalEntries.toString(), inline: true },
+        { name: 'Total Memory', value: stats.totalMemory, inline: true },
+        { name: 'Avg Hit Rate', value: stats.avgHitRate, inline: true },
+        { name: 'Cleanups', value: stats.cleanupCount.toString(), inline: true },
+        { name: 'Health', value: stats.healthStatus === 'healthy' ? '✅ Healthy' : '⚠️ Degraded', inline: true },
+        { name: 'Adaptive Interval', value: `${stats.adaptiveInterval/1000}s`, inline: true },
+      )
+      .setTimestamp();
+    let cacheDetails = '';
+    for (const cache of stats.caches.slice(0, 10)) {
+      cacheDetails += `• **${cache.name}**: ${cache.size} items, hit ${cache.hitRate}\n`;
+    }
+    if (stats.caches.length > 10) {
+      cacheDetails += `... and ${stats.caches.length - 10} more caches`;
+    }
+    if (cacheDetails) {
+      embed.addFields({ name: 'Top Caches', value: cacheDetails, inline: false });
+    }
+    try {
+      if (process.env.CACHE_REPORT_WEBHOOK_URL) {
+        await sendWebhook('cacheReport', { embeds: [embed] });
+      } else {
+        this.logger.info('Cache report generated:', stats);
+      }
+    } catch (err) {
+      this.logger.error(`Failed to send cache report: ${err.message}`);
+    }
+  }
+
+  async manualCleanup(aggressive = false) {
+    await this.performCleanup({ aggressive });
+    return this.getStats();
+  }
+
+  async clearCache(name) {
+    const cache = this.caches.get(name);
+    if (cache) {
+      cache.clear();
+      this.logger.info(`🧹 Cleared cache: ${name}`);
+      return true;
+    }
+    return false;
+  }
+
+  async shutdown() {
+    this.logger.info('🛑 Cache manager shutting down...');
+    if (this.redis) {
+      await this.redis.quit();
+    }
   }
 }
 
