@@ -1,8 +1,8 @@
 /**
- * 🚀 Ultra3Vault v6.5 – CacheManager Integration & Memory‑Optimized
+ * 🚀 Ultra3Vault v6.6 – Separate CacheManager & CleanupService
  * Entry point: initializes core, agents, web server, and scheduler.
  * Disables heavy agents and reduces job frequency to stay under 512MB RAM.
- * Uses central CacheManager (located in jobs/cleanupTempData.js) for all temporary data.
+ * Uses CacheManager (tools/cacheManager) and CleanupService (jobs/cleanupTempData).
  */
 require('dotenv').config();
 const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
@@ -14,7 +14,8 @@ const { Orchestrator } = require('./core/orchestrator');
 const { Database } = require('./tools/database/db');
 const Models = require('./tools/database/models');
 const { WebServer } = require('./web/server');
-const CacheManager = require('./jobs/cleanupTempData'); // ✅ Correct path & filename
+const CacheManager = require('./tools/cacheManager');       // ✅ Core cache manager
+const CleanupService = require('./jobs/cleanupTempData');   // ✅ Cleanup service
 const secrets = require('./config/secrets');
 const axios = require('axios');
 const ButtonHandler = require('./tools/discord/buttonHandler');
@@ -88,6 +89,26 @@ const cacheManager = new CacheManager({
   memoryThreshold: 80,         // % heap usage to trigger aggressive eviction
   protectedNamespaces: ['config', 'admin'],
 });
+
+// ================= CLEANUP SERVICE =================
+const cleanupService = new CleanupService({
+  eventBus,
+  logger,
+  cacheManager,      // pass the cache manager instance
+  db,                // pass database connection for cleaning temp tables
+  config: {
+    cleanupInterval: 5 * 60 * 1000,  // 5 minutes
+    defaultTTL: 3600000,             // 1 hour
+    memoryThreshold: 80,
+    maxItemsPerCycle: 1000,
+    protectedNamespaces: ['config', 'admin'],
+  },
+});
+
+// Start the cleanup scheduler after bot is ready
+setTimeout(() => {
+  cleanupService.startScheduler();
+}, 30000); // wait 30 seconds after startup
 
 // ================= ORCHESTRATOR & WEB SERVER (outer scope) =================
 let orchestrator = null;
@@ -183,9 +204,11 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     orchestrator = new Orchestrator(client, { eventBus, logger, rateLimiter });
     client.orchestrator = orchestrator;
 
-    // Make cache manager available globally
+    // Make cache manager and cleanup service available globally
     client.cache = cacheManager;
-    global.cache = cacheManager; // for easy access in jobs
+    global.cache = cacheManager;
+    client.cleanup = cleanupService;
+    global.cleanup = cleanupService;
 
     const buttonHandler = new ButtonHandler({ logger, eventBus });
     buttonHandler.register('trivia_reveal', async (interaction) => {
@@ -196,7 +219,6 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     });
 
     // ─── Register only essential agents (free tier) ───
-    // Pass cache manager to agents via deps
     orchestrator.registerAgent(new ModerationAgent(eventBus, { client, logger, db, models, cache: cacheManager }), 100);
     orchestrator.registerAgent(new EconomyAgent(eventBus, { client, logger, db, models, cache: cacheManager }), 90);
     orchestrator.registerAgent(new VipAgent(eventBus, { client, logger, db, models, cache: cacheManager }), 80);
@@ -229,7 +251,7 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
       logger.warn('⚠️ AMA_CHANNEL_ID not set. AMAAgent is disabled anyway.');
     }
 
-    // ================= EVENT LISTENERS (keep only those for active agents) =================
+    // ================= EVENT LISTENERS =================
     eventBus.on('economy.addBalance', async ({ userId, guildId, amount, reason }) => {
       try {
         let user = await models.User.findOne({ where: { userId, guildId } });
@@ -269,27 +291,18 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
       await deliverToSubscribers('NewsAgent', 'news.summarized', embed);
     });
 
-    // Whale, Signal, Recommendation events are disabled because their agents are not loaded.
-
     // ================= ATTACH DISCORD EVENTS =================
     require('./events/messageCreate')(client, orchestrator, { logger });
     require('./events/interactionCreate')(client, orchestrator, { logger, buttonHandler });
     require('./events/guildMemberAdd')(client, orchestrator, { logger });
     require('./events/ready')(client, orchestrator, { logger, registerCommands: require('./commands/register') });
 
-    // ================= SCHEDULED JOBS (reduced frequency) =================
+    // ================= SCHEDULED JOBS =================
     const priceUpdater = require('./jobs/priceUpdater')({ eventBus, logger, cache: null });
     const leaderboardReset = require('./jobs/leaderboardReset')({ eventBus, logger, models });
     const subscriptionRenewal = require('./jobs/subscriptionRenewal')({ eventBus, logger, models, client });
-    // Pass cache manager to cleanup jobs
-    const cleanupTempData = require('./jobs/cleanupTempData')({
-      eventBus,
-      logger,
-      db,
-      cacheManager, // use new cache manager
-      cleanupAgeMs: 3600000,
-      aggressiveMode: false,
-    });
+    // The cleanupTempData job is now handled by CleanupService, so we don't need to register it as a separate job.
+    // Instead, we started the cleanup scheduler earlier.
     const newsUpdater = require('./jobs/newsUpdater')({ eventBus, logger });
 
     const dailyRetention = require('./jobs/dailyRetention')({ eventBus, logger, models, client, orchestrator });
@@ -298,7 +311,7 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
 
     const healthCheck = require('./jobs/healthCheck')({ eventBus, logger, orchestrator });
     const cacheCleanup = require('./jobs/cacheCleanup')({ eventBus, logger, orchestrator, cacheManager });
-    const memoryMonitor = require('./jobs/memoryMonitor')({ eventBus, logger, orchestrator, cacheManager });
+    const memoryMonitor = require('./jobs/memoryMonitor')({ eventBus, logger, orchestrator, cacheManager, cleanupService });
     const logRotation = require('./jobs/logRotation')({ eventBus, logger, orchestrator });
     const tempCleanup = require('./jobs/tempCleanup')({ eventBus, logger, orchestrator });
     const performanceReport = require('./jobs/performanceReport')({ eventBus, logger, orchestrator });
@@ -330,11 +343,11 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     const autoSummarize = async () => eventBus.emit('job.autoSummarize');
     const socialFeed = async () => eventBus.emit('job.socialFeed');
 
-    // ─── Register jobs with increased intervals ───
+    // ─── Register jobs ───
     scheduler.registerJob('priceUpdater', '*/5 * * * *', priceUpdater);
     scheduler.registerJob('leaderboardReset', '0 0 * * 0', leaderboardReset);
     scheduler.registerJob('subscriptionRenewal', '0 */6 * * *', subscriptionRenewal);
-    scheduler.registerJob('cleanupTempData', '0 */2 * * *', cleanupTempData);
+    // 'cleanupTempData' job removed – now handled by CleanupService scheduler
     scheduler.registerJob('newsUpdater', '*/10 * * * *', newsUpdater);
 
     if (process.env.LEADERBOARD_WEBHOOK_URL) {
@@ -350,9 +363,6 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
       logger.warn('⚠️ LEADERBOARD_WEBHOOK_URL not set – weekly leaderboard disabled');
     }
 
-    // Heavy jobs disabled or interval increased
-
-    // Keep essential check jobs
     scheduler.registerJob('announcementCheck', '0 * * * *', async () => eventBus.emit('job.announcementCheck'));
     scheduler.registerJob('engagementCheck', '0 0 * * *', async () => eventBus.emit('job.engagementCheck'));
     scheduler.registerJob('dailyRetention', '0 20 * * *', dailyRetention);
@@ -450,6 +460,7 @@ async function shutdown(signal) {
   if (orchestrator) await orchestrator.destroy();
   if (db) await db.close();
   if (cacheManager) await cacheManager.shutdown();
+  if (cleanupService) await cleanupService.shutdown();
   if (client) client.destroy();
   process.exit(0);
 }
