@@ -1,10 +1,14 @@
 /**
- * 🚀 Ultra3Vault v7.0 – Ultra‑Light Free Tier
+ * 🚀 Ultra3Vault v7.1 – One‑Time DB Cleanup
  * Entry point: minimal agents, aggressive memory limits, optional web server.
  * Only loads essential agents: Moderation, Economy, VIP, Support, Referral,
  * Info, Summary, CommunityManager, Engagement, ContentPlanning,
  * Optimization, AlertPrioritization.
  * All heavy agents (News, Price, Whale, Airdrop, Signal, AI, AMA, etc.) removed.
+ *
+ * To run database cleanup:
+ *   Set environment variable RUN_DB_CLEANUP=true in Render, deploy, wait for logs,
+ *   then remove the variable and redeploy.
  */
 require('dotenv').config();
 const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
@@ -38,11 +42,11 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    // GatewayIntentBits.GuildMembers, // removed to reduce memory
+    // GatewayIntentBits.GuildMembers,
   ],
   partials: [],
   sweepers: {
-    messages: { interval: 60, lifetime: 300 },   // sweep every 60s, keep 5 min
+    messages: { interval: 60, lifetime: 300 },
     users: { interval: 120, filter: () => false },
     members: { interval: 120, filter: () => false },
   },
@@ -84,10 +88,10 @@ const db = new Database({
 const cacheManager = new CacheManager({
   eventBus,
   logger,
-  defaultTTL: 30000,          // 30 seconds (was 60s)
-  maxEntriesPerNamespace: 100, // per agent (was 200)
+  defaultTTL: 30000,
+  maxEntriesPerNamespace: 100,
   evictionStrategy: 'lru',
-  cleanupInterval: 15000,      // 15 seconds (was 30s)
+  cleanupInterval: 15000,
   memoryThreshold: 80,
   protectedNamespaces: ['config', 'admin'],
 });
@@ -115,7 +119,7 @@ setTimeout(() => {
 let orchestrator = null;
 let webServer = null;
 
-// ================= ESSENTIAL AGENTS (only those actually used) =================
+// ================= ESSENTIAL AGENTS =================
 const ModerationAgent = require('./agents/moderationAgent');
 const EconomyAgent = require('./agents/economyAgent');
 const VipAgent = require('./agents/vipAgent');
@@ -129,7 +133,7 @@ const ContentPlanningAgent = require('./agents/contentPlanningAgent');
 const OptimizationAgent = require('./agents/optimizationAgent');
 const AlertPrioritizationAgent = require('./agents/alertPrioritizationAgent');
 
-// ================= B2B HELPER (kept for future) =================
+// ================= B2B HELPER =================
 async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
   try {
     const now = Date.now();
@@ -164,17 +168,70 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
   }
 }
 
+// ================= ONE‑TIME DATABASE CLEANUP =================
+// Runs only if RUN_DB_CLEANUP environment variable is set to 'true'
+async function runDatabaseCleanup() {
+  if (process.env.RUN_DB_CLEANUP !== 'true') {
+    logger.debug('Skipping database cleanup (RUN_DB_CLEANUP not set)');
+    return;
+  }
+  logger.info('🗑️ Running one‑time database cleanup...');
+
+  const tables = [
+    'price_history',
+    'whale_transactions',
+    'airdrop_posted_links',
+    'news_cache',
+    'ai_conversations',
+    'price_alerts',
+    'whale_watchlists',
+    'whale_community_predictions',
+    'whale_blacklist',
+    'whale_wallet_performance',
+    'airdrop_claims',
+    'airdrop_user_prefs',
+    'airdrop_github_tracking',
+    'news_subscriptions',
+  ];
+
+  let total = 0;
+  for (const table of tables) {
+    try {
+      const result = await db.run(`DELETE FROM ${table}`);
+      const count = result.changes || 0;
+      logger.info(`✅ ${table}: deleted ${count} rows`);
+      total += count;
+    } catch (err) {
+      logger.warn(`⚠️ ${table}: ${err.message}`);
+    }
+  }
+
+  logger.info(`🗑️ Total rows deleted: ${total}`);
+
+  try {
+    await db.run('VACUUM');
+    logger.info('✅ Database compacted');
+  } catch (err) {
+    logger.warn(`⚠️ VACUUM failed: ${err.message}`);
+  }
+
+  logger.info('✅ Database cleanup complete');
+}
+
 // ================= STARTUP =================
 (async () => {
   try {
     await db.init();
     logger.info('✅ Database initialized');
 
+    // Run one‑time cleanup if requested (before loading agents)
+    await runDatabaseCleanup();
+
     const models = new Models(db, eventBus, logger);
     orchestrator = new Orchestrator(client, { eventBus, logger, rateLimiter });
     client.orchestrator = orchestrator;
 
-    // Globals for easy access
+    // Globals
     client.cache = cacheManager;
     global.cache = cacheManager;
     client.cleanup = cleanupService;
@@ -208,7 +265,7 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     cacheManager.aggressiveEvict(30);
     logger.info('🧹 CacheManager aggressive eviction performed on startup');
 
-    // ================= EVENT LISTENERS (only active) =================
+    // ================= EVENT LISTENERS =================
     eventBus.on('economy.addBalance', async ({ userId, guildId, amount, reason }) => {
       try {
         let user = await models.User.findOne({ where: { userId, guildId } });
@@ -229,7 +286,7 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     require('./events/guildMemberAdd')(client, orchestrator, { logger });
     require('./events/ready')(client, orchestrator, { logger, registerCommands: require('./commands/register') });
 
-    // ================= SCHEDULED JOBS (only those used by active agents) =================
+    // ================= SCHEDULED JOBS =================
     const leaderboardReset = require('./jobs/leaderboardReset')({ eventBus, logger, models });
     const subscriptionRenewal = require('./jobs/subscriptionRenewal')({ eventBus, logger, models, client });
     const dailyRetention = require('./jobs/dailyRetention')({ eventBus, logger, models, client, orchestrator });
@@ -306,7 +363,6 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
       logger.warn('⚠️ LEADERBOARD_WEBHOOK_URL not set – weekly leaderboard disabled');
     }
 
-    // Keep engagement checks
     scheduler.registerJob('engagementCheck', '0 0 * * *', async () => eventBus.emit('job.engagementCheck'));
     scheduler.registerJob('announcementCheck', '0 * * * *', async () => eventBus.emit('job.announcementCheck'));
 
@@ -335,22 +391,11 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
       logger.info(`✅ Shard ${id} resumed (${replayedEvents} events)`);
     });
 
-    // ─── Web Server (Optional – comment out if not using dashboard) ───
-    // If you don't need the B2B dashboard or webhooks, you can disable this.
-    // Uncomment the following lines to keep it.
+    // ─── Web Server (Disabled by default) ───
+    // Uncomment if you need the B2B dashboard.
     /*
-    webServer = new WebServer({
-      eventBus,
-      logger,
-      client,
-      db,
-      models,
-      caches: { manager: cacheManager },
-      orchestrator,
-      port: process.env.PORT || 3000,
-    });
+    webServer = new WebServer({ ... });
     await webServer.start();
-    logger.info('🌐 Web server started');
     */
 
     // Login to Discord
