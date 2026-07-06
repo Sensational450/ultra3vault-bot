@@ -1,8 +1,8 @@
 /**
- * 🚀 Ultra3Vault v6.4 – CacheManager Integration & Memory‑Optimized
+ * 🚀 Ultra3Vault v6.5 – CacheManager Integration & Memory‑Optimized
  * Entry point: initializes core, agents, web server, and scheduler.
  * Disables heavy agents and reduces job frequency to stay under 512MB RAM.
- * Uses central CacheManager for all temporary data.
+ * Uses central CacheManager (located in jobs/) for all temporary data.
  */
 require('dotenv').config();
 const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
@@ -14,7 +14,7 @@ const { Orchestrator } = require('./core/orchestrator');
 const { Database } = require('./tools/database/db');
 const Models = require('./tools/database/models');
 const { WebServer } = require('./web/server');
-const CacheManager = require('./tools/cacheTempData'); // New cache manager
+const CacheManager = require('./jobs/cacheTempData'); // ✅ Correct path
 const secrets = require('./config/secrets');
 const axios = require('axios');
 const ButtonHandler = require('./tools/discord/buttonHandler');
