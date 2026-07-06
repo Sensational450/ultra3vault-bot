@@ -1,10 +1,10 @@
 /**
- * 🚀 Ultra3Vault v6.9 – Clean Free‑Tier Version
- * Entry point: initializes core, essential agents, web server, and scheduler.
- * Only loads agents that are actively used: Moderation, Economy, VIP, Support,
- * Referral, Info, Summary, CommunityManager, Engagement, ContentPlanning,
+ * 🚀 Ultra3Vault v7.0 – Ultra‑Light Free Tier
+ * Entry point: minimal agents, aggressive memory limits, optional web server.
+ * Only loads essential agents: Moderation, Economy, VIP, Support, Referral,
+ * Info, Summary, CommunityManager, Engagement, ContentPlanning,
  * Optimization, AlertPrioritization.
- * All heavy agents (News, Price, Whale, Airdrop, Signal, AI, AMA, etc.) are removed.
+ * All heavy agents (News, Price, Whale, Airdrop, Signal, AI, AMA, etc.) removed.
  */
 require('dotenv').config();
 const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
@@ -42,9 +42,9 @@ const client = new Client({
   ],
   partials: [],
   sweepers: {
-    messages: { interval: 120, lifetime: 600 },
-    users: { interval: 300, filter: () => false },
-    members: { interval: 300, filter: () => false },
+    messages: { interval: 60, lifetime: 300 },   // sweep every 60s, keep 5 min
+    users: { interval: 120, filter: () => false },
+    members: { interval: 120, filter: () => false },
   },
 });
 
@@ -80,14 +80,14 @@ const db = new Database({
   logger,
 });
 
-// ================= CACHE MANAGER =================
+// ================= CACHE MANAGER (Tight Limits) =================
 const cacheManager = new CacheManager({
   eventBus,
   logger,
-  defaultTTL: 60000,
-  maxEntriesPerNamespace: 200,
+  defaultTTL: 30000,          // 30 seconds (was 60s)
+  maxEntriesPerNamespace: 100, // per agent (was 200)
   evictionStrategy: 'lru',
-  cleanupInterval: 30000,
+  cleanupInterval: 15000,      // 15 seconds (was 30s)
   memoryThreshold: 80,
   protectedNamespaces: ['config', 'admin'],
 });
@@ -131,8 +131,37 @@ const AlertPrioritizationAgent = require('./agents/alertPrioritizationAgent');
 
 // ================= B2B HELPER (kept for future) =================
 async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
-  // ... (same as before) ...
-  // (keep as is)
+  try {
+    const now = Date.now();
+    const rows = await db.all(
+      `SELECT userId, guildId, webhook_url, agentAccess FROM subscriptions
+       WHERE webhook_url IS NOT NULL
+         AND webhook_status = 'active'
+         AND expiresAt > ?`,
+      [now]
+    );
+    const subscribers = rows.filter(row => {
+      try {
+        const access = row.agentAccess ? JSON.parse(row.agentAccess) : ['moderation'];
+        return access.includes(agentName);
+      } catch {
+        return false;
+      }
+    });
+    if (subscribers.length === 0) return;
+    const embedJson = embed.toJSON ? embed.toJSON() : embed;
+    const payload = { embeds: [embedJson], ...options };
+    for (const sub of subscribers) {
+      try {
+        await WebhookSender.send(sub.webhook_url, payload, {}, 2);
+        logger.debug(`✅ B2B webhook delivered to ${sub.guildId} for ${agentName}`);
+      } catch (err) {
+        logger.warn(`❌ B2B webhook failed for ${sub.guildId} (${agentName}): ${err.message}`);
+      }
+    }
+  } catch (err) {
+    logger.error(`deliverToSubscribers error: ${err.message}`);
+  }
 }
 
 // ================= STARTUP =================
@@ -306,7 +335,10 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
       logger.info(`✅ Shard ${id} resumed (${replayedEvents} events)`);
     });
 
-    // Start web server
+    // ─── Web Server (Optional – comment out if not using dashboard) ───
+    // If you don't need the B2B dashboard or webhooks, you can disable this.
+    // Uncomment the following lines to keep it.
+    /*
     webServer = new WebServer({
       eventBus,
       logger,
@@ -319,6 +351,7 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     });
     await webServer.start();
     logger.info('🌐 Web server started');
+    */
 
     // Login to Discord
     await client.login(secrets.token);
