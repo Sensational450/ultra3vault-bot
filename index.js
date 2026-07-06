@@ -1,7 +1,6 @@
 /**
- * 🚀 Ultra3Vault v6.6 – Separate CacheManager & CleanupService
+ * 🚀 Ultra3Vault v6.7 – Unified CacheManager & CleanupService
  * Entry point: initializes core, agents, web server, and scheduler.
- * Disables heavy agents and reduces job frequency to stay under 512MB RAM.
  * Uses CacheManager (tools/cacheManager) and CleanupService (jobs/cleanupTempData).
  */
 require('dotenv').config();
@@ -14,7 +13,7 @@ const { Orchestrator } = require('./core/orchestrator');
 const { Database } = require('./tools/database/db');
 const Models = require('./tools/database/models');
 const { WebServer } = require('./web/server');
-const CacheManager = require('./tools/cacheManager');       // ✅ Core cache manager
+const CacheManager = require('./tools/cacheManager');       // ✅ Core cache manager (class)
 const CleanupService = require('./jobs/cleanupTempData');   // ✅ Cleanup service
 const secrets = require('./config/secrets');
 const axios = require('axios');
@@ -79,6 +78,7 @@ const db = new Database({
 });
 
 // ================= CACHE MANAGER =================
+// Single instance – shared by all agents and cleanup jobs
 const cacheManager = new CacheManager({
   eventBus,
   logger,
@@ -94,7 +94,7 @@ const cacheManager = new CacheManager({
 const cleanupService = new CleanupService({
   eventBus,
   logger,
-  cacheManager,      // pass the cache manager instance
+  cacheManager,      // pass the single cache manager instance
   db,                // pass database connection for cleaning temp tables
   config: {
     cleanupInterval: 5 * 60 * 1000,  // 5 minutes
@@ -347,7 +347,6 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     scheduler.registerJob('priceUpdater', '*/5 * * * *', priceUpdater);
     scheduler.registerJob('leaderboardReset', '0 0 * * 0', leaderboardReset);
     scheduler.registerJob('subscriptionRenewal', '0 */6 * * *', subscriptionRenewal);
-    // 'cleanupTempData' job removed – now handled by CleanupService scheduler
     scheduler.registerJob('newsUpdater', '*/10 * * * *', newsUpdater);
 
     if (process.env.LEADERBOARD_WEBHOOK_URL) {
@@ -453,7 +452,10 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
 })();
 
 // ================= GRACEFUL SHUTDOWN =================
+let shutdownCalled = false;
 async function shutdown(signal) {
+  if (shutdownCalled) return;
+  shutdownCalled = true;
   logger.info(`🛑 Received ${signal}, shutting down...`);
   if (webServer) await webServer.stop();
   if (scheduler) await scheduler.shutdown();
