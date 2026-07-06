@@ -244,13 +244,14 @@ class CacheManager {
 
   _registerDefaultCaches() {
     // Define default caches with reasonable limits
+    // NOTE: Removed duplicate 'priceCache' entry to avoid overwriting warning
     const defaultCaches = [
-      { name: 'priceCache', maxSize: 500, ttl: 30000 }, // 30s
+      { name: 'priceCache', maxSize: 500, ttl: 30000 }, // 30s – keep this one
       { name: 'indicatorCache', maxSize: 200, ttl: 60000 },
       { name: 'metricCache', maxSize: 100, ttl: 300000 },
       { name: 'historicalCache', maxSize: 2000, ttl: 3600000 },
       { name: 'seenTxs', maxSize: 5000, ttl: 3600000 },
-      { name: 'priceCache', maxSize: 100, ttl: 30000 },
+      // Removed duplicate priceCache entry here.
       { name: 'userAlerts', maxSize: 1000, ttl: 86400000 },
       { name: 'spamTracker', maxSize: 1000, ttl: 60000 },
       { name: 'raidTracker', maxSize: 500, ttl: 300000 },
@@ -303,7 +304,6 @@ class CacheManager {
             const cacheName = `${name}.${prop}`;
             if (!this.caches.has(cacheName)) {
               // Create a managed cache that syncs with the original
-              // We'll just create a wrapper that delegates to the original
               // For simplicity, we'll assume the agent already has cleanup methods
               // and we'll just call them via the job.
               // So we'll just track it for analytics.
@@ -362,9 +362,6 @@ class CacheManager {
     }
 
     // 2. Call agent cleanup methods (if not already done via cacheCleanup job)
-    // We can delegate to the orchestrator to call cleanup on agents.
-    // The cacheCleanup job already does this, so we might skip to avoid duplication.
-    // But we can also call it here for completeness.
     if (this.orchestrator) {
       const allAgents = this.orchestrator.getAllAgents?.() || [];
       for (const agent of allAgents) {
