@@ -1,7 +1,7 @@
 /**
- * 🚀 Ultra3Vault v6.7 – Unified CacheManager & CleanupService
+ * 🚀 Ultra3Vault v6.8 – Further Memory Optimized for Free Tier
  * Entry point: initializes core, agents, web server, and scheduler.
- * Uses CacheManager (tools/cacheManager) and CleanupService (jobs/cleanupTempData).
+ * Disables heavy agents (NewsAgent, AiChatAgent) and reduces client cache.
  */
 require('dotenv').config();
 const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
@@ -13,8 +13,8 @@ const { Orchestrator } = require('./core/orchestrator');
 const { Database } = require('./tools/database/db');
 const Models = require('./tools/database/models');
 const { WebServer } = require('./web/server');
-const CacheManager = require('./tools/cacheManager');       // ✅ Core cache manager (class)
-const CleanupService = require('./jobs/cleanupTempData');   // ✅ Cleanup service
+const CacheManager = require('./tools/cacheManager');
+const CleanupService = require('./jobs/cleanupTempData');
 const secrets = require('./config/secrets');
 const axios = require('axios');
 const ButtonHandler = require('./tools/discord/buttonHandler');
@@ -35,13 +35,13 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMembers,
+    // GatewayIntentBits.GuildMembers, // ← removed to reduce member cache
   ],
   partials: [],
   sweepers: {
-    messages: { interval: 300, lifetime: 1800 },
-    users: { interval: 3600, filter: () => false },
-    members: { interval: 3600, filter: () => false },
+    messages: { interval: 120, lifetime: 600 }, // sweep every 2 min, keep 10 min
+    users: { interval: 300, filter: () => false },
+    members: { interval: 300, filter: () => false },
   },
 });
 
@@ -78,15 +78,14 @@ const db = new Database({
 });
 
 // ================= CACHE MANAGER =================
-// Single instance – shared by all agents and cleanup jobs
 const cacheManager = new CacheManager({
   eventBus,
   logger,
-  defaultTTL: 60000,          // 1 minute
-  maxEntriesPerNamespace: 500, // per agent
-  evictionStrategy: 'lru',     // least recently used
-  cleanupInterval: 30000,      // 30 seconds
-  memoryThreshold: 80,         // % heap usage to trigger aggressive eviction
+  defaultTTL: 60000,
+  maxEntriesPerNamespace: 200, // reduced from 500 to save memory
+  evictionStrategy: 'lru',
+  cleanupInterval: 30000,
+  memoryThreshold: 80,
   protectedNamespaces: ['config', 'admin'],
 });
 
@@ -94,23 +93,22 @@ const cacheManager = new CacheManager({
 const cleanupService = new CleanupService({
   eventBus,
   logger,
-  cacheManager,      // pass the single cache manager instance
-  db,                // pass database connection for cleaning temp tables
+  cacheManager,
+  db,
   config: {
-    cleanupInterval: 5 * 60 * 1000,  // 5 minutes
-    defaultTTL: 3600000,             // 1 hour
+    cleanupInterval: 5 * 60 * 1000,
+    defaultTTL: 3600000,
     memoryThreshold: 80,
     maxItemsPerCycle: 1000,
     protectedNamespaces: ['config', 'admin'],
   },
 });
 
-// Start the cleanup scheduler after bot is ready
 setTimeout(() => {
   cleanupService.startScheduler();
-}, 30000); // wait 30 seconds after startup
+}, 30000);
 
-// ================= ORCHESTRATOR & WEB SERVER (outer scope) =================
+// ================= ORCHESTRATOR & WEB SERVER =================
 let orchestrator = null;
 let webServer = null;
 
@@ -119,7 +117,7 @@ let webServer = null;
 const ModerationAgent = require('./agents/moderationAgent');
 const EconomyAgent = require('./agents/economyAgent');
 const VipAgent = require('./agents/vipAgent');
-const NewsAgent = require('./agents/newsAgent');
+// const NewsAgent = require('./agents/newsAgent'); // Temporarily disabled for memory
 const SupportAgent = require('./agents/supportAgent');
 const ReferralAgent = require('./agents/referralAgent');
 const InfoAgent = require('./agents/infoAgent');
@@ -130,7 +128,7 @@ const ContentPlanningAgent = require('./agents/contentPlanningAgent');
 const OptimizationAgent = require('./agents/optimizationAgent');
 const AlertPrioritizationAgent = require('./agents/alertPrioritizationAgent');
 
-// ─── Heavy agents (disabled for free tier – comment in if needed) ───
+// ─── Heavy agents (disabled) ───
 // const PriceFeedAgent = require('./agents/priceFeedAgent');
 // const WhaleAgent = require('./agents/whaleAgent');
 // const AirdropAgent = require('./agents/airdropAgent');
@@ -142,18 +140,18 @@ const AlertPrioritizationAgent = require('./agents/alertPrioritizationAgent');
 // const GrowthRetentionAgent = require('./agents/growthRetentionAgent');
 // const SelfImprovementAgent = require('./agents/selfImprovementAgent');
 
-// ─── AiChatAgent (optional – only if AI is used) ───
-let AiChatAgent = null;
-try {
-  if (secrets.openaiApiKey) {
-    AiChatAgent = require('./agents/aiChatAgent');
-    logger.info('🧠 OpenAI API key found – AiChatAgent will be loaded');
-  } else {
-    logger.warn('⚠️ OPENAI_API_KEY missing – AiChatAgent disabled');
-  }
-} catch (err) {
-  logger.warn(`⚠️ Could not load AiChatAgent: ${err.message}`);
-}
+// ─── AiChatAgent (disabled to save memory) ───
+// let AiChatAgent = null;
+// try {
+//   if (secrets.openaiApiKey) {
+//     AiChatAgent = require('./agents/aiChatAgent');
+//     logger.info('🧠 OpenAI API key found – AiChatAgent will be loaded');
+//   } else {
+//     logger.warn('⚠️ OPENAI_API_KEY missing – AiChatAgent disabled');
+//   }
+// } catch (err) {
+//   logger.warn(`⚠️ Could not load AiChatAgent: ${err.message}`);
+// }
 
 // ================= B2B HELPER =================
 async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
@@ -218,11 +216,11 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
       });
     });
 
-    // ─── Register only essential agents (free tier) ───
+    // ─── Register only essential agents (NewsAgent and AiChatAgent disabled) ───
     orchestrator.registerAgent(new ModerationAgent(eventBus, { client, logger, db, models, cache: cacheManager }), 100);
     orchestrator.registerAgent(new EconomyAgent(eventBus, { client, logger, db, models, cache: cacheManager }), 90);
     orchestrator.registerAgent(new VipAgent(eventBus, { client, logger, db, models, cache: cacheManager }), 80);
-    orchestrator.registerAgent(new NewsAgent(eventBus, { client, logger, db, models, cache: cacheManager }), 60);
+    // orchestrator.registerAgent(new NewsAgent(eventBus, { client, logger, db, models, cache: cacheManager }), 60); // disabled
     orchestrator.registerAgent(new AlertPrioritizationAgent(eventBus, { client, logger, db, models, cache: cacheManager }), 55);
     orchestrator.registerAgent(new SupportAgent(eventBus, { client, logger, db, models, cache: cacheManager }), 45);
     orchestrator.registerAgent(new ReferralAgent(eventBus, { client, logger, db, models, cache: cacheManager }), 40);
@@ -233,19 +231,20 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     orchestrator.registerAgent(new ContentPlanningAgent(eventBus, { client, logger, db, models, orchestrator, cache: cacheManager }), 18);
     orchestrator.registerAgent(new OptimizationAgent(eventBus, { client, logger, db, models, orchestrator, cache: cacheManager }), 1);
 
-    if (AiChatAgent) {
-      orchestrator.registerAgent(new AiChatAgent(eventBus, { client, logger, db, models, cache: cacheManager }), 50);
-    }
+    // AiChatAgent disabled
+    // if (AiChatAgent) {
+    //   orchestrator.registerAgent(new AiChatAgent(eventBus, { client, logger, db, models, cache: cacheManager }), 50);
+    // }
 
-    logger.info('✅ All essential agents registered (heavy agents disabled)');
+    logger.info('✅ All essential agents registered (NewsAgent and AiChatAgent disabled for memory)');
 
-    // ─── Startup aggressive cleanup on cache manager ───
+    // ─── Startup aggressive cleanup ───
     cacheManager.aggressiveEvict(30);
     logger.info('🧹 CacheManager aggressive eviction performed on startup');
 
     // ─── API key checks ───
     if (!process.env.NEWSDATA_API_KEY) {
-      logger.warn('⚠️ NEWSDATA_API_KEY is not set. NewsAgent will not fetch articles.');
+      logger.warn('⚠️ NEWSDATA_API_KEY is not set. NewsAgent is disabled anyway.');
     }
     if (!process.env.AMA_CHANNEL_ID) {
       logger.warn('⚠️ AMA_CHANNEL_ID not set. AMAAgent is disabled anyway.');
@@ -266,30 +265,8 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
       }
     });
 
-    eventBus.on('news.summarized', async (data) => {
-      const { summary, original, category } = data;
-      logger.debug(`📝 Auto‑summary generated for: ${original.title}`);
-
-      const embed = new EmbedBuilder()
-        .setTitle('📰 Auto‑Summary')
-        .setDescription(summary || 'No summary available.')
-        .addFields(
-          { name: 'Original', value: `[${original.title}](${original.link})`, inline: false },
-          { name: 'Category', value: category || 'General', inline: true }
-        )
-        .setColor(0x00ff88)
-        .setTimestamp()
-        .setFooter({ text: 'Ultra3Vault • Auto‑generated' });
-
-      try {
-        await sendWebhook('cryptoNews', { embeds: [embed] });
-        logger.debug(`✅ Auto‑summary posted via Chronicle webhook`);
-      } catch (err) {
-        logger.error(`Failed to post auto‑summary via webhook: ${err.message}`);
-      }
-
-      await deliverToSubscribers('NewsAgent', 'news.summarized', embed);
-    });
+    // NewsAgent listener disabled
+    // eventBus.on('news.summarized', ...);
 
     // ================= ATTACH DISCORD EVENTS =================
     require('./events/messageCreate')(client, orchestrator, { logger });
@@ -301,9 +278,7 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     const priceUpdater = require('./jobs/priceUpdater')({ eventBus, logger, cache: null });
     const leaderboardReset = require('./jobs/leaderboardReset')({ eventBus, logger, models });
     const subscriptionRenewal = require('./jobs/subscriptionRenewal')({ eventBus, logger, models, client });
-    // The cleanupTempData job is now handled by CleanupService, so we don't need to register it as a separate job.
-    // Instead, we started the cleanup scheduler earlier.
-    const newsUpdater = require('./jobs/newsUpdater')({ eventBus, logger });
+    const newsUpdater = require('./jobs/newsUpdater')({ eventBus, logger }); // will still be registered but NewsAgent disabled, so may be no-op
 
     const dailyRetention = require('./jobs/dailyRetention')({ eventBus, logger, models, client, orchestrator });
     const weeklyGrowthReport = require('./jobs/weeklyGrowthReport')({ eventBus, logger, models, client, orchestrator });
@@ -347,7 +322,7 @@ async function deliverToSubscribers(agentName, eventType, embed, options = {}) {
     scheduler.registerJob('priceUpdater', '*/5 * * * *', priceUpdater);
     scheduler.registerJob('leaderboardReset', '0 0 * * 0', leaderboardReset);
     scheduler.registerJob('subscriptionRenewal', '0 */6 * * *', subscriptionRenewal);
-    scheduler.registerJob('newsUpdater', '*/10 * * * *', newsUpdater);
+    scheduler.registerJob('newsUpdater', '*/10 * * * *', newsUpdater); // no-op if NewsAgent disabled
 
     if (process.env.LEADERBOARD_WEBHOOK_URL) {
       const weeklyLeaderboard = require('./jobs/weeklyLeaderboard')({
